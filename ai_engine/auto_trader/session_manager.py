@@ -188,6 +188,8 @@ class AutoTradeSessionManager:
         - Ratchets Trailing Stop into profit once price moves >= +1.0 * ATR in favor.
         - Closes position on broker & vault ONLY when TP1/TP2 or Stop-Loss/Trailing-Stop is hit.
         """
+        if hasattr(self.engine, "sync_live_mt5_positions"):
+            await self.engine.sync_live_mt5_positions(user_id)
         clean_sym = normalize_symbol(symbol)
         open_positions = self.engine.vault.get_open_positions(user_id, symbol=clean_sym)
         if not open_positions:
@@ -344,15 +346,12 @@ class AutoTradeSessionManager:
         if creds is not None:
             try:
                 if creds.provider == "exness_mt5":
-                    await self.engine.mt5_client.place_market_order(
+                    await self.engine.mt5_client.close_mt5_ticket(
                         account_id_or_login=creds.api_key,
                         token_or_password=creds.api_secret,
-                        symbol=pos.symbol,
-                        side=close_side,
-                        quantity=pos.quantity,
-                        reference_price=exit_price,
+                        ticket=pos.order_id,
+                        lots=pos.quantity,
                         server_name=creds.server_name,
-                        testnet=creds.testnet,
                     )
                 else:
                     await self.engine.binance_client.place_market_order(

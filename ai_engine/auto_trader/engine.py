@@ -127,6 +127,29 @@ class SmartAutoTraderEngine:
             low_override=low_override,
         )
 
+    async def sync_live_mt5_positions(self, user_id: int) -> None:
+        """Reconcile SQLite OPEN positions against real-time Exness MT5 OpenedOrders."""
+        creds = self.vault.resolve_credentials(user_id)
+        if (
+            creds is None
+            or creds.provider != "exness_mt5"
+            or self.mt5_client._is_exness_trial_demo(creds.api_key, creds.testnet)
+        ):
+            return
+        live_orders = await self.mt5_client.get_live_open_orders(
+            creds.api_key, creds.api_secret, creds.server_name
+        )
+        if live_orders is None:
+            return
+        live_tickets = {
+            str(o.get("ticket") or o.get("order") or "")
+            for o in live_orders
+            if isinstance(o, dict)
+        }
+        for pos in self.vault.get_open_positions(user_id):
+            if pos.order_id not in live_tickets:
+                self.vault.close_position(pos.position_id, pos.entry_price, 0.0)
+
     async def evaluate_and_execute(
         self,
         user_id: int,
@@ -350,6 +373,7 @@ class SmartAutoTraderEngine:
         )
 
         # Gate 5: Volatility, Drawdown Circuit Breaker & Anti-Duplicate Position Guard
+        await self.sync_live_mt5_positions(user_id)
         open_positions = self.vault.get_open_positions(user_id, symbol=clean_sym)
         has_duplicate = len(open_positions) > 0
         risk_ok = (
