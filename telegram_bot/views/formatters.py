@@ -45,6 +45,7 @@ def format_welcome_card(user_name: str, settings: Settings) -> str:
         f"• <code>/volatility BTCUSDT</code> — Cek Tingkat Gejolak Harga Pasar\n"
         f"• <code>/portfolio</code> — Lihat Saldo, Posisi Aktif &amp; Untung/Rugi\n"
         f"• <code>/backtest BTCUSDT 90</code> — Uji Strategi 90 Hari ke Belakang\n"
+        f"• <code>/admin</code> — Panel Kontrol Admin (User, Broadcast, Maintenance, Audit)\n"
         f"• <code>/status</code> — Cek Kesehatan Sistem &amp; Batas Pengaman Modal\n\n"
         f"<i>💡 Tips: Anda bisa mengganti simbol dengan Crypto (BTCUSDT, SOLUSDT), Emas (XAUUSD), Saham AS (NVDA, AAPL), Indeks (SPX, IHSG), atau Forex (EURUSD, GBPJPY).</i>"
     )

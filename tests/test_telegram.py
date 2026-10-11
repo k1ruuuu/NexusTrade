@@ -8,12 +8,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ai_engine.backtester.engine import EventDrivenBacktester
+from datetime import datetime, timedelta, timezone
+from ai_engine.auto_trader.admin_store import AdminStore
 from ai_engine.auto_trader.binance_client import BinanceSpotClient
 from ai_engine.auto_trader.engine import SmartAutoTraderEngine
 from ai_engine.auto_trader.user_vault import UserVault
 from ai_engine.models.ensemble_agent import EnsembleDecisionAgent
 from config.settings import Settings
 from telegram_bot.bot import NexusTradeBotService
+from telegram_bot.handlers.admin import handle_admin_command
 from telegram_bot.handlers.commands import (
     handle_analyze,
     handle_portfolio,
@@ -332,3 +335,93 @@ async def test_multi_user_setup_role_isolation_and_6gate_autotrade(tmp_path: Pat
     unlink_msg = _make_fake_message(222, "/unlink")
     await handle_unlink(unlink_msg, **ctx)
     assert vault.resolve_credentials(222) is None
+
+
+@pytest.mark.asyncio
+async def test_admin_panel_user_management_broadcast_maintenance_and_audit(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        telegram_allowed_user_ids=[111],
+        telegram_admin_user_ids=[111],
+        telegram_admin_chat_id=111,
+    )
+    admin_store = AdminStore(settings=settings)
+    mw = WhitelistAuthMiddleware(settings=settings, admin_store=admin_store)
+    handler = AsyncMock(return_value="ok")
+    fake_bot = SimpleNamespace(send_message=AsyncMock())
+    ctx = {
+        "settings": settings,
+        "admin_store": admin_store,
+        "bot": fake_bot,
+    }
+
+    # 0. Non-admin cannot access /admin
+    non_admin_msg = _make_fake_message(777, "/admin")
+    await handle_admin_command(non_admin_msg, **ctx)
+    assert "Akses Ditolak" in non_admin_msg.answer.call_args[0][0]
+
+    # 1. Management User: Admin adds user 555 with 1 hari expiry, then edits to 1 bulan
+    add_msg = _make_fake_message(111, "/admin adduser 555 1hari Budi Trader")
+    await handle_admin_command(add_msg, **ctx)
+    assert "TAMBAH USER BARU BERHASIL" in add_msg.answer.call_args[0][0]
+    assert "1 Hari" in add_msg.answer.call_args[0][0]
+
+    # User 555 is now authorized by WhitelistAuthMiddleware
+    u555_msg = _make_fake_message(555, "/status")
+    res_555 = await mw(handler, u555_msg, {})
+    assert res_555 == "ok"
+
+    # Admin edits User 555 expiry to 1 minggu, then 1 bulan
+    edit_msg = _make_fake_message(111, "/admin edituser 555 1bulan")
+    await handle_admin_command(edit_msg, **ctx)
+    assert "EDIT EXPIRED USER BERHASIL" in edit_msg.answer.call_args[0][0]
+    assert "1 Bulan" in edit_msg.answer.call_args[0][0]
+
+    # Simulate expired user 666 -> blocked with Masa Aktif Berakhir message
+    past_dt = datetime.now(timezone.utc) - timedelta(days=5)
+    admin_store.add_or_update_user(666, duration_code="1hari", label="ExpiredUser", admin_id=111, now_override=past_dt)
+    exp_msg = _make_fake_message(666, "/signal BTCUSDT")
+    res_exp = await mw(handler, exp_msg, {})
+    assert res_exp is None
+    assert "Masa Aktif Berakhir" in exp_msg.answer.call_args[0][0]
+
+    # 2. Maintenance Mode: Admin turns Maintenance ON -> User 555 blocked with maintenance message, Admin still allowed
+    maint_on_msg = _make_fake_message(111, "/admin maintenance on")
+    await handle_admin_command(maint_on_msg, **ctx)
+    assert admin_store.is_maintenance_mode() is True
+
+    u555_maint_msg = _make_fake_message(555, "/signal BTCUSDT")
+    res_maint = await mw(handler, u555_maint_msg, {})
+    assert res_maint is None
+    assert "Server Sedang Maintenance" in u555_maint_msg.answer.call_args[0][0]
+
+    # Admin is still allowed during Maintenance ON
+    admin_maint_msg = _make_fake_message(111, "/admin")
+    res_admin_maint = await mw(handler, admin_maint_msg, {})
+    assert res_admin_maint == "ok"
+
+    # Admin turns Maintenance OFF -> User 555 allowed again
+    maint_off_msg = _make_fake_message(111, "/admin maintenance off")
+    await handle_admin_command(maint_off_msg, **ctx)
+    assert admin_store.is_maintenance_mode() is False
+    assert await mw(handler, _make_fake_message(555, "/status"), {}) == "ok"
+
+    # 3. Broadcast: Admin sends custom broadcast message to all active users (111 and 555)
+    bcast_msg = _make_fake_message(111, "/admin broadcast Jadwal rilis fitur baru malam ini pukul 20:00 WIB")
+    await handle_admin_command(bcast_msg, **ctx)
+    assert "LAPORAN BROADCAST PESAN ADMIN" in bcast_msg.answer.call_args[0][0]
+    assert fake_bot.send_message.await_count >= 2
+
+    # 4. Delete User: Admin deletes User 555 -> User 555 is revoked and blocked
+    del_msg = _make_fake_message(111, "/admin deluser 555")
+    await handle_admin_command(del_msg, **ctx)
+    assert "USER DIHAPUS" in del_msg.answer.call_args[0][0]
+    assert await mw(handler, _make_fake_message(555, "/status"), {}) is None
+
+    # 5. Audit: Admin views full user activity audit trail
+    audit_msg = _make_fake_message(111, "/admin audit")
+    await handle_admin_command(audit_msg, **ctx)
+    audit_reply = audit_msg.answer.call_args[0][0]
+    assert "AUDIT AKTIVITAS USER" in audit_reply
+    assert "DENIED_MAINTENANCE" in audit_reply
+    assert "DENIED_EXPIRED" in audit_reply

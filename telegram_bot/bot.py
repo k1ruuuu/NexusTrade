@@ -9,6 +9,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import FSInputFile
 
 from ai_engine.backtester.engine import EventDrivenBacktester
+from ai_engine.auto_trader.admin_store import AdminStore
 from ai_engine.auto_trader.binance_client import BinanceSpotClient
 from ai_engine.auto_trader.engine import SmartAutoTraderEngine
 from ai_engine.auto_trader.user_vault import UserVault
@@ -16,6 +17,7 @@ from ai_engine.models.ensemble_agent import EnsembleDecisionAgent, SignalDecisio
 from config.logging_config import get_logger
 from config.settings import Settings, get_settings
 from telegram_bot.handlers.callbacks import callbacks_router
+from telegram_bot.handlers.admin import admin_router
 from telegram_bot.handlers.commands import (
     build_symbol_action_keyboard,
     commands_router,
@@ -44,6 +46,7 @@ class NexusTradeBotService:
         chart_generator: Optional[ChartSnapshotGenerator] = None,
         backtester: Optional[EventDrivenBacktester] = None,
         user_vault: Optional[UserVault] = None,
+        admin_store: Optional[AdminStore] = None,
         binance_client: Optional[BinanceSpotClient] = None,
         auto_trader: Optional[SmartAutoTraderEngine] = None,
         bot: Optional[Bot] = None,
@@ -53,6 +56,7 @@ class NexusTradeBotService:
         self.chart_generator = chart_generator or ChartSnapshotGenerator(self.settings)
         self.backtester = backtester or EventDrivenBacktester(self.settings)
         self.user_vault = user_vault or UserVault(self.settings)
+        self.admin_store = admin_store or AdminStore(self.settings, db_path=self.user_vault.db_path)
         self.binance_client = binance_client or BinanceSpotClient()
         self.auto_trader = auto_trader or SmartAutoTraderEngine(
             settings=self.settings,
@@ -74,12 +78,12 @@ class NexusTradeBotService:
             chart_generator=self.chart_generator,
             backtester=self.backtester,
             user_vault=self.user_vault,
+            admin_store=self.admin_store,
             binance_client=self.binance_client,
             auto_trader=self.auto_trader,
         )
 
-        auth_mw = WhitelistAuthMiddleware(self.settings)
-        rate_mw = RateLimitMiddleware(self.settings)
+        auth_mw = WhitelistAuthMiddleware(self.settings, admin_store=self.admin_store)
 
         dp.message.middleware(auth_mw)
         dp.message.middleware(rate_mw)
@@ -89,6 +93,7 @@ class NexusTradeBotService:
         dp.include_router(commands_router)
         dp.include_router(signals_router)
         dp.include_router(setup_router)
+        dp.include_router(admin_router)
         dp.include_router(callbacks_router)
         return dp
 

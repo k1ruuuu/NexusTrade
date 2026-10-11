@@ -39,6 +39,11 @@
   - **Strict Admin vs. User Role Isolation:** Credentials in `.env` (`BINANCE_API_KEY` / `BINANCE_API_SECRET`) apply **strictly to Admin users**. Regular users must run `/setup` in Telegram to connect their own personal Binance account (encrypted per user via `PBKDF2-HMAC-SHA256`, with automatic secret chat deletion).
   - **6-Gate Pre-Trade Checklist (`SmartAutoTraderEngine`):** Never opens a position blindly — requires (1) verified `/setup` account, (2) aligned breaking news & FinBERT sentiment, (3) high-conviction 5Y+live technical signal, (4) structural Support/Resistance clearance (`S1`/`R1`), (5) normal volatility & zero duplicate symbol position, and (6) automatic `2xATR` Stop-Loss & `TP1`/`TP2` locking.
 
+- **Admin Control Panel (`/admin`):**
+  - **Management User:** Add, edit expiration (`1 Hari`, `1 Minggu`, `1 Bulan`), and delete/revoke users via Telegram ID, with automatic middleware expiration enforcement.
+  - **Broadcast:** Send custom official announcements to all active users.
+  - **Maintenance Mode (`ON`/`OFF`):** Toggle server maintenance state; when `ON`, all non-admin user requests receive a maintenance notice while Admin retains full access.
+  - **Audit Trail:** Full activity logging of every command, callback button press, admin operation, and denied/expired/maintenance event.
 ---
 
 ## Supported Markets & Symbols
@@ -89,6 +94,7 @@ NexusTrade/
 │   │   └── ensemble_agent.py                 # Multimodal ensemble orchestrator & 5Y memory trainer
 │   ├── auto_trader/
 │   │   ├── user_vault.py                         # Encrypted SQLite multi-user vault (Admin vs User isolation)
+│   │   ├── admin_store.py                        # SQLite Admin store (User expiry, Maintenance, Broadcast, Audit)
 │   │   ├── binance_client.py                     # Async HMAC-SHA256 Binance Spot & Testnet client
 │   │   └── engine.py                             # 6-Gate Smart Auto-Trader execution engine
 │   ├── risk_management/
@@ -112,11 +118,13 @@ NexusTrade/
 │   │   ├── commands.py                       # /start, /help, /status, /portfolio handlers
 │   │   ├── signals.py                        # /signal, /analyze, /sentiment, /volatility, /backtest, /learn
 │   │   ├── setup.py                              # /setup, /myaccount, /unlink, & /autotrade handlers
+│   │   ├── admin.py                              # /admin panel (User Add/Edit/Del, Broadcast, Maintenance, Audit)
 │   │   └── callbacks.py                      # Interactive inline keyboard callback router
 │   └── views/
 │       ├── formatter_utils.py                # Progress bars, badges, & plain-Indonesian helpers
-│       └── formatters.py                     # HTML cards for Telegram messages
+│       ├── formatters.py                         # HTML cards for Telegram messages
 │       ├── setup_formatters.py                   # HTML cards for /setup wizard & 6-Gate Auto-Trade reports
+│       └── admin_formatters.py                   # HTML cards for Admin Panel, User Management, & Audit logs
 └── tests/
     ├── test_data_pipeline.py                 # Kaggle, zero-lookahead OHLCV, Optiver, & NLP tests
     ├── test_ai_engine.py                     # LightGBM, HAR-RV, FinBERT, Ensemble, & Backtester tests
@@ -144,6 +152,7 @@ NexusTrade/
 | `/myaccount` | View personal Binance connection, role (`Admin` vs `User`), balance, & open positions | `/myaccount` |
 | `/unlink` | Delete personal Binance credentials from the encrypted vault | `/unlink` |
 | `/autotrade [on\|off\|scan]` | Toggle Auto-Trade or run 6-Gate AI check & execute on your Binance account | `/autotrade scan BTCUSDT` |
+| `/admin` | Open Admin Control Panel (User Add/Edit/Delete `1d`/`1w`/`1m`, Broadcast, Maintenance `ON`/`OFF`, Audit) | `/admin` |
 
 ---
 

@@ -45,7 +45,8 @@ def build_main_dashboard_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🤖 Auto-Trade 6 Gerbang", callback_data="autotrade:scan:BTCUSDT"),
             ],
             [
-                InlineKeyboardButton(text="⚙️ Status Sistem & Keamanan", callback_data="cmd:status"),
+                InlineKeyboardButton(text="⚙️ Status Sistem", callback_data="cmd:status"),
+                InlineKeyboardButton(text="👑 Panel Admin (/admin)", callback_data="admin:panel"),
             ],
         ]
     )
