@@ -224,21 +224,28 @@ class SmartAutoTraderEngine:
             (decision.action == "BUY" and decision.s_tech > 0.15)
             or (decision.action == "SELL" and decision.s_tech < -0.15)
         )
-        conf_ok = decision.action in ("BUY", "SELL") and decision.confidence >= min_conf and tech_aligned
+        conf_ok = (
+            decision.action in ("BUY", "SELL")
+            and decision.confidence >= min_conf
+            and tech_aligned
+            and decision.expectancy_r > 0.0
+            and decision.confluence_pillars >= 4
+        )
         if conf_ok:
             tech_detail = (
-                f"Sinyal {decision.badge} Kuat (Keyakinan {decision.confidence * 100:.1f}% >= {min_conf * 100:.0f}%, "
-                f"Skor Teknikal {decision.s_tech:+.2f})"
+                f"Sinyal {decision.badge} Kuat (Keyakinan {decision.confidence * 100:.1f}%, "
+                f"Konfluensi {decision.confluence_pillars}/6 Pilar, Expectancy +{decision.expectancy_r:.2f}R, "
+                f"Order Flow: {decision.cvd_status})"
             )
         else:
             tech_detail = (
-                f"DITOLAK: Keyakinan AI baru {decision.confidence * 100:.1f}% (Syarat minimal {min_conf * 100:.0f}% "
-                f"dengan arah teknikal searah, saat ini {decision.action} / {decision.s_tech:+.2f})"
+                f"DITOLAK: Keyakinan {decision.confidence * 100:.1f}% (Min {min_conf * 100:.0f}%), "
+                f"Konfluensi {decision.confluence_pillars}/6 Pilar, Expectancy {decision.expectancy_r:+.2f}R"
             )
         gates.append(
             AutoTradeGateCheck(
                 gate_number=3,
-                name="Keyakinan Analisis Teknikal 5Thn+Live",
+                name="Konfluensi 6 Pilar, Order Flow (CVD) & Expectancy",
                 passed=conf_ok,
                 detail=tech_detail,
             )

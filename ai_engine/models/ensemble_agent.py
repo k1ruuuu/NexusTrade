@@ -8,6 +8,10 @@ import numpy as np
 import pandas as pd
 
 from ai_engine.models.ohlcv_predictor import OHLCVPredictor, TechnicalPrediction
+from ai_engine.models.confluence_analyzer import (
+    ConfluenceReport,
+    MultiFactorConfluenceAnalyzer,
+)
 from ai_engine.models.market_data_loader import load_local_or_synthetic_ohlcv
 from ai_engine.models.sentiment_analyzer import (
     FinancialSentimentAnalyzer,
@@ -83,6 +87,11 @@ class SignalDecision:
     dist_to_r1_pct: float = 0.0
     dist_to_s1_pct: float = 0.0
     sr_status: str = "Tengah Jalur S1–R1 (Ruang Gerak Lega)"
+    confluence_pillars: int = 5
+    cvd_status: str = "Seimbang (0.00)"
+    relative_volume: float = 1.0
+    expected_move_1d: float = 0.0
+    expectancy_r: float = 0.50
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
@@ -159,6 +168,8 @@ class EnsembleDecisionAgent:
         five_year_percentile: float = 50.0,
         macro_regime: str = "Normal",
         sr_levels: Optional[SupportResistanceLevels] = None,
+        market_df: Optional[pd.DataFrame] = None,
+        annualized_volatility: float = 0.45,
     ) -> SignalDecision:
         """
         Apply AGENT.md Section 5.A Ensemble Decision Matrix:
@@ -224,6 +235,20 @@ class EnsembleDecisionAgent:
         )
         sent_label = classify_sentiment_polarity(clamped_sent)
 
+        conf_report: ConfluenceReport = MultiFactorConfluenceAnalyzer.evaluate_confluence(
+            df=market_df,
+            action=final_action,
+            s_tech=clamped_tech,
+            s_sent=clamped_sent,
+            s_vol=clamped_vol,
+            entry_price=targets.entry_price,
+            stop_loss=targets.stop_loss,
+            take_profit_1=targets.take_profit_1,
+            support_1=resolved_sr.support_1,
+            resistance_1=resolved_sr.resistance_1,
+            annualized_volatility=annualized_volatility,
+            risk_capital_usd=sizing.adjusted_risk_capital,
+        )
         return SignalDecision(
             action=final_action,
             confidence=confidence,
@@ -265,6 +290,11 @@ class EnsembleDecisionAgent:
             dist_to_r1_pct=resolved_sr.dist_to_r1_pct,
             dist_to_s1_pct=resolved_sr.dist_to_s1_pct,
             sr_status=resolved_sr.status_label,
+            confluence_pillars=conf_report.pillars_passed,
+            cvd_status=conf_report.cvd_status,
+            relative_volume=conf_report.relative_volume,
+            expected_move_1d=conf_report.expected_move_1d,
+            expectancy_r=conf_report.expectancy_r,
         )
 
     def load_market_series(
@@ -400,6 +430,8 @@ class EnsembleDecisionAgent:
             five_year_percentile=float(macro_ctx["five_year_percentile"]),
             macro_regime=str(macro_ctx["macro_regime"]),
             sr_levels=sr_levels,
+            market_df=market_df,
+            annualized_volatility=vol_forecast.annualized_volatility,
         )
 
     def learn_online_cycle(
@@ -468,6 +500,8 @@ class EnsembleDecisionAgent:
             five_year_percentile=float(macro_ctx["five_year_percentile"]),
             macro_regime=str(macro_ctx["macro_regime"]),
             sr_levels=sr_levels,
+            market_df=market_df,
+            annualized_volatility=vol_forecast.annualized_volatility,
         )
 
         return {

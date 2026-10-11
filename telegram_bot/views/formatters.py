@@ -106,18 +106,6 @@ def format_signal_card(decision: SignalDecision) -> str:
         if decision.approved
         else f"🔴 <b>DITAHAN ({html.escape(decision.rejection_reason or 'Filter Risiko')})</b>"
     )
-    if decision.newly_learned_headlines > 0:
-        learn_line = (
-            f"• <b>Memori Berita:</b> <code>+{decision.newly_learned_headlines} baru</code> "
-            f"(Total: <code>{decision.total_corpus_size}</code>)\n"
-        )
-    else:
-        analyzed_n = len(decision.headlines)
-        learn_line = (
-            f"• <b>Memori Berita:</b> <code>{analyzed_n} dianalisis</code> "
-            f"(Total: <code>{decision.total_corpus_size}</code>)\n"
-        )
-
     acc_pct = decision.validation_accuracy * 100.0
     auc_pct = decision.validation_roc_auc * 100.0
     acc_line = (
@@ -148,11 +136,10 @@ def format_signal_card(decision: SignalDecision) -> str:
         f"• <b>Resistance Atas (R1 | R2):</b> <code>{format_price(decision.resistance_1)}</code> (<code>{r1_pct}</code>) | <code>{format_price(decision.resistance_2)}</code>\n"
         f"• <b>Support Bawah (S1 | S2):</b> <code>{format_price(decision.support_1)}</code> (<code>{s1_pct}</code>) | <code>{format_price(decision.support_2)}</code>\n"
         f"• <b>Posisi S/R:</b> <i>{html.escape(decision.sr_status)}</i>\n\n"
-        f"<b>🧠 Analisis &amp; Memori AI:</b>\n"
-        f"• <b>Teknikal:</b> <code>{decision.s_tech:+.2f}</code> ({tech_desc})\n"
-        f"• <b>Sentimen:</b> <code>{decision.s_sent:+.2f}</code> ({sent_desc})\n"
-        f"• <b>Gejolak:</b> <code>{decision.s_vol:.2f}</code> ({vol_desc})\n"
-        f"{learn_line}"
+        f"<b>🧠 Analisis 6 Pilar &amp; Order Flow:</b>\n"
+        f"• <b>Teknikal &amp; CVD:</b> <code>{decision.s_tech:+.2f}</code> | CVD: <i>{html.escape(decision.cvd_status)}</i> (RVOL <code>{decision.relative_volume:.1f}x</code>)\n"
+        f"• <b>Sentimen &amp; Gejolak:</b> <code>{decision.s_sent:+.2f}</code> ({sent_desc}) | Vol: <code>{decision.s_vol:.2f}</code>\n"
+        f"• <b>Konfluensi &amp; Expectancy:</b> <code>{decision.confluence_pillars}/6 Pilar</code> | Expectancy: <code>{decision.expectancy_r:+.2f}R</code>\n"
         f"{acc_line}"
         f"{macro_line}"
         f"<b>🛡️ Ukuran Posisi:</b> <code>{decision.position_units:,.4f} {sym}</code> (<code>${decision.position_notional:,.2f}</code> | Risiko <code>{decision.account_risk_pct * 100:.2f}%</code>)\n"

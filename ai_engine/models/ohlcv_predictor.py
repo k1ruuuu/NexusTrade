@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, roc_auc_score
 
+from ai_engine.models.confluence_analyzer import MultiFactorConfluenceAnalyzer
 from config.logging_config import get_logger
 from config.settings import Settings, get_settings
 from data_pipeline.preprocessor_ohlcv import OHLCVPreprocessor
@@ -66,6 +67,13 @@ class OHLCVPredictor:
         "momentum_regime",
         "regime_composite",
         "regime_rank_100",
+        "cvd_norm_20",
+        "cvd_divergence",
+        "rvol_20",
+        "drawdown_50",
+        "adl_norm_20",
+        "pct_above_ma20",
+        "expected_move_ratio",
     )
 
     def __init__(
@@ -96,6 +104,7 @@ class OHLCVPredictor:
         """
         cleaned = self.preprocessor.clean_ohlcv(df, symbol=symbol, timeframe=timeframe)
         raw_ind = self.preprocessor.compute_raw_indicators(cleaned)
+        raw_ind = MultiFactorConfluenceAnalyzer.compute_confluence_series(raw_ind)
 
         close = raw_ind["close"].replace(0.0, np.nan)
         raw_ind["macd_norm"] = (raw_ind["macd"] / close).fillna(0.0)
@@ -125,9 +134,14 @@ class OHLCVPredictor:
         vol_scale_raw = raw_ind["atr_pct"].astype(np.float64).clip(lower=1e-4)
         raw_comp = (
             (
-                0.50 * raw_ind["ema_20_dist"].astype(np.float64)
-                + 0.35 * raw_ind["macd_hist_norm"].astype(np.float64)
-                + 0.25 * raw_ind["trend_alignment"].astype(np.float64) * vol_scale_raw
+                0.45 * raw_ind["ema_20_dist"].astype(np.float64)
+                + 0.30 * raw_ind["macd_hist_norm"].astype(np.float64)
+                + 0.25
+                * (
+                    raw_ind["trend_alignment"].astype(np.float64)
+                    + 0.30 * raw_ind["cvd_norm_20"].astype(np.float64)
+                )
+                * vol_scale_raw
             )
             / vol_scale_raw
         )
