@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from ai_engine.backtester.engine import EventDrivenBacktester
 from ai_engine.models.ensemble_agent import EnsembleDecisionAgent
@@ -155,3 +156,24 @@ def test_event_driven_backtester_report_and_plot(tmp_path: Path) -> None:
     assert report.chart_path is not None and report.chart_path.exists()
     assert "sharpe_ratio" in report_dict["metrics"]
     assert "max_drawdown_pct" in report_dict["metrics"]
+
+
+def test_concurrent_train_and_predict_thread_safety(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        use_live_market_data=False,
+        use_live_news_feed=False,
+    )
+    agent = EnsembleDecisionAgent(settings=settings)
+
+    def _worker(idx: int) -> str:
+        sym = "BTCUSDT" if idx % 2 == 0 else "XAUUSD"
+        if idx % 3 == 0:
+            return str(agent.learn_online_cycle(sym, "15m")["action"])
+        return agent.analyze_symbol(sym, "15m").action
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        actions = list(pool.map(_worker, range(12)))
+
+    assert len(actions) == 12
+    assert all(a in ("BUY", "SELL", "HOLD") for a in actions)

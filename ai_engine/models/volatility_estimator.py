@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal, Optional
+import threading
 
 import numpy as np
 import pandas as pd
@@ -56,6 +57,7 @@ class RealizedVolatilityEstimator:
         self.regressor: Ridge = Ridge(alpha=1.0, random_state=42)
         self._is_fitted: bool = False
         self._historical_quantiles: np.ndarray = np.linspace(0.005, 0.08, 101)
+        self._fit_lock = threading.RLock()
 
     def fit(self, df: pd.DataFrame) -> RealizedVolatilityEstimator:
         """Fit HAR-RV Ridge regressor to predict next-window realized volatility."""
@@ -68,9 +70,11 @@ class RealizedVolatilityEstimator:
         if len(aligned) >= 30:
             x_mat = aligned[list(self.FEATURE_COLS)].fillna(0.0).to_numpy(dtype=np.float64)
             y_vec = target.to_numpy(dtype=np.float64)
-            self.regressor.fit(x_mat, y_vec)
-            self._is_fitted = True
-
+            with self._fit_lock:
+                reg = Ridge(alpha=1.0, random_state=42)
+                reg.fit(x_mat, y_vec)
+                self.regressor = reg
+                self._is_fitted = True
             rv_values = processed["rv_window_20"].dropna().to_numpy(dtype=np.float64)
             rv_values = rv_values[rv_values > 0]
             if len(rv_values) >= 10:

@@ -422,7 +422,12 @@ class EnsembleDecisionAgent:
                 market_df, symbol=clean_sym, timeframe=timeframe, df_5y=df_5y
             )
             self.volatility_estimator.fit(market_df)
-
+            latest_bar_ts = str(market_df.index[-1])
+            latest_bar_close = float(market_df["close"].iloc[-1])
+            self._last_trained_signature[f"{clean_sym}_{timeframe}"] = (
+                latest_bar_ts,
+                round(latest_bar_close, 4),
+            )
         tech_pred = self.ohlcv_predictor.predict(
             market_df, symbol=clean_sym, timeframe=timeframe, df_5y=df_5y
         )

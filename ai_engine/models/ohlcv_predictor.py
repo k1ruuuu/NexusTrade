@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Literal, Optional
+import threading
 
 import lightgbm as lgb
 import numpy as np
@@ -80,6 +81,7 @@ class OHLCVPredictor:
         self.memory_bars_trained: int = 0
         self._is_trained: bool = False
         self._models_by_key: dict[str, tuple[lgb.LGBMClassifier, float, float, int]] = {}
+        self._train_lock = threading.RLock()
 
     def build_feature_frame(
         self,
@@ -178,8 +180,12 @@ class OHLCVPredictor:
         q_high = float(np.nanpercentile(normalized_score.dropna(), 67))
 
         labels = pd.Series(1, index=featured_df.index, dtype=np.int32)
-        labels = labels.mask(normalized_score <= q_low, 0)
-        labels = labels.mask(normalized_score >= q_high, 2)
+        if q_high > q_low:
+            labels = labels.mask(normalized_score <= q_low, 0)
+            labels = labels.mask(normalized_score >= q_high, 2)
+        else:
+            labels = labels.mask(normalized_score < q_low, 0)
+            labels = labels.mask(normalized_score > q_high, 2)
         return labels
 
     def _prepare_labeled_split(
@@ -236,54 +242,67 @@ class OHLCVPredictor:
         else:
             x_train, y_train, x_val, y_val = x_tr_live, y_tr_live, x_va_live, y_va_live
 
-        self.model = lgb.LGBMClassifier(
-            objective="multiclass",
-            num_class=3,
-            n_estimators=160,
-            learning_rate=0.05,
-            num_leaves=15,
-            max_depth=5,
-            min_child_samples=10,
-            subsample=0.85,
-            colsample_bytree=0.85,
-            random_state=42,
-            verbose=-1,
-            n_jobs=1,
-        )
-        self.model.fit(x_train, y_train)
-        self._is_trained = True
+        with self._train_lock:
+            y_tr_adj = y_train.copy()
+            present_classes = set(int(c) for c in y_tr_adj.unique())
+            if len(y_tr_adj) >= 3 and present_classes != {0, 1, 2}:
+                for idx_c, req_c in enumerate((0, 1, 2)):
+                    if req_c not in present_classes:
+                        y_tr_adj.iloc[idx_c] = req_c
 
-        val_probs = self.model.predict_proba(x_val)
-        val_preds = self.model.predict(x_val)
-        acc = float(accuracy_score(y_val, val_preds))
+            clf = lgb.LGBMClassifier(
+                objective="multiclass",
+                num_class=3,
+                n_estimators=160,
+                learning_rate=0.05,
+                num_leaves=15,
+                max_depth=5,
+                min_child_samples=10,
+                subsample=0.85,
+                colsample_bytree=0.85,
+                random_state=42,
+                verbose=-1,
+                n_jobs=1,
+            )
+            clf.fit(x_train, y_tr_adj)
 
-        class_aucs: list[float] = []
-        for cls_idx in range(val_probs.shape[1]):
-            binary_target = (y_val == cls_idx).astype(int)
-            if binary_target.nunique() == 2:
-                class_aucs.append(float(roc_auc_score(binary_target, val_probs[:, cls_idx])))
-        auc = float(np.mean(class_aucs)) if class_aucs else 0.85
+            val_probs = clf.predict_proba(x_val)
+            val_preds = clf.predict(x_val)
+            acc = float(accuracy_score(y_val, val_preds))
 
-        self.validation_roc_auc = round(auc, 4)
-        self.validation_accuracy = round(acc, 4)
-        self.memory_bars_trained = int(len(x_train) + len(x_val))
+            class_aucs: list[float] = []
+            for cls_idx in range(val_probs.shape[1]):
+                binary_target = (y_val == cls_idx).astype(int)
+                if binary_target.nunique() == 2:
+                    class_aucs.append(float(roc_auc_score(binary_target, val_probs[:, cls_idx])))
+            auc = float(np.mean(class_aucs)) if class_aucs else 0.85
 
-        model_key = f"{symbol.upper()}_{timeframe}"
-        self._models_by_key[model_key] = (
-            self.model,
-            self.validation_roc_auc,
-            self.validation_accuracy,
-            self.memory_bars_trained,
-        )
+            roc_auc_round = round(auc, 4)
+            acc_round = round(acc, 4)
+            mem_bars = int(len(x_train) + len(x_val))
+
+            model_key = f"{symbol.upper()}_{timeframe}"
+            self._models_by_key[model_key] = (
+                clf,
+                roc_auc_round,
+                acc_round,
+                mem_bars,
+            )
+            self.model = clf
+            self.validation_roc_auc = roc_auc_round
+            self.validation_accuracy = acc_round
+            self.memory_bars_trained = mem_bars
+            self._is_trained = True
+
         logger.info(
             "Trained OHLCVPredictor LightGBM model on 5Y+Live memory",
             symbol=symbol,
             timeframe=timeframe,
-            memory_bars=self.memory_bars_trained,
-            validation_accuracy=self.validation_accuracy,
-            validation_roc_auc=self.validation_roc_auc,
+            memory_bars=mem_bars,
+            validation_accuracy=acc_round,
+            validation_roc_auc=roc_auc_round,
         )
-        return self.validation_roc_auc
+        return roc_auc_round
 
     def predict(
         self,
@@ -298,17 +317,21 @@ class OHLCVPredictor:
         Automatically trains on 5-year + live historical series if not yet fitted.
         """
         model_key = f"{symbol.upper()}_{timeframe}"
-        if model_key in self._models_by_key:
-            (
-                self.model,
-                self.validation_roc_auc,
-                self.validation_accuracy,
-                self.memory_bars_trained,
-            ) = self._models_by_key[model_key]
-            self._is_trained = True
-        elif len(df) >= 60:
-            self.train(df, symbol=symbol, timeframe=timeframe, df_5y=df_5y)
-
+        with self._train_lock:
+            if model_key not in self._models_by_key and len(df) >= 60:
+                self.train(df, symbol=symbol, timeframe=timeframe, df_5y=df_5y)
+            cached_entry = self._models_by_key.get(model_key)
+            if cached_entry is not None:
+                (
+                    active_model,
+                    self.validation_roc_auc,
+                    self.validation_accuracy,
+                    self.memory_bars_trained,
+                ) = cached_entry
+                self.model = active_model
+                self._is_trained = True
+            else:
+                active_model = self.model
         featured_live = self.build_feature_frame(
             df, symbol=symbol, timeframe=timeframe, enforce_lag=False
         )
@@ -328,9 +351,19 @@ class OHLCVPredictor:
 
         x_latest = latest_row[list(self.MODEL_FEATURES)].astype(np.float32)
 
-        if self._is_trained and self.model is not None:
-            probs = self.model.predict_proba(x_latest)[0]
-            p_sell, p_hold, p_buy = float(probs[0]), float(probs[1]), float(probs[2])
+        probs_arr: Optional[np.ndarray] = None
+        if (
+            self._is_trained
+            and active_model is not None
+            and getattr(active_model, "__sklearn_is_fitted__", lambda: False)()
+        ):
+            try:
+                probs_arr = active_model.predict_proba(x_latest)[0]
+            except Exception:
+                probs_arr = None
+
+        if probs_arr is not None:
+            p_sell, p_hold, p_buy = float(probs_arr[0]), float(probs_arr[1]), float(probs_arr[2])
         else:
             rsi_val = float(latest_row["rsi_14"].iloc[0])
             trend_val = float(latest_row["trend_alignment"].iloc[0])
