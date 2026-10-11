@@ -7,10 +7,10 @@ import re
 import time
 from typing import Any, Callable, Coroutine, Literal, Optional
 
+from ai_engine.auto_trader.mt5_exness_client import resolve_mt5_symbol
 from ai_engine.auto_trader.user_vault import UserPositionRecord
 from config.logging_config import get_logger
 from data_pipeline.market_symbols import normalize_symbol, normalize_timeframe
-
 logger = get_logger("nexustrade.auto_trader.session")
 
 DURATION_RE = re.compile(
@@ -22,9 +22,7 @@ DURATION_RE = re.compile(
 def is_session_duration_token(token: str) -> bool:
     """
     Return True if `token` represents a timed auto-trade session duration
-    (e.g., '5H', '2h', '30M', '5jam', '45menit', '1D', '2hari').
-    Distinguishes session durations from lowercase candle intervals ('1m', '5m', '15m')
-    unless uppercase ('30M', '5H') or explicit Indonesian unit ('jam', 'menit', 'hari') is used.
+    (e.g., '1m', '5m', '30M', '5H', '2h', '5jam', '30menit', '1D', '45s').
     """
     cleaned = token.strip()
     if not cleaned:
@@ -32,16 +30,7 @@ def is_session_duration_token(token: str) -> bool:
     m = DURATION_RE.match(cleaned)
     if not m:
         return False
-    val = float(m.group(1))
-    unit = m.group(2)
-    # Standard lowercase candle intervals ('1m', '5m', '15m', '30m') when <= 30m:
-    # treat '5H', '1H', '2H', '5jam', '30menit', '60m', '2h', '4h' in /autotrade <SYM> <DUR> as session duration
-    if unit.lower() in ("h", "hr", "jam", "hour", "hours", "d", "day", "days", "hari", "s", "sec", "detik", "menit", "min"):
-        return val > 0
-    if unit == "M" or val >= 10:
-        return val > 0
-    return False
-
+    return float(m.group(1)) > 0
 
 def parse_session_duration(raw: str, default_hours: float = 5.0) -> tuple[int, str]:
     """
@@ -496,6 +485,96 @@ class AutoTradeSessionManager:
             sess.last_check_summary = report.rejection_summary or "Menunggu konfirmasi 6 Gerbang..."
         return report
 
+    async def close_session_open_positions(
+        self,
+        sess: AutoTradeSessionState,
+        reason: str = "Batas waktu sesi berakhir (Auto-Close @ Market)",
+        notify_callback: Optional[NotifyCallback] = None,
+    ) -> list[PositionMonitorResult]:
+        """
+        Automatically close all remaining OPEN positions for `(sess.user_id, sess.symbol)`
+        at the current market price when the session timer expires before TP is reached.
+        """
+        creds = self.engine.vault.resolve_credentials(sess.user_id)
+        live_px_map: dict[str, float] = {}
+
+        if (
+            creds is not None
+            and creds.provider == "exness_mt5"
+            and not self.engine.mt5_client._is_exness_trial_demo(creds.api_key, creds.testnet)
+        ):
+            live_orders = await self.engine.mt5_client.get_live_open_orders(
+                creds.api_key, creds.api_secret, creds.server_name
+            )
+            target_syms = {
+                sess.symbol.upper(),
+                resolve_mt5_symbol(sess.symbol, "m").upper(),
+                resolve_mt5_symbol(sess.symbol, "").upper(),
+            }
+            if live_orders:
+                for ord_item in live_orders:
+                    if not isinstance(ord_item, dict):
+                        continue
+                    ord_sym = str(ord_item.get("symbol", "")).upper()
+                    ticket_str = str(ord_item.get("ticket") or ord_item.get("order") or "")
+                    lots_val = float(ord_item.get("lots") or 0.01)
+                    close_px = float(ord_item.get("closePrice") or ord_item.get("openPrice") or 0.0)
+                    if close_px > 0:
+                        live_px_map[ticket_str] = close_px
+                    if ord_sym in target_syms and ticket_str:
+                        await self.engine.mt5_client.close_mt5_ticket(
+                            account_id_or_login=creds.api_key,
+                            token_or_password=creds.api_secret,
+                            ticket=ticket_str,
+                            lots=lots_val,
+                            server_name=creds.server_name,
+                        )
+
+        open_positions = self.engine.vault.get_open_positions(sess.user_id, symbol=sess.symbol)
+        results: list[PositionMonitorResult] = []
+        if not open_positions:
+            return results
+
+        df = self.engine.ensemble_agent.load_market_series(
+            sess.symbol, timeframe=sess.timeframe, limit=10
+        )
+        fallback_price = (
+            float(df["close"].iloc[-1])
+            if (df is not None and len(df) > 0)
+            else open_positions[0].entry_price
+        )
+
+        for pos in open_positions:
+            curr_price = live_px_map.get(pos.order_id, fallback_price)
+            is_profit = (
+                curr_price >= pos.entry_price
+                if pos.side == "BUY"
+                else curr_price <= pos.entry_price
+            )
+            mon = await self._close_position_on_broker(
+                pos=pos,
+                exit_price=curr_price,
+                action_type="CLOSED_TP" if is_profit else "CLOSED_SL",
+                exit_reason=reason,
+            )
+            sess.positions_closed += 1
+            sess.realized_pnl_usdt = round(sess.realized_pnl_usdt + mon.realized_pnl_usdt, 2)
+            sess.last_check_summary = (
+                f"Waktu sesi habis: Posisi {pos.side} ditutup otomatis @ {curr_price:,.2f} "
+                f"(PnL: ${mon.realized_pnl_usdt:+.2f})"
+            )
+            results.append(mon)
+            if notify_callback is not None:
+                await notify_callback(
+                    sess.user_id,
+                    f"⏰ <b>WAKTU SESI HABIS — POSISI DITUTUP OTOMATIS ({sess.symbol})</b>\n"
+                    f"• <b>Alasan:</b> {reason}\n"
+                    f"• <b>Aksi &amp; Harga Masuk:</b> {pos.side} @ <code>${pos.entry_price:,.2f}</code>\n"
+                    f"• <b>Harga Penutupan (Market):</b> <code>${curr_price:,.2f}</code>\n"
+                    f"• <b>Hasil PnL Bersih:</b> <code>${mon.realized_pnl_usdt:+.2f} USDT</code>",
+                )
+        return results
+
     async def _session_loop(
         self,
         sess: AutoTradeSessionState,
@@ -511,6 +590,11 @@ class AutoTradeSessionManager:
                 await self._run_single_session_cycle(sess, notify_callback=notify_callback)
 
             if sess.status == "RUNNING":
+                await self.close_session_open_positions(
+                    sess,
+                    reason=f"Batas waktu sesi {sess.duration_label} habis sebelum menyentuh TP (Auto-Close @ Market)",
+                    notify_callback=notify_callback,
+                )
                 sess.status = "COMPLETED"
                 self._sessions.pop((sess.user_id, sess.symbol), None)
                 if notify_callback is not None:

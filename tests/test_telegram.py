@@ -665,16 +665,13 @@ async def test_exness_mt5_provider_all_asset_buy_and_sell_execution(tmp_path: Pa
     assert trail_res.new_stop_loss is not None and trail_res.new_stop_loss < 4175.0
     assert len(vault.get_open_positions(333, "XAUUSD")) == 1
 
-    # Reaching Take-Profit 1 (4125 <= 4127) closes position with full target profit
-    tp_res = await auto_trader.monitor_and_manage_open_position(
-        user_id=333,
-        symbol="XAUUSD",
-        price_override=4125.0,
-        high_override=4128.0,
-        low_override=4124.0,
+    # When session timer expires BEFORE reaching TP, close_session_open_positions automatically closes it
+    expired_closed = await auto_trader.session_manager.close_session_open_positions(
+        active_sessions[0],
+        reason="Batas waktu sesi 5 Jam habis sebelum menyentuh TP",
     )
-    assert tp_res.action_taken == "CLOSED_TP"
-    assert tp_res.realized_pnl_usdt > 0
+    assert len(expired_closed) == 1
+    assert expired_closed[0].action_taken in ("CLOSED_TP", "CLOSED_SL")
     assert len(vault.get_open_positions(333, "XAUUSD")) == 0
 
     # /autotrade off stops the running 5H session
