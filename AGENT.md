@@ -15,7 +15,6 @@ Your implementation must strictly follow this modular structure:
 nexustrade-ai/
 ├── AGENT.md                          # Master AI developer rules (this document)
 ├── TASKS.md                          # Granular implementation checklist
-├── PROMPT_GOAL.md                    # Master prompt for LLM agent sessions
 ├── README.md                         # Quick start, architecture, & run guide
 ├── .env.example                      # Template for secrets and environment vars
 ├── requirements.txt                  # Python dependencies
