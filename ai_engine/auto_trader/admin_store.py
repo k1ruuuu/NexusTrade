@@ -238,8 +238,10 @@ class AdminStore:
         )
 
     def delete_user(self, user_id: int) -> bool:
-        """Delete a user from managed_users and mark as revoked."""
+        """Delete a non-admin user from managed_users, disable their autotrade, and mark as revoked."""
         uid = int(user_id)
+        if self.settings.is_admin_user(uid):
+            return False
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM managed_users WHERE user_id = ?", (uid,))
@@ -247,9 +249,15 @@ class AdminStore:
                 "INSERT OR REPLACE INTO revoked_users (user_id, revoked_at) VALUES (?, ?)",
                 (uid, now_iso),
             )
+            try:
+                conn.execute(
+                    "UPDATE user_accounts SET autotrade_enabled = 0 WHERE user_id = ?",
+                    (uid,),
+                )
+            except sqlite3.OperationalError:
+                pass
             conn.commit()
             return cur.rowcount > 0 or uid in {int(x) for x in self.settings.telegram_allowed_user_ids}
-
     def get_managed_user(self, user_id: int) -> Optional[ManagedUserRecord]:
         uid = int(user_id)
         with self._connect() as conn:

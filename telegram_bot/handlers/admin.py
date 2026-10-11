@@ -15,6 +15,7 @@ from aiogram.types import (
 from ai_engine.auto_trader.admin_store import AdminStore
 from config.logging_config import get_logger
 from config.settings import Settings, get_settings
+from telegram_bot.handlers.setup import _PENDING_SETUP_MODE
 from telegram_bot.views.admin_formatters import (
     format_admin_audit_card,
     format_admin_broadcast_result_card,
@@ -86,8 +87,8 @@ async def _execute_broadcast(
     )
 
     for uid in recipients:
-        if bot is None:
-            sent_count += 1
+        if bot is None or not callable(getattr(bot, "send_message", None)):
+            failed_count += 1
             continue
         try:
             await bot.send_message(chat_id=uid, text=formatted_msg, parse_mode="HTML")
@@ -214,6 +215,13 @@ async def handle_admin_command(message: Message, **data: Any) -> None:
             )
             return
         target_uid = int(args[1])
+        if settings.is_admin_user(target_uid):
+            await message.answer(
+                "🚫 <b>Ditolak:</b> Tidak dapat menghapus akun dengan Role Admin.",
+                parse_mode="HTML",
+                reply_markup=build_admin_panel_keyboard(admin_store.is_maintenance_mode()),
+            )
+            return
         admin_store.delete_user(target_uid)
         admin_store.log_activity(
             user_id=user_id,
@@ -409,6 +417,13 @@ async def handle_pending_admin_input(message: Message, **data: Any) -> None:
             await message.answer("⚠️ Kirimkan ID Telegram berupa angka.", parse_mode="HTML")
             return
         target_uid = int(tokens[0])
+        if settings.is_admin_user(target_uid):
+            await message.answer(
+                "🚫 <b>Ditolak:</b> Tidak dapat menghapus akun dengan Role Admin.",
+                parse_mode="HTML",
+                reply_markup=build_admin_panel_keyboard(admin_store.is_maintenance_mode()),
+            )
+            return
         admin_store.delete_user(target_uid)
         admin_store.log_activity(
             user_id=user_id,
@@ -499,6 +514,7 @@ async def handle_admin_callbacks(callback: CallbackQuery, **data: Any) -> None:
 
     if cb_data.startswith("admin:add_prompt:"):
         dur = cb_data.split(":")[-1]
+        _PENDING_SETUP_MODE.pop(user_id, None)
         _PENDING_ADMIN_ACTION[user_id] = {"mode": "add_user", "duration": dur}
         await msg.answer(
             f"➕ <b>TAMBAH USER (Paket: {html.escape(dur.upper())})</b>\n"
@@ -510,6 +526,7 @@ async def handle_admin_callbacks(callback: CallbackQuery, **data: Any) -> None:
         return
 
     if cb_data == "admin:edit_prompt":
+        _PENDING_SETUP_MODE.pop(user_id, None)
         _PENDING_ADMIN_ACTION[user_id] = {"mode": "edit_user"}
         await msg.answer(
             "✏️ <b>EDIT EXPIRED USER</b>\n"
@@ -522,6 +539,7 @@ async def handle_admin_callbacks(callback: CallbackQuery, **data: Any) -> None:
         return
 
     if cb_data == "admin:del_prompt":
+        _PENDING_SETUP_MODE.pop(user_id, None)
         _PENDING_ADMIN_ACTION[user_id] = {"mode": "del_user"}
         await msg.answer(
             "🗑️ <b>HAPUS USER</b>\n"
@@ -533,6 +551,7 @@ async def handle_admin_callbacks(callback: CallbackQuery, **data: Any) -> None:
         return
 
     if cb_data == "admin:broadcast_prompt":
+        _PENDING_SETUP_MODE.pop(user_id, None)
         _PENDING_ADMIN_ACTION[user_id] = {"mode": "broadcast"}
         recipients = admin_store.get_broadcast_recipients()
         await msg.answer(

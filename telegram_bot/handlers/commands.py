@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from aiogram import Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from ai_engine.models.ensemble_agent import EnsembleDecisionAgent
+from ai_engine.auto_trader.user_vault import UserVault
 from config.settings import Settings, get_settings
 from data_pipeline.market_symbols import normalize_symbol
 from telegram_bot.views.formatters import (
@@ -141,49 +142,84 @@ async def handle_analyze(message: Message, **data: Any) -> None:
 def build_live_portfolio_state(
     agent: EnsembleDecisionAgent,
     settings: Settings,
+    user_id: Optional[int] = None,
+    user_vault: Optional[UserVault] = None,
+    equity_override: Optional[float] = None,
 ) -> dict[str, Any]:
-    """Build portfolio summary marked-to-market against live prices."""
-    btc_df = agent.load_market_series("BTCUSDT", timeframe="15m", limit=30)
-    xau_df = agent.load_market_series("XAUUSD", timeframe="15m", limit=30)
-    btc_last = float(btc_df["close"].iloc[-1])
-    xau_last = float(xau_df["close"].iloc[-1])
+    """Build portfolio summary marked-to-market against live prices using real UserVault positions."""
+    vault = user_vault or UserVault(settings)
+    creds = vault.resolve_credentials(user_id) if user_id is not None else None
 
-    btc_entry = round(btc_last * 0.992, 2)
-    xau_entry = round(xau_last * 0.995, 2)
-    btc_pnl = round((btc_last - btc_entry) * 0.15, 2)
-    xau_pnl = round((xau_last - xau_entry) * 2.5, 2)
-    total_unrealized = round(btc_pnl + xau_pnl, 2)
+    if equity_override is not None and equity_override > 0:
+        equity = float(equity_override)
+        initial_capital = float(equity_override)
+    elif creds is not None and creds.verified_usdt_balance > 0:
+        equity = float(creds.verified_usdt_balance)
+        initial_capital = float(creds.verified_usdt_balance)
+    else:
+        equity = agent.position_sizer.current_equity
+        initial_capital = settings.portfolio_initial_capital
+
+    open_records = vault.get_open_positions(user_id) if user_id is not None else []
+    positions_list: list[dict[str, Any]] = []
+    total_unrealized = 0.0
+
+    for rec in open_records:
+        try:
+            df_sym = agent.load_market_series(rec.symbol, timeframe="15m", limit=5)
+            last_px = float(df_sym["close"].iloc[-1]) if len(df_sym) > 0 else rec.entry_price
+        except Exception:
+            last_px = rec.entry_price
+        pnl = (
+            (last_px - rec.entry_price) * rec.quantity
+            if rec.side == "BUY"
+            else (rec.entry_price - last_px) * rec.quantity
+        )
+        pnl_round = round(pnl, 2)
+        total_unrealized += pnl_round
+        positions_list.append(
+            {
+                "symbol": rec.symbol,
+                "side": rec.side,
+                "entry_price": rec.entry_price,
+                "unrealized_pnl": pnl_round,
+            }
+        )
 
     return {
-        "equity": agent.position_sizer.current_equity,
-        "initial_capital": settings.portfolio_initial_capital,
-        "unrealized_pnl": total_unrealized,
+        "equity": round(equity + total_unrealized, 2),
+        "initial_capital": round(initial_capital, 2),
+        "unrealized_pnl": round(total_unrealized, 2),
         "sharpe_ratio": 1.92,
         "daily_drawdown_pct": agent.position_sizer.current_daily_drawdown * 100.0,
-        "positions": [
-            {
-                "symbol": "BTCUSDT",
-                "side": "BUY",
-                "entry_price": btc_last,
-                "unrealized_pnl": btc_pnl,
-            },
-            {
-                "symbol": "XAUUSD",
-                "side": "BUY",
-                "entry_price": xau_last,
-                "unrealized_pnl": xau_pnl,
-            },
-        ],
+        "positions": positions_list,
     }
 
 
 @commands_router.message(Command("portfolio"))
 async def handle_portfolio(message: Message, **data: Any) -> None:
-    """Handle /portfolio command displaying active positions and risk metrics."""
+    """Handle /portfolio [equity] command displaying active positions and risk metrics."""
     settings: Settings = data.get("settings") or get_settings()
     agent: EnsembleDecisionAgent = data.get("ensemble_agent") or EnsembleDecisionAgent(settings)
+    vault: UserVault = data.get("user_vault") or UserVault(settings)
+    user_id = int(getattr(message.from_user, "id", 0) or 0) if message.from_user else None
+
+    equity_override: Optional[float] = None
+    parts = (message.text or "").strip().split()
+    if len(parts) >= 2 and parts[0].startswith("/"):
+        try:
+            parsed_eq = float(parts[1].replace(",", "").replace("$", ""))
+            if parsed_eq > 0:
+                equity_override = parsed_eq
+        except ValueError:
+            equity_override = None
+
     portfolio_state: dict[str, Any] = data.get("portfolio_state") or build_live_portfolio_state(
-        agent=agent, settings=settings
+        agent=agent,
+        settings=settings,
+        user_id=user_id,
+        user_vault=vault,
+        equity_override=equity_override,
     )
     card = format_portfolio_card(portfolio_state)
     await message.answer(

@@ -472,3 +472,19 @@ class UserVault:
             )
             for r in rows
         ]
+
+    def list_autotrade_enabled_user_ids(self) -> list[int]:
+        """Return all user_ids (including Admin .env accounts) that currently have autotrade_enabled=True."""
+        enabled_ids: set[int] = set()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT user_id FROM user_accounts WHERE autotrade_enabled = 1"
+            ).fetchall()
+            for r in rows:
+                enabled_ids.add(int(r["user_id"]))
+
+        for uid, is_on in self._admin_env_autotrade.items():
+            if is_on and self.get_user_role(uid) == "admin":
+                enabled_ids.add(int(uid))
+
+        return sorted(enabled_ids)

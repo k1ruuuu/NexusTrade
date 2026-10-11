@@ -59,7 +59,13 @@ async def handle_dashboard_callback(callback: CallbackQuery, **data: Any) -> Non
         card = format_status_card(settings=settings, position_sizer=agent.position_sizer)
         await msg.answer(card, parse_mode="HTML", reply_markup=build_main_dashboard_keyboard())
     elif action == "portfolio":
-        portfolio_state = build_live_portfolio_state(agent=agent, settings=settings)
+        uid = int(getattr(callback.from_user, "id", 0) or 0) if callback.from_user else None
+        portfolio_state = build_live_portfolio_state(
+            agent=agent,
+            settings=settings,
+            user_id=uid,
+            user_vault=data.get("user_vault"),
+        )
         card = format_portfolio_card(portfolio_state)
         await msg.answer(card, parse_mode="HTML", reply_markup=build_main_dashboard_keyboard())
     elif action == "signal":

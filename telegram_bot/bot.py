@@ -27,6 +27,7 @@ from telegram_bot.handlers.setup import setup_router
 from telegram_bot.middlewares.auth_middleware import WhitelistAuthMiddleware
 from telegram_bot.middlewares.rate_limit import RateLimitMiddleware
 from telegram_bot.views.formatters import format_signal_card
+from telegram_bot.views.setup_formatters import format_autotrade_report_card
 from tradingview.alert_parser import TradingViewAlertPayload
 from tradingview.chart_generator import ChartSnapshotGenerator
 
@@ -83,6 +84,7 @@ class NexusTradeBotService:
             auto_trader=self.auto_trader,
         )
 
+        rate_mw = RateLimitMiddleware(self.settings)
         auth_mw = WhitelistAuthMiddleware(self.settings, admin_store=self.admin_store)
 
         dp.message.middleware(auth_mw)
@@ -90,11 +92,16 @@ class NexusTradeBotService:
         dp.callback_query.middleware(auth_mw)
         dp.callback_query.middleware(rate_mw)
 
-        dp.include_router(commands_router)
-        dp.include_router(signals_router)
-        dp.include_router(setup_router)
-        dp.include_router(admin_router)
-        dp.include_router(callbacks_router)
+        for router in (
+            commands_router,
+            signals_router,
+            setup_router,
+            admin_router,
+            callbacks_router,
+        ):
+            if getattr(router, "_parent_router", None) is not None:
+                router._parent_router = None
+            dp.include_router(router)
         return dp
 
     async def dispatch_webhook_alert(
@@ -118,16 +125,18 @@ class NexusTradeBotService:
         caption = format_signal_card(decision)
         reply_markup = build_symbol_action_keyboard(decision.symbol)
 
-        record = {
+        record: dict[str, Any] = {
             "chat_id": target_chat_id,
             "symbol": decision.symbol,
             "action": decision.action,
             "confidence": decision.confidence,
             "caption": caption,
             "chart_path": str(chart_path) if chart_path else None,
+            "autotrade_reports": [],
         }
         self.broadcast_history.append(record)
 
+        sent_ok = False
         try:
             if chart_path is not None and chart_path.exists():
                 await self.bot.send_photo(
@@ -151,7 +160,7 @@ class NexusTradeBotService:
                 action=decision.action,
                 confidence=decision.confidence,
             )
-            return True
+            sent_ok = True
         except Exception as exc:
             logger.warning(
                 "Telegram API send failed during webhook dispatch (recorded in broadcast_history)",
@@ -159,7 +168,38 @@ class NexusTradeBotService:
                 symbol=decision.symbol,
                 error=str(exc),
             )
-            return False
+
+        # LF-11: If any authorized user/admin has autotrade_enabled=True, also trigger 6-Gate Auto-Trade
+        static_allowed = {int(x) for x in self.settings.telegram_allowed_user_ids}
+        for uid in self.user_vault.list_autotrade_enabled_user_ids():
+            allowed, _, _ = self.admin_store.check_user_access(uid, static_allowed)
+            if not allowed:
+                continue
+            if self.admin_store.is_maintenance_mode() and not self.settings.is_admin_user(uid):
+                continue
+            try:
+                report = await self.auto_trader.evaluate_and_execute(
+                    user_id=uid,
+                    symbol=decision.symbol,
+                    timeframe=decision.timeframe,
+                    decision_override=decision,
+                    require_autotrade_toggle=True,
+                )
+                record["autotrade_reports"].append(report)
+                await self.bot.send_message(
+                    chat_id=uid,
+                    text=format_autotrade_report_card(report),
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Webhook auto-trade execution/notify failed for user",
+                    user_id=uid,
+                    symbol=decision.symbol,
+                    error=str(exc),
+                )
+
+        return sent_ok
 
     async def start_polling(self, handle_signals: bool = True) -> None:
         """Start Aiogram v3 long-polling loop."""

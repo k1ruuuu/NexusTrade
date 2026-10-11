@@ -98,6 +98,8 @@ class EventDrivenBacktester:
 
         capital = initial_capital or self.settings.portfolio_initial_capital
         equity = float(capital)
+        self.position_sizer.daily_start_equity = equity
+        self.position_sizer.current_equity = equity
         equity_curve: list[float] = [round(equity, 2)]
         timestamps: list[str] = [str(featured["timestamp_iso"].iloc[0])]
         trades: list[SimulatedTrade] = []
@@ -156,6 +158,7 @@ class EventDrivenBacktester:
                     fee = (entry_p + exit_price) * units * 0.0005
                     net_pnl = raw_pnl - fee
                     equity = max(0.0, equity + net_pnl)
+                    self.position_sizer.current_equity = equity
                     ret_pct = (net_pnl / max(entry_p * units, 1e-6)) * 100.0
                     trades.append(
                         SimulatedTrade(
@@ -174,7 +177,7 @@ class EventDrivenBacktester:
                     open_position = None
 
             # 2. Evaluate new entry using strictly lagged t-1 features stored on row
-            if open_position is None:
+            elif open_position is None:
                 rsi_prev = float(row["rsi_14"])
                 ema_20_prev = float(row["ema_20"])
                 ema_50_prev = float(row["ema_50"])
@@ -199,7 +202,6 @@ class EventDrivenBacktester:
                         confidence=confidence,
                         s_vol=0.25,
                         portfolio_equity=equity,
-                        daily_drawdown_override=0.0,
                     )
                     if sizing.approved and sizing.position_units > 0:
                         open_position = {

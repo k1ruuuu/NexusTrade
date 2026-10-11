@@ -225,11 +225,13 @@ async def handle_setup(message: Message, **data: Any) -> None:
 
 @setup_router.message(Command("cancel"))
 async def handle_cancel_setup(message: Message) -> None:
-    """Cancel pending interactive /setup key entry."""
+    """Cancel pending interactive /setup or /admin wizard input."""
+    from telegram_bot.handlers.admin import _PENDING_ADMIN_ACTION
+
     user_id = int(getattr(message.from_user, "id", 0) or 0)
     _PENDING_SETUP_MODE.pop(user_id, None)
-    await message.answer("⚪ Sesi input kredensial `/setup` telah dibatalkan.", parse_mode="HTML")
-
+    _PENDING_ADMIN_ACTION.pop(user_id, None)
+    await message.answer("⚪ Sesi input interaktif telah dibatalkan.", parse_mode="HTML")
 
 @setup_router.message(Command("myaccount"))
 async def handle_myaccount(message: Message, **data: Any) -> None:
@@ -459,12 +461,18 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
     cb_data = callback.data or ""
 
     if cb_data == "setup:mode:testnet":
+        from telegram_bot.handlers.admin import _PENDING_ADMIN_ACTION
+
+        _PENDING_ADMIN_ACTION.pop(user_id, None)
         _PENDING_SETUP_MODE[user_id] = True
         await msg.answer(format_setup_prompt_key_card(testnet=True), parse_mode="HTML")
         await callback.answer("Mode Binance Testnet dipilih")
         return
 
     if cb_data == "setup:mode:live":
+        from telegram_bot.handlers.admin import _PENDING_ADMIN_ACTION
+
+        _PENDING_ADMIN_ACTION.pop(user_id, None)
         _PENDING_SETUP_MODE[user_id] = False
         await msg.answer(format_setup_prompt_key_card(testnet=False), parse_mode="HTML")
         await callback.answer("Mode Binance Live dipilih")

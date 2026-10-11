@@ -425,3 +425,122 @@ async def test_admin_panel_user_management_broadcast_maintenance_and_audit(tmp_p
     assert "AUDIT AKTIVITAS USER" in audit_reply
     assert "DENIED_MAINTENANCE" in audit_reply
     assert "DENIED_EXPIRED" in audit_reply
+
+
+@pytest.mark.asyncio
+async def test_logic_flow_audit_regressions_lf01_to_lf11(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        telegram_allowed_user_ids=[111, 222],
+        telegram_admin_user_ids=[111],
+        telegram_admin_chat_id=111,
+        binance_api_key="TESTNET_ADMIN_ENV_KEY_9999",
+        binance_api_secret="ADMIN_ENV_SECRET_9999_SECURE",
+        binance_testnet=True,
+        use_live_market_data=False,
+        use_live_news_feed=False,
+    )
+    vault = UserVault(settings=settings)
+    admin_store = AdminStore(settings=settings, db_path=vault.db_path)
+    binance_client = BinanceSpotClient()
+    agent = EnsembleDecisionAgent(settings=settings)
+    charts = ChartSnapshotGenerator(settings=settings)
+    backtester = EventDrivenBacktester(settings=settings)
+    auto_trader = SmartAutoTraderEngine(
+        settings=settings,
+        ensemble_agent=agent,
+        user_vault=vault,
+        binance_client=binance_client,
+    )
+
+    # Setup User 222
+    vault.save_user_credentials(
+        user_id=222,
+        api_key="TESTNET_USER222_KEY",
+        api_secret="SECRET_USER222_PASS",
+        username="User222",
+        testnet=True,
+        verified_usdt_balance=1000.0,
+        autotrade_enabled=True,
+    )
+
+    # LF-01: Non-crypto symbol (NVDA / XAUUSD) is rejected for Binance Spot Auto-Trade
+    non_crypto_rep = await auto_trader.evaluate_and_execute(user_id=222, symbol="NVDA")
+    assert non_crypto_rep.executed is False
+    assert "bukan aset Crypto" in (non_crypto_rep.gates[0].detail or "")
+
+    # LF-02: When user turns /autotrade off, evaluate_and_execute rejects execution at Gate 1
+    vault.set_autotrade_enabled(222, False)
+    off_rep = await auto_trader.evaluate_and_execute(user_id=222, symbol="BTCUSDT")
+    assert off_rep.executed is False
+    assert "OFF" in (off_rep.rejection_summary or "")
+
+    # LF-03: Insufficient balance (< $10 USDT) is rejected at Gate 1 without fabricating $50 equity
+    vault.set_autotrade_enabled(222, True)
+    vault.update_verified_balance(222, 4.50)
+    low_bal_rep = await auto_trader.evaluate_and_execute(user_id=222, symbol="BTCUSDT")
+    assert low_bal_rep.executed is False
+    assert "$10.00" in (low_bal_rep.rejection_summary or "")
+    vault.update_verified_balance(222, 2500.0)
+
+    # LF-04: Broadcast with bot=None reports failed_count > 0 and sent_count == 0 (no false positive)
+    bcast_no_bot = _make_fake_message(111, "/admin broadcast Pesan Uji Tanpa Bot")
+    bcast_no_bot.bot = None
+    await handle_admin_command(
+        bcast_no_bot,
+        settings=settings,
+        admin_store=admin_store,
+        bot=None,
+    )
+    bcast_reply = bcast_no_bot.answer.call_args[0][0]
+    assert "Berhasil Terkirim:</b> 🟢 <code>0 user</code>" in bcast_reply
+
+    # LF-05: Admin cannot delete their own Admin account, and deleting User 222 disables their autotrade
+    assert admin_store.delete_user(111) is False
+    assert admin_store.delete_user(222) is True
+    creds_222_after_del = vault.resolve_credentials(222)
+    assert creds_222_after_del is not None and creds_222_after_del.autotrade_enabled is False
+
+    # LF-11: Webhook dispatches notification ONLY when autotrade is OFF, and ALSO triggers Auto-Trade when ON
+    fake_bot = SimpleNamespace(send_photo=AsyncMock(), send_message=AsyncMock())
+    bot_service = NexusTradeBotService(
+        settings=settings,
+        ensemble_agent=agent,
+        chart_generator=charts,
+        backtester=backtester,
+        user_vault=vault,
+        admin_store=admin_store,
+        binance_client=binance_client,
+        auto_trader=auto_trader,
+        bot=fake_bot,  # type: ignore[arg-type]
+    )
+    alert = AlertParser(settings).parse(
+        {
+            "secret": settings.tradingview_webhook_secret,
+            "ticker": "BINANCE:BTCUSDT",
+            "interval": "15m",
+            "action": "BUY",
+            "price": 85000.0,
+            "strategy": "TrendBreakout_v2",
+        }
+    )
+    strong_buy_dec = agent.synthesize_scores(
+        s_tech=0.92,
+        s_vol=0.20,
+        s_sent=0.80,
+        symbol="BTCUSDT",
+        entry_price=85000.0,
+        atr_14=500.0,
+        headlines=["Record institutional inflows"],
+    )
+
+    # Case A: Admin autotrade is OFF -> Webhook sends signal notification ONLY (0 autotrade reports)
+    vault.set_autotrade_enabled(111, False)
+    await bot_service.dispatch_webhook_alert(alert, strong_buy_dec, None)
+    assert len(bot_service.broadcast_history[-1]["autotrade_reports"]) == 0
+
+    # Case B: Admin autotrade is ON -> Webhook sends signal notification AND executes Auto-Trade
+    vault.set_autotrade_enabled(111, True)
+    await bot_service.dispatch_webhook_alert(alert, strong_buy_dec, None)
+    assert len(bot_service.broadcast_history[-1]["autotrade_reports"]) == 1
+    assert bot_service.broadcast_history[-1]["autotrade_reports"][0].executed is True

@@ -433,8 +433,9 @@ class EnsembleDecisionAgent:
         sr_levels = self.sr_detector.detect_levels(
             market_df, current_price=tech_pred.latest_price, atr_14=tech_pred.atr_14
         )
+        adjusted_s_tech = float(np.clip(tech_pred.s_tech + sr_levels.sr_bias, -1.0, 1.0))
         decision = self.synthesize_scores(
-            s_tech=tech_pred.s_tech,
+            s_tech=adjusted_s_tech,
             s_vol=vol_forecast.s_vol,
             s_sent=sent_result.s_sent,
             symbol=clean_sym,

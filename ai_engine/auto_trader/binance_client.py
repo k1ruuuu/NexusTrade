@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 import httpx
 
 from config.logging_config import get_logger
-from data_pipeline.market_symbols import normalize_symbol
+from data_pipeline.market_symbols import is_crypto_symbol, normalize_symbol
 
 logger = get_logger("nexustrade.auto_trader.binance_client")
 
@@ -221,10 +221,20 @@ class BinanceSpotClient:
         testnet: bool = True,
     ) -> BinanceOrderResult:
         """Place a signed MARKET order on the user's Binance Spot / Testnet account."""
-        clean_sym = normalize_symbol(symbol, strip_hyphen=True)
-        if clean_sym.endswith("USD") and not clean_sym.endswith("USDT"):
-            clean_sym = f"{clean_sym}T"
-
+        is_crypto, clean_sym = is_crypto_symbol(symbol)
+        if not is_crypto:
+            return BinanceOrderResult(
+                executed=False,
+                order_id="NONE",
+                symbol=normalize_symbol(symbol, strip_hyphen=True),
+                side=side,
+                executed_qty=0.0,
+                avg_price=reference_price,
+                notional_usdt=0.0,
+                testnet=testnet,
+                status="UNSUPPORTED_SYMBOL",
+                error_message=f"Simbol {symbol.upper()} bukan pasangan Crypto yang didukung di Binance Spot.",
+            )
         formatted_qty = self.format_order_quantity(quantity, reference_price)
         est_notional = round(formatted_qty * reference_price, 2)
 
@@ -278,9 +288,23 @@ class BinanceSpotClient:
                 )
 
             data = resp.json()
-            exec_qty = float(data.get("executedQty", formatted_qty))
-            cum_quote = float(data.get("cummulativeQuoteQty", est_notional))
-            avg_px = (cum_quote / exec_qty) if exec_qty > 0 else reference_price
+            order_status = str(data.get("status", "FILLED")).upper()
+            exec_qty = float(data.get("executedQty", 0.0))
+            cum_quote = float(data.get("cummulativeQuoteQty", 0.0))
+            if order_status not in ("FILLED", "PARTIALLY_FILLED") or exec_qty <= 0.0:
+                return BinanceOrderResult(
+                    executed=False,
+                    order_id=str(data.get("orderId", "NONE")),
+                    symbol=clean_sym,
+                    side=side,
+                    executed_qty=0.0,
+                    avg_price=reference_price,
+                    notional_usdt=0.0,
+                    testnet=testnet,
+                    status=order_status,
+                    error_message=f"Order Binance tidak terisi (status={order_status}, executedQty={exec_qty})",
+                )
+            avg_px = (cum_quote / exec_qty) if (exec_qty > 0 and cum_quote > 0) else reference_price
             return BinanceOrderResult(
                 executed=True,
                 order_id=str(data.get("orderId", f"ORD-{int(time.time())}")),
@@ -288,9 +312,9 @@ class BinanceSpotClient:
                 side=side,
                 executed_qty=round(exec_qty, 6),
                 avg_price=round(avg_px, 4),
-                notional_usdt=round(cum_quote if cum_quote > 0 else est_notional, 2),
+                notional_usdt=round(cum_quote if cum_quote > 0 else (exec_qty * reference_price), 2),
                 testnet=testnet,
-                status=str(data.get("status", "FILLED")),
+                status=order_status,
             )
         except Exception as exc:
             logger.warning("Binance order execution failed", symbol=clean_sym, error=str(exc))

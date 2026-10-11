@@ -12,7 +12,7 @@ from ai_engine.auto_trader.user_vault import (
 from ai_engine.models.ensemble_agent import EnsembleDecisionAgent, SignalDecision
 from config.logging_config import get_logger
 from config.settings import Settings, get_settings
-from data_pipeline.market_symbols import normalize_symbol, normalize_timeframe
+from data_pipeline.market_symbols import is_crypto_symbol, normalize_symbol, normalize_timeframe
 
 logger = get_logger("nexustrade.auto_trader.engine")
 
@@ -74,7 +74,7 @@ class SmartAutoTraderEngine:
         symbol: str = "BTCUSDT",
         timeframe: str = "15m",
         decision_override: Optional[SignalDecision] = None,
-        require_autotrade_toggle: bool = False,
+        require_autotrade_toggle: bool = True,
     ) -> AutoTradeExecutionReport:
         """
         Run the complete 6-Gate Pre-Trade Checklist for `user_id` on `symbol` (`timeframe`)
@@ -125,6 +125,46 @@ class SmartAutoTraderEngine:
                 rejection_summary="Saklar Auto-Trade sedang OFF.",
             )
 
+        is_crypto, binance_pair = is_crypto_symbol(clean_sym)
+        if not is_crypto:
+            gates.append(
+                AutoTradeGateCheck(
+                    gate_number=1,
+                    name="Kompatibilitas Simbol Binance",
+                    passed=False,
+                    detail=f"DITOLAK: {clean_sym} bukan aset Crypto yang diperdagangkan di Binance Spot.",
+                )
+            )
+            return AutoTradeExecutionReport(
+                user_id=int(user_id),
+                symbol=clean_sym,
+                timeframe=clean_tf,
+                setup_required=False,
+                executed=False,
+                credentials=creds,
+                gates=gates,
+                rejection_summary=f"Simbol {clean_sym} bukan pasangan Crypto Binance Spot.",
+            )
+
+        if creds.verified_usdt_balance < 10.0:
+            gates.append(
+                AutoTradeGateCheck(
+                    gate_number=1,
+                    name="Kecukupan Saldo USDT",
+                    passed=False,
+                    detail=f"DITOLAK: Saldo USDT (${creds.verified_usdt_balance:,.2f}) kurang dari batas minimum $10.00 USDT.",
+                )
+            )
+            return AutoTradeExecutionReport(
+                user_id=int(user_id),
+                symbol=clean_sym,
+                timeframe=clean_tf,
+                setup_required=False,
+                executed=False,
+                credentials=creds,
+                gates=gates,
+                rejection_summary=f"Saldo USDT (${creds.verified_usdt_balance:,.2f}) di bawah batas minimum $10.00 USDT.",
+            )
         mode_str = "TESTNET" if creds.testnet else "LIVE"
         src_str = "Setup Pribadi" if creds.source == "user_setup" else "Admin (.env)"
         gates.append(
@@ -265,7 +305,7 @@ class SmartAutoTraderEngine:
             )
 
         # Gate 6: Calculate user-specific position size & execute on user's Binance account
-        user_equity = max(50.0, creds.verified_usdt_balance)
+        user_equity = float(creds.verified_usdt_balance)
         user_sizing = self.ensemble_agent.position_sizer.calculate_position(
             entry_price=decision.entry_price,
             stop_loss=decision.stop_loss,
@@ -274,8 +314,11 @@ class SmartAutoTraderEngine:
             portfolio_equity=user_equity,
             reward_risk_ratio=self.settings.min_risk_reward_ratio,
         )
-        max_notional_by_user_risk = user_equity * (creds.risk_per_trade_pct / 0.015)
-        target_notional = min(user_sizing.position_notional, user_equity * 0.95, max(25.0, max_notional_by_user_risk))
+        risk_scale = creds.risk_per_trade_pct / max(self.settings.max_account_risk_per_trade, 1e-6)
+        max_notional_by_user_risk = user_sizing.position_notional * min(1.0, risk_scale)
+        target_notional = min(user_sizing.position_notional, user_equity * 0.95, max_notional_by_user_risk)
+        if target_notional < 10.0:
+            target_notional = min(user_equity * 0.95, 10.0)
         qty = target_notional / max(decision.entry_price, 1e-9)
 
         order_side = "BUY" if decision.action == "BUY" else "SELL"
