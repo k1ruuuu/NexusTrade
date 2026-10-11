@@ -111,6 +111,9 @@ def test_message_formatters_html_cards(tmp_path: Path) -> None:
     assert "Take Profit 1 (1:2):" in signal_html
     assert "Take Profit 2 (1:3):" in signal_html
     assert "█" in signal_html
+    assert "Resistance Atas (R1 | R2):" in signal_html
+    assert "Support Bawah (S1 | S2):" in signal_html
+    assert decision.support_2 < decision.support_1 < decision.entry_price < decision.resistance_1 < decision.resistance_2
 
     sent_res = agent.sentiment_analyzer.analyze_headlines(symbol="BTCUSDT")
     sent_html = format_sentiment_card(sent_res)

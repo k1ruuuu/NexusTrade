@@ -95,6 +95,8 @@ def format_signal_card(decision: SignalDecision) -> str:
     tp1_pct = format_pct_diff(decision.take_profit_1, decision.entry_price)
     tp2_pct = format_pct_diff(decision.take_profit_2, decision.entry_price)
 
+    r1_pct = format_pct_diff(decision.resistance_1, decision.entry_price)
+    s1_pct = format_pct_diff(decision.support_1, decision.entry_price)
     approval_line = (
         "🟢 <b>AMAN (Lolos Filter Risiko)</b>"
         if decision.approved
@@ -102,54 +104,55 @@ def format_signal_card(decision: SignalDecision) -> str:
     )
     if decision.newly_learned_headlines > 0:
         learn_line = (
-            f"• <b>Memori Berita (5Thn–Hari Ini):</b> <code>+{decision.newly_learned_headlines} baru</code> "
-            f"(Total: <code>{decision.total_corpus_size} berita</code>)\n"
+            f"• <b>Memori Berita:</b> <code>+{decision.newly_learned_headlines} baru</code> "
+            f"(Total: <code>{decision.total_corpus_size}</code>)\n"
         )
     else:
         analyzed_n = len(decision.headlines)
         learn_line = (
-            f"• <b>Memori Berita (5Thn–Hari Ini):</b> <code>{analyzed_n} dianalisis</code> "
-            f"(Total: <code>{decision.total_corpus_size} berita</code>)\n"
+            f"• <b>Memori Berita:</b> <code>{analyzed_n} dianalisis</code> "
+            f"(Total: <code>{decision.total_corpus_size}</code>)\n"
         )
 
     acc_pct = decision.validation_accuracy * 100.0
     auc_pct = decision.validation_roc_auc * 100.0
     acc_line = (
-        f"• <b>Akurasi AI (Uji 5Thn–Hari Ini):</b> <code>{acc_pct:.1f}%</code> "
-        f"(ROC-AUC: <code>{auc_pct:.1f}%</code> | <code>{decision.memory_bars_count:,} candle</code>)\n"
+        f"• <b>Akurasi AI (5Thn):</b> <code>{acc_pct:.1f}%</code> "
+        f"(AUC: <code>{auc_pct:.1f}%</code> | <code>{decision.memory_bars_count:,} bar</code>)\n"
         if acc_pct > 0
         else ""
     )
     macro_line = (
-        f"• <b>Tren Makro 5 Tahun:</b> {html.escape(decision.macro_regime)} "
-        f"(Posisi: <code>{decision.five_year_percentile:.0f}%</code>)\n\n"
+        f"• <b>Tren Makro 5Thn:</b> {html.escape(decision.macro_regime)} "
+        f"(<code>{decision.five_year_percentile:.0f}%</code>)\n\n"
         if decision.memory_bars_count > 500
         else "\n"
     )
 
     return (
         f"📡 <b>SINYAL AI NEXUSTRADE — {sym} ({tf})</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━\n"
         f"<b>Keputusan AI:</b> {badge}\n"
-        f"<b>Tingkat Keyakinan:</b> <code>[{conf_bar}] {decision.confidence * 100:.1f}%</code>\n"
-        f"<b>Status Keamanan:</b> {approval_line}\n\n"
+        f"<b>Keyakinan:</b> <code>[{conf_bar}] {decision.confidence * 100:.1f}%</code>\n"
+        f"<b>Status:</b> {approval_line}\n\n"
         f"{summary_text}\n\n"
-        f"<b>🎯 Panduan Harga Transaksi:</b>\n"
-        f"• <b>Entry Price:</b> <code>{format_price(decision.entry_price)}</code> <i>(Harga Saat Ini)</i>\n"
-        f"• <b>Stop Loss (2xATR):</b> <code>{format_price(decision.stop_loss)}</code> (<code>{sl_pct}</code> — <i>Batas Rugi</i>)\n"
-        f"• <b>Take Profit 1 (1:2):</b> <code>{format_price(decision.take_profit_1)}</code> (<code>{tp1_pct}</code> — <i>Target 1</i>)\n"
-        f"• <b>Take Profit 2 (1:3):</b> <code>{format_price(decision.take_profit_2)}</code> (<code>{tp2_pct}</code> — <i>Target 2</i>)\n\n"
-        f"<b>🧠 Alasan &amp; Memori AI (5 Tahun – Hari Ini):</b>\n"
-        f"• <b>Teknikal:</b> <code>{decision.s_tech:+.2f}</code> — {tech_desc}\n"
-        f"• <b>Sentimen:</b> <code>{decision.s_sent:+.2f}</code> — {sent_desc}\n"
-        f"• <b>Gejolak Pasar:</b> <code>{decision.s_vol:.2f}</code> — {vol_desc}\n"
+        f"<b>🎯 Panduan Harga &amp; Level S/R:</b>\n"
+        f"• <b>Entry Price:</b> <code>{format_price(decision.entry_price)}</code>\n"
+        f"• <b>Stop Loss (2xATR):</b> <code>{format_price(decision.stop_loss)}</code> (<code>{sl_pct}</code>)\n"
+        f"• <b>Take Profit 1 (1:2):</b> <code>{format_price(decision.take_profit_1)}</code> (<code>{tp1_pct}</code>)\n"
+        f"• <b>Take Profit 2 (1:3):</b> <code>{format_price(decision.take_profit_2)}</code> (<code>{tp2_pct}</code>)\n"
+        f"• <b>Resistance Atas (R1 | R2):</b> <code>{format_price(decision.resistance_1)}</code> (<code>{r1_pct}</code>) | <code>{format_price(decision.resistance_2)}</code>\n"
+        f"• <b>Support Bawah (S1 | S2):</b> <code>{format_price(decision.support_1)}</code> (<code>{s1_pct}</code>) | <code>{format_price(decision.support_2)}</code>\n"
+        f"• <b>Posisi S/R:</b> <i>{html.escape(decision.sr_status)}</i>\n\n"
+        f"<b>🧠 Analisis &amp; Memori AI:</b>\n"
+        f"• <b>Teknikal:</b> <code>{decision.s_tech:+.2f}</code> ({tech_desc})\n"
+        f"• <b>Sentimen:</b> <code>{decision.s_sent:+.2f}</code> ({sent_desc})\n"
+        f"• <b>Gejolak:</b> <code>{decision.s_vol:.2f}</code> ({vol_desc})\n"
         f"{learn_line}"
         f"{acc_line}"
         f"{macro_line}"
-        f"<b>🛡️ Saran Ukuran Posisi:</b>\n"
-        f"• <b>Ukuran Beli/Jual:</b> <code>{decision.position_units:,.4f} {sym}</code> (<code>${decision.position_notional:,.2f}</code>)\n"
-        f"• <b>Risiko Modal:</b> <code>{decision.account_risk_pct * 100:.2f}%</code> | <b>Skala Aman:</b> <code>{decision.risk_multiplier:.2f}x</code>\n"
-        f"⏱️ <i>Update UTC: {html.escape(decision.timestamp)}</i>"
+        f"<b>🛡️ Ukuran Posisi:</b> <code>{decision.position_units:,.4f} {sym}</code> (<code>${decision.position_notional:,.2f}</code> | Risiko <code>{decision.account_risk_pct * 100:.2f}%</code>)\n"
+        f"⏱️ <i>UTC: {html.escape(decision.timestamp)}</i>"
     )
 
 

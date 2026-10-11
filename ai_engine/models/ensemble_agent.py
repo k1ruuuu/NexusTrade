@@ -20,6 +20,10 @@ from ai_engine.models.volatility_estimator import (
 )
 from ai_engine.risk_management.position_sizer import PositionSizer, PositionSizeResult
 from ai_engine.risk_management.stop_loss_manager import StopLossManager, StopLossTargets
+from ai_engine.risk_management.support_resistance import (
+    SupportResistanceDetector,
+    SupportResistanceLevels,
+)
 from config.logging_config import get_logger
 from data_pipeline.live_market_feed import LiveMarketDataFeed
 from config.settings import Settings, get_settings
@@ -71,6 +75,14 @@ class SignalDecision:
     memory_bars_count: int = 0
     five_year_percentile: float = 50.0
     macro_regime: str = "Normal"
+    support_1: float = 0.0
+    support_2: float = 0.0
+    resistance_1: float = 0.0
+    resistance_2: float = 0.0
+    pivot_point: float = 0.0
+    dist_to_r1_pct: float = 0.0
+    dist_to_s1_pct: float = 0.0
+    sr_status: str = "Tengah Jalur S1–R1 (Ruang Gerak Lega)"
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
@@ -113,6 +125,7 @@ class EnsembleDecisionAgent:
         )
         self.position_sizer = position_sizer or PositionSizer(self.settings)
         self.stop_loss_manager = stop_loss_manager or StopLossManager(self.settings)
+        self.sr_detector = SupportResistanceDetector()
         self._market_data_cache: dict[str, pd.DataFrame] = {}
         self._last_trained_signature: dict[str, tuple[str, float]] = {}
 
@@ -145,6 +158,7 @@ class EnsembleDecisionAgent:
         memory_bars_count: int = 0,
         five_year_percentile: float = 50.0,
         macro_regime: str = "Normal",
+        sr_levels: Optional[SupportResistanceLevels] = None,
     ) -> SignalDecision:
         """
         Apply AGENT.md Section 5.A Ensemble Decision Matrix:
@@ -172,6 +186,9 @@ class EnsembleDecisionAgent:
             raw_action = "HOLD"
 
         effective_atr = atr_14 if (atr_14 is not None and atr_14 > 0) else entry_price * 0.012
+        resolved_sr = sr_levels or self.sr_detector.detect_levels(
+            None, current_price=entry_price, atr_14=effective_atr
+        )
         targets: StopLossTargets = self.stop_loss_manager.calculate_targets(
             entry_price=entry_price,
             atr_14=effective_atr,
@@ -229,6 +246,14 @@ class EnsembleDecisionAgent:
             memory_bars_count=memory_bars_count,
             five_year_percentile=five_year_percentile,
             macro_regime=macro_regime,
+            support_1=resolved_sr.support_1,
+            support_2=resolved_sr.support_2,
+            resistance_1=resolved_sr.resistance_1,
+            resistance_2=resolved_sr.resistance_2,
+            pivot_point=resolved_sr.pivot_point,
+            dist_to_r1_pct=resolved_sr.dist_to_r1_pct,
+            dist_to_s1_pct=resolved_sr.dist_to_s1_pct,
+            sr_status=resolved_sr.status_label,
         )
 
     def load_market_series(
@@ -339,6 +364,11 @@ class EnsembleDecisionAgent:
 
         macro_ctx = self.live_feed.compute_5y_macro_context(df_5y, entry_price)
 
+        sr_levels = self.sr_detector.detect_levels(
+            market_df, current_price=entry_price, atr_14=atr_val
+        )
+        if action_hint is None:
+            s_tech = float(np.clip(s_tech + sr_levels.sr_bias, -1.0, 1.0))
         return self.synthesize_scores(
             s_tech=s_tech,
             s_vol=vol_forecast.s_vol,
@@ -358,6 +388,7 @@ class EnsembleDecisionAgent:
             memory_bars_count=tech_pred.memory_bars_trained or len(market_df),
             five_year_percentile=float(macro_ctx["five_year_percentile"]),
             macro_regime=str(macro_ctx["macro_regime"]),
+            sr_levels=sr_levels,
         )
 
     def learn_online_cycle(
@@ -399,6 +430,9 @@ class EnsembleDecisionAgent:
             market_df, symbol=clean_sym
         )
         macro_ctx = self.live_feed.compute_5y_macro_context(df_5y, tech_pred.latest_price)
+        sr_levels = self.sr_detector.detect_levels(
+            market_df, current_price=tech_pred.latest_price, atr_14=tech_pred.atr_14
+        )
         decision = self.synthesize_scores(
             s_tech=tech_pred.s_tech,
             s_vol=vol_forecast.s_vol,
@@ -416,6 +450,7 @@ class EnsembleDecisionAgent:
             memory_bars_count=tech_pred.memory_bars_trained or len(market_df),
             five_year_percentile=float(macro_ctx["five_year_percentile"]),
             macro_regime=str(macro_ctx["macro_regime"]),
+            sr_levels=sr_levels,
         )
 
         return {

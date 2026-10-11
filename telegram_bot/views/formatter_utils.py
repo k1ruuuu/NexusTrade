@@ -97,16 +97,16 @@ def build_human_signal_summary(decision: SignalDecision) -> str:
     if act == "BUY":
         strength = "sangat kuat" if conf_pct >= 72 else "cukup positif"
         return (
-            f"💡 <b>Kesimpulan:</b> Peluang <b>BELI</b> terlihat {strength} ({conf_pct:.0f}%). "
-            f"Gunakan batas rugi (<i>Stop Loss</i>) dan target ambil untung di bawah ini."
+            f"💡 <b>Kesimpulan:</b> Peluang <b>BELI</b> {strength} ({conf_pct:.0f}%). "
+            f"Patuhi <i>Stop Loss</i> &amp; target di bawah."
         )
     if act == "SELL":
         strength = "sangat kuat" if conf_pct >= 72 else "cukup kuat"
         return (
-            f"💡 <b>Kesimpulan:</b> Tekanan <b>JUAL / TURUN</b> terlihat {strength} ({conf_pct:.0f}%). "
-            f"Waspadai penurunan harga dan patuhi batas <i>Stop Loss</i>."
+            f"💡 <b>Kesimpulan:</b> Tekanan <b>JUAL</b> {strength} ({conf_pct:.0f}%). "
+            f"Waspadai koreksi &amp; patuhi <i>Stop Loss</i>."
         )
     return (
-        f"💡 <b>Kesimpulan:</b> Arah pasar masih belum pasti (Keyakinan {conf_pct:.0f}%). "
-        f"Sebaiknya <b>TUNGGU (HOLD)</b> sampai muncul tren yang lebih jelas."
+        f"💡 <b>Kesimpulan:</b> Arah belum pasti ({conf_pct:.0f}%). "
+        f"Sebaiknya <b>TUNGGU (HOLD)</b> sampai tren jelas."
     )

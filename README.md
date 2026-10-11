@@ -17,6 +17,7 @@
 
 ### 2. Institutional Risk & Portfolio Protection (`ai_engine/risk_management/`)
 - **Dynamic ATR Stop-Loss & Reward-to-Risk Targets:** Automatic $2 \times \text{ATR(14)}$ Stop-Loss, minimum `1:2` (`TP1`) and `1:3` (`TP2`) Reward-to-Risk targets, and ratcheting trailing stops (`StopLossManager`).
+- **Automatic Support & Resistance Detection (`SupportResistanceDetector`):** Combines volume-weighted Swing High/Low fractals, multi-window Donchian channels (`20`/`50`/`120` bars), and Classic Floor Pivot Points to compute structural `Support Bawah (S1, S2)` and `Resistance Atas (R1, R2)` levels, displayed in Telegram signal cards and plotted on `1200x800` charts.
 - **Volatility-Adjusted Half-Kelly Position Sizing:** Scales risk allocation by $(1 - S_{\text{vol}}) \times \text{Confidence}$, strictly capped at `1.5%` maximum equity risk per trade (`PositionSizer`).
 - **Circuit Breakers:** Automatic trade suppression when daily drawdown reaches `4.0%` or market volatility enters `EXTREME` regime ($S_{\text{vol}} \ge 0.85$).
 
@@ -85,6 +86,7 @@ NexusTrade/
 │   │   └── ensemble_agent.py                 # Multimodal ensemble orchestrator & 5Y memory trainer
 │   ├── risk_management/
 │   │   ├── stop_loss_manager.py              # 2x ATR(14) Stop-Loss, TP1/TP2, & trailing stop engine
+│   │   ├── support_resistance.py             # Swing High/Low, Donchian & Pivot S1/S2 & R1/R2 detector
 │   │   └── position_sizer.py                 # Half-Kelly position sizer & drawdown circuit breaker
 │   └── backtester/
 │       ├── engine.py                         # Event-driven backtester & equity curve plotter
