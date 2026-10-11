@@ -34,8 +34,9 @@ class WhitelistAuthMiddleware(BaseMiddleware):
     def is_authorized(self, user_id: Optional[int]) -> bool:
         if user_id is None:
             return False
-        return int(user_id) in self.allowed_ids
-
+        if self.settings.telegram_open_access:
+            return True
+        return int(user_id) in self.allowed_ids or self.settings.is_admin_user(user_id)
     async def __call__(
         self,
         handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
@@ -66,4 +67,5 @@ class WhitelistAuthMiddleware(BaseMiddleware):
             return None
 
         data["authorized"] = True
+        data["user_role"] = "admin" if self.settings.is_admin_user(user_id) else "user"
         return await handler(event, data)

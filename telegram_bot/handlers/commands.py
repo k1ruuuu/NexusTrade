@@ -41,6 +41,10 @@ def build_main_dashboard_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🧠 AI Belajar Live (XAU)", callback_data="cmd:learn:XAUUSD"),
             ],
             [
+                InlineKeyboardButton(text="🔐 Setup Akun Binance (/setup)", callback_data="setup:myaccount"),
+                InlineKeyboardButton(text="🤖 Auto-Trade 6 Gerbang", callback_data="autotrade:scan:BTCUSDT"),
+            ],
+            [
                 InlineKeyboardButton(text="⚙️ Status Sistem & Keamanan", callback_data="cmd:status"),
             ],
         ]

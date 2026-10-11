@@ -54,6 +54,14 @@ class Settings(BaseSettings):
         default_factory=lambda: [123456789]
     )
     telegram_admin_chat_id: Optional[int] = Field(default=123456789)
+    telegram_admin_user_ids: Union[list[int], str, int] = Field(
+        default_factory=list,
+        description="Telegram user IDs with Admin role allowed to fall back to .env credentials",
+    )
+    telegram_open_access: bool = Field(
+        default=False,
+        description="Allow any Telegram user to interact with the bot (non-admins must still run /setup for auto-trade)",
+    )
     telegram_rate_limit_calls: int = Field(default=5, ge=1)
     telegram_rate_limit_period: float = Field(default=10.0, gt=0.0)
 
@@ -89,10 +97,17 @@ class Settings(BaseSettings):
     max_daily_drawdown_limit: float = Field(default=0.04, gt=0.0, le=0.50)
     max_volatility_threshold: float = Field(default=0.85, gt=0.0, le=1.0)
 
+    # Admin-Only Binance API & Multi-User Vault Configuration (.env applies strictly to Admin role)
+    binance_api_key: str = Field(default="")
+    binance_api_secret: str = Field(default="")
+    binance_testnet: bool = Field(default=True)
+    vault_encryption_secret: str = Field(
+        default="nexustrade_vault_master_secret_key_2026", min_length=16
+    )
     # Redis Cache Configuration
     redis_url: str = Field(default="redis://localhost:6379/0")
 
-    @field_validator("telegram_allowed_user_ids", mode="before")
+    @field_validator("telegram_allowed_user_ids", "telegram_admin_user_ids", mode="before")
     @classmethod
     def parse_allowed_user_ids(cls, value: Any) -> list[int]:
         if value is None or value == "":
@@ -146,6 +161,15 @@ class Settings(BaseSettings):
                 raise ValueError("Production environment requires a valid TELEGRAM_BOT_TOKEN")
         return self
 
+    def is_admin_user(self, user_id: Optional[int]) -> bool:
+        """Return True strictly if user_id has Admin role via TELEGRAM_ADMIN_USER_IDS or TELEGRAM_ADMIN_CHAT_ID."""
+        if user_id is None:
+            return False
+        uid = int(user_id)
+        admin_ids = {int(x) for x in self.telegram_admin_user_ids}
+        if self.telegram_admin_chat_id is not None:
+            admin_ids.add(int(self.telegram_admin_chat_id))
+        return uid in admin_ids
     @property
     def raw_data_dir(self) -> Path:
         path = self.data_dir / "raw"

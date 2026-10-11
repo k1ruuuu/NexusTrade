@@ -35,6 +35,9 @@
 
 ### 5. Interactive Telegram Bot Terminal (`telegram_bot/`)
 - Built with `aiogram` v3 featuring `WhitelistAuthMiddleware`, sliding-window `RateLimitMiddleware`, human-friendly Indonesian HTML cards with ASCII progress bars, and interactive inline keyboards.
+- **Multi-User `/setup` Vault & 6-Gate Smart Auto-Trader (`ai_engine/auto_trader/`):**
+  - **Strict Admin vs. User Role Isolation:** Credentials in `.env` (`BINANCE_API_KEY` / `BINANCE_API_SECRET`) apply **strictly to Admin users**. Regular users must run `/setup` in Telegram to connect their own personal Binance account (encrypted per user via `PBKDF2-HMAC-SHA256`, with automatic secret chat deletion).
+  - **6-Gate Pre-Trade Checklist (`SmartAutoTraderEngine`):** Never opens a position blindly — requires (1) verified `/setup` account, (2) aligned breaking news & FinBERT sentiment, (3) high-conviction 5Y+live technical signal, (4) structural Support/Resistance clearance (`S1`/`R1`), (5) normal volatility & zero duplicate symbol position, and (6) automatic `2xATR` Stop-Loss & `TP1`/`TP2` locking.
 
 ---
 
@@ -84,6 +87,10 @@ NexusTrade/
 │   │   ├── sentiment_analyzer.py             # FinBERT + Online Incremental SGD sentiment engine
 │   │   ├── market_data_loader.py             # Local dataset & synthetic OHLCV loader
 │   │   └── ensemble_agent.py                 # Multimodal ensemble orchestrator & 5Y memory trainer
+│   ├── auto_trader/
+│   │   ├── user_vault.py                         # Encrypted SQLite multi-user vault (Admin vs User isolation)
+│   │   ├── binance_client.py                     # Async HMAC-SHA256 Binance Spot & Testnet client
+│   │   └── engine.py                             # 6-Gate Smart Auto-Trader execution engine
 │   ├── risk_management/
 │   │   ├── stop_loss_manager.py              # 2x ATR(14) Stop-Loss, TP1/TP2, & trailing stop engine
 │   │   ├── support_resistance.py             # Swing High/Low, Donchian & Pivot S1/S2 & R1/R2 detector
@@ -104,10 +111,12 @@ NexusTrade/
 │   ├── handlers/
 │   │   ├── commands.py                       # /start, /help, /status, /portfolio handlers
 │   │   ├── signals.py                        # /signal, /analyze, /sentiment, /volatility, /backtest, /learn
+│   │   ├── setup.py                              # /setup, /myaccount, /unlink, & /autotrade handlers
 │   │   └── callbacks.py                      # Interactive inline keyboard callback router
 │   └── views/
 │       ├── formatter_utils.py                # Progress bars, badges, & plain-Indonesian helpers
 │       └── formatters.py                     # HTML cards for Telegram messages
+│       ├── setup_formatters.py                   # HTML cards for /setup wizard & 6-Gate Auto-Trade reports
 └── tests/
     ├── test_data_pipeline.py                 # Kaggle, zero-lookahead OHLCV, Optiver, & NLP tests
     ├── test_ai_engine.py                     # LightGBM, HAR-RV, FinBERT, Ensemble, & Backtester tests
@@ -131,6 +140,10 @@ NexusTrade/
 | `/portfolio [equity]` | View position sizing limits, drawdown buffer, & Kelly parameters | `/portfolio 25000` |
 | `/backtest [symbol] [days]` | Run event-driven simulation with fees/slippage & equity curve chart | `/backtest BTCUSDT 90` |
 | `/learn [symbol] [tf]` | Trigger an immediate online learning cycle from live news & 5Y + live prices | `/learn XAUUSD 15m` |
+| `/setup` | Connect personal Binance account (Testnet/Live) with auto-deleted secret chat | `/setup testnet KEY SECRET` |
+| `/myaccount` | View personal Binance connection, role (`Admin` vs `User`), balance, & open positions | `/myaccount` |
+| `/unlink` | Delete personal Binance credentials from the encrypted vault | `/unlink` |
+| `/autotrade [on\|off\|scan]` | Toggle Auto-Trade or run 6-Gate AI check & execute on your Binance account | `/autotrade scan BTCUSDT` |
 
 ---
 

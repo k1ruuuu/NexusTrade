@@ -8,6 +8,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ai_engine.backtester.engine import EventDrivenBacktester
+from ai_engine.auto_trader.binance_client import BinanceSpotClient
+from ai_engine.auto_trader.engine import SmartAutoTraderEngine
+from ai_engine.auto_trader.user_vault import UserVault
 from ai_engine.models.ensemble_agent import EnsembleDecisionAgent
 from config.settings import Settings
 from telegram_bot.bot import NexusTradeBotService
@@ -22,6 +25,12 @@ from telegram_bot.handlers.signals import (
     handle_sentiment,
     handle_signal,
     handle_volatility,
+)
+from telegram_bot.handlers.setup import (
+    handle_autotrade,
+    handle_myaccount,
+    handle_setup,
+    handle_unlink,
 )
 from telegram_bot.middlewares.auth_middleware import WhitelistAuthMiddleware
 from telegram_bot.middlewares.rate_limit import RateLimitMiddleware
@@ -42,6 +51,7 @@ def _make_fake_message(user_id: int = 111, text: str = "/start") -> Any:
     msg.text = text
     msg.answer = AsyncMock()
     msg.answer_photo = AsyncMock()
+    msg.delete = AsyncMock()
     return msg
 
 
@@ -206,3 +216,119 @@ async def test_command_and_signal_handlers_and_webhook_dispatch(tmp_path: Path) 
     assert sent_ok is True
     fake_bot.send_photo.assert_awaited_once()
     assert len(bot_service.broadcast_history) == 1
+
+
+@pytest.mark.asyncio
+async def test_multi_user_setup_role_isolation_and_6gate_autotrade(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        telegram_allowed_user_ids=[111, 222],
+        telegram_admin_user_ids=[111],
+        telegram_admin_chat_id=111,
+        binance_api_key="TESTNET_ADMIN_ENV_KEY_9999",
+        binance_api_secret="ADMIN_ENV_SECRET_9999_SECURE",
+        binance_testnet=True,
+        use_live_market_data=False,
+        use_live_news_feed=False,
+    )
+    vault = UserVault(settings=settings)
+    binance_client = BinanceSpotClient()
+    agent = EnsembleDecisionAgent(settings=settings)
+    auto_trader = SmartAutoTraderEngine(
+        settings=settings,
+        ensemble_agent=agent,
+        user_vault=vault,
+        binance_client=binance_client,
+    )
+    ctx = {
+        "settings": settings,
+        "ensemble_agent": agent,
+        "user_vault": vault,
+        "binance_client": binance_client,
+        "auto_trader": auto_trader,
+    }
+
+    # 1. Admin (user 111) can access .env fallback; Regular user (user 222) CANNOT
+    admin_creds = vault.resolve_credentials(111)
+    assert admin_creds is not None
+    assert admin_creds.role == "admin"
+    assert admin_creds.source == "admin_env"
+
+    user222_creds = vault.resolve_credentials(222)
+    assert user222_creds is None
+
+    # 2. Regular user 222 trying /autotrade BEFORE /setup is blocked
+    blocked_msg = _make_fake_message(222, "/autotrade scan BTCUSDT")
+    await handle_autotrade(blocked_msg, **ctx)
+    blocked_msg.answer.assert_awaited_once()
+    blocked_reply = blocked_msg.answer.call_args[0][0]
+    assert "WAJIB /SETUP DULU" in blocked_reply
+
+    # 3. Regular user 222 runs /setup -> secret message is auto-deleted & stored encrypted
+    setup_msg = _make_fake_message(222, "/setup testnet TESTNET_USER222_KEY SECRET_USER222_PASS 1.0")
+    await handle_setup(setup_msg, **ctx)
+    setup_msg.delete.assert_awaited_once()
+    setup_msg.answer.assert_awaited_once()
+    setup_reply = setup_msg.answer.call_args[0][0]
+    assert "SETUP AKUN BINANCE BERHASIL" in setup_reply
+
+    # Verify cross-user cryptographic isolation (User 111 cannot decrypt User 222's token)
+    enc_token = vault.encrypt_for_user(222, "TOP_SECRET_222")
+    with pytest.raises(ValueError, match="integrity check failed"):
+        vault.decrypt_for_user(111, enc_token)
+
+    # 4. 6-Gate Pre-Trade Check: Conflicting news sentiment blocks BUY execution (Gate 2)
+    bad_news_decision = agent.synthesize_scores(
+        s_tech=0.92,
+        s_vol=0.20,
+        s_sent=-0.45,
+        symbol="BTCUSDT",
+        entry_price=85000.0,
+        atr_14=500.0,
+        headlines=["SEC announces emergency probe"],
+    )
+    bad_report = await auto_trader.evaluate_and_execute(
+        user_id=222,
+        symbol="BTCUSDT",
+        decision_override=bad_news_decision,
+    )
+    assert bad_report.executed is False
+    assert any(g.gate_number == 2 and not g.passed for g in bad_report.gates)
+
+    # 5. All 6 Gates pass -> Order executed on User 222's personal account & position recorded
+    good_decision = agent.synthesize_scores(
+        s_tech=0.92,
+        s_vol=0.20,
+        s_sent=0.80,
+        symbol="BTCUSDT",
+        entry_price=85000.0,
+        atr_14=500.0,
+        headlines=["Institutional ETF inflows surge to record high"],
+    )
+    good_report = await auto_trader.evaluate_and_execute(
+        user_id=222,
+        symbol="BTCUSDT",
+        decision_override=good_decision,
+    )
+    assert good_report.executed is True
+    assert good_report.position_record is not None
+    assert len(vault.get_open_positions(222, "BTCUSDT")) == 1
+    assert len(vault.get_open_positions(111, "BTCUSDT")) == 0
+
+    # 6. Duplicate position on same symbol is blocked by Gate 5
+    dup_report = await auto_trader.evaluate_and_execute(
+        user_id=222,
+        symbol="BTCUSDT",
+        decision_override=good_decision,
+    )
+    assert dup_report.executed is False
+    assert any(g.gate_number == 5 and not g.passed for g in dup_report.gates)
+
+    # 7. /myaccount and /unlink work for User 222
+    acc_msg = _make_fake_message(222, "/myaccount")
+    await handle_myaccount(acc_msg, **ctx)
+    assert "TEST****_KEY" in acc_msg.answer.call_args[0][0]
+
+    unlink_msg = _make_fake_message(222, "/unlink")
+    await handle_unlink(unlink_msg, **ctx)
+    assert vault.resolve_credentials(222) is None
