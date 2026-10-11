@@ -8,6 +8,8 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from ai_engine.auto_trader.binance_client import BinanceSpotClient
+from ai_engine.auto_trader.mt5_exness_client import MT5ExnessClient
+from ai_engine.auto_trader.user_vault import BrokerProvider
 from ai_engine.auto_trader.user_vault import UserVault
 from config.logging_config import get_logger
 from config.settings import Settings, get_settings
@@ -19,6 +21,7 @@ from telegram_bot.handlers.autotrade import (
 )
 from telegram_bot.handlers.handler_utils import (
     _PENDING_SETUP_MODE,
+    _PENDING_SETUP_PROVIDER,
     clear_pending_wizards,
     extract_user_identity,
     parse_command_args,
@@ -70,21 +73,36 @@ async def _process_and_save_credentials(
     risk_pct: Optional[float],
     vault: UserVault,
     binance_client: BinanceSpotClient,
+    provider: BrokerProvider = "binance_spot",
+    server_name: Optional[str] = None,
+    mt5_client: Optional[MT5ExnessClient] = None,
 ) -> None:
-    """Delete secret message, verify against Binance API, save encrypted in UserVault, and reply."""
+    """Delete secret message, verify against Broker/Exchange API, save encrypted in UserVault, and reply."""
     deleted = await _try_delete_secret_message(message)
 
-    verification = await binance_client.verify_credentials(
-        api_key=api_key,
-        api_secret=api_secret,
-        testnet=testnet,
-    )
+    if provider == "exness_mt5":
+        eff_mt5 = mt5_client or MT5ExnessClient()
+        eff_srv = server_name or ("Exness-MT5Trial" if testnet else "Exness-MT5Real")
+        verification = await eff_mt5.verify_credentials(
+            account_id_or_login=api_key,
+            token_or_password=api_secret,
+            server_name=eff_srv,
+            testnet=testnet,
+        )
+    else:
+        eff_srv = server_name or ("Binance-Futures" if provider == "binance_futures" else "Binance-Spot")
+        verification = await binance_client.verify_credentials(
+            api_key=api_key,
+            api_secret=api_secret,
+            testnet=testnet,
+        )
+
     if not verification.valid:
-        err = html.escape(verification.error_message or "API Key atau Secret tidak valid.")
+        err = html.escape(verification.error_message or "Kredensial tidak valid.")
         await message.answer(
-            f"❌ <b>Verifikasi Akun Binance Gagal:</b>\n"
+            f"❌ <b>Verifikasi Akun Broker Gagal:</b>\n"
             f"• <b>Alasan:</b> {err}\n\n"
-            f"<i>Pastikan API Key &amp; Secret benar serta izin Spot Trading aktif. Ketik <code>/setup</code> untuk mencoba lagi.</i>",
+            f"<i>Pastikan Login/API Key &amp; Password/Secret benar. Ketik <code>/setup</code> untuk mencoba lagi.</i>",
             parse_mode="HTML",
             reply_markup=build_setup_keyboard(has_creds=False),
         )
@@ -99,6 +117,8 @@ async def _process_and_save_credentials(
         risk_per_trade_pct=risk_pct,
         verified_usdt_balance=verification.total_usdt,
         autotrade_enabled=True,
+        provider=provider,
+        server_name=eff_srv,
     )
     clear_pending_wizards(user_id)
 
@@ -139,7 +159,19 @@ async def handle_setup(message: Message, **data: Any) -> None:
         return
 
     first_lower = args[0].lower()
-    if first_lower in ("testnet", "live", "spot"):
+    provider: BrokerProvider = "binance_spot"
+    server_name: Optional[str] = None
+    if first_lower in ("exness", "mt5", "exness_mt5", "exnessgo"):
+        provider = "exness_mt5"
+        key_args = args[1:]
+        if len(key_args) >= 3 and not key_args[2].replace(".", "").isdigit():
+            server_name = key_args[2]
+        testnet = "real" not in (server_name or "").lower()
+    elif first_lower in ("futures", "binance_futures"):
+        provider = "binance_futures"
+        testnet = True
+        key_args = args[1:]
+    elif first_lower in ("testnet", "live", "spot"):
         testnet = first_lower == "testnet"
         key_args = args[1:]
     else:
@@ -150,6 +182,7 @@ async def handle_setup(message: Message, **data: Any) -> None:
         await message.answer(
             "⚠️ <b>Format /setup kurang lengkap.</b>\n"
             "Gunakan format:\n"
+            "<code>/setup exness LOGIN_MT5 PASSWORD_ANDA Exness-MT5Trial</code>\n"
             "<code>/setup testnet API_KEY_ANDA API_SECRET_ANDA</code>\n"
             "atau tekan tombol pilihan di bawah:",
             parse_mode="HTML",
@@ -160,7 +193,7 @@ async def handle_setup(message: Message, **data: Any) -> None:
     api_key = key_args[0]
     api_secret = key_args[1]
     risk_pct: Optional[float] = None
-    if len(key_args) >= 3:
+    if len(key_args) >= 3 and server_name is None:
         try:
             raw_r = float(key_args[2])
             risk_pct = raw_r / 100.0 if raw_r > 0.1 else raw_r
@@ -177,8 +210,10 @@ async def handle_setup(message: Message, **data: Any) -> None:
         risk_pct=risk_pct,
         vault=vault,
         binance_client=binance_client,
+        provider=provider,
+        server_name=server_name,
+        mt5_client=data.get("mt5_client"),
     )
-
 
 @setup_router.message(Command("cancel"))
 async def handle_cancel_setup(message: Message) -> None:
@@ -250,17 +285,21 @@ async def handle_pending_setup_credentials(message: Message, **data: Any) -> Non
 
     user_id, user_name = extract_user_identity(message, default_name="Trader")
     testnet = _PENDING_SETUP_MODE.get(user_id, True)
+    prov_tuple = _PENDING_SETUP_PROVIDER.get(user_id, ("binance_spot", "Binance-Spot"))
+    provider: BrokerProvider = prov_tuple[0]  # type: ignore[assignment]
+    default_srv = prov_tuple[1]
     tokens = (message.text or "").strip().split()
 
     if len(tokens) < 2:
         await _try_delete_secret_message(message)
         await message.answer(
-            "⚠️ Format belum sesuai. Kirimkan <b>API Key</b> dan <b>API Secret</b> dipisahkan spasi:\n"
-            "<code>API_KEY_ANDA API_SECRET_ANDA</code>",
+            "⚠️ Format belum sesuai. Kirimkan <b>Login/API Key</b> dan <b>Password/Secret</b> dipisahkan spasi:\n"
+            "<code>LOGIN_ATAU_KEY PASSWORD_ATAU_SECRET</code>",
             parse_mode="HTML",
         )
         return
 
+    srv_name = tokens[2] if (provider == "exness_mt5" and len(tokens) >= 3) else default_srv
     await _process_and_save_credentials(
         message=message,
         user_id=user_id,
@@ -271,4 +310,7 @@ async def handle_pending_setup_credentials(message: Message, **data: Any) -> Non
         risk_pct=None,
         vault=vault,
         binance_client=binance_client,
+        provider=provider,
+        server_name=srv_name,
+        mt5_client=data.get("mt5_client"),
     )

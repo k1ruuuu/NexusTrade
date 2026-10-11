@@ -122,9 +122,8 @@ class OHLCVPredictor:
             np.tanh((raw_ind["rsi_14"] - 50.0) / 15.0)
             + np.sign(raw_ind["macd_hist_norm"]) * 0.5
         )
-
         vol_scale_raw = raw_ind["atr_pct"].astype(np.float64).clip(lower=1e-4)
-        raw_ind["regime_composite"] = (
+        raw_comp = (
             (
                 0.50 * raw_ind["ema_20_dist"].astype(np.float64)
                 + 0.35 * raw_ind["macd_hist_norm"].astype(np.float64)
@@ -132,6 +131,8 @@ class OHLCVPredictor:
             )
             / vol_scale_raw
         )
+        rolling_med = raw_comp.rolling(100, min_periods=10).median().fillna(0.0)
+        raw_ind["regime_composite"] = raw_comp - rolling_med
         raw_ind["regime_rank_100"] = (
             raw_ind["regime_composite"]
             .rolling(100, min_periods=10)
@@ -253,6 +254,7 @@ class OHLCVPredictor:
             clf = lgb.LGBMClassifier(
                 objective="multiclass",
                 num_class=3,
+                class_weight="balanced",
                 n_estimators=160,
                 learning_rate=0.05,
                 num_leaves=15,

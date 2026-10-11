@@ -17,6 +17,8 @@ logger = get_logger("nexustrade.auto_trader.binance_client")
 
 BINANCE_LIVE_BASE_URL = "https://api.binance.com"
 BINANCE_TESTNET_BASE_URL = "https://testnet.binance.vision"
+BINANCE_FUTURES_LIVE_URL = "https://fapi.binance.com"
+BINANCE_FUTURES_TESTNET_URL = "https://testnet.binancefuture.com"
 
 
 @dataclass
@@ -60,9 +62,10 @@ class BinanceSpotClient:
         self.timeout_seconds = timeout_seconds
 
     @staticmethod
-    def resolve_base_url(testnet: bool) -> str:
+    def resolve_base_url(testnet: bool, futures: bool = False) -> str:
+        if futures:
+            return BINANCE_FUTURES_TESTNET_URL if testnet else BINANCE_FUTURES_LIVE_URL
         return BINANCE_TESTNET_BASE_URL if testnet else BINANCE_LIVE_BASE_URL
-
     @staticmethod
     def sign_params(params: dict[str, Any], api_secret: str) -> str:
         query_string = urlencode(params)

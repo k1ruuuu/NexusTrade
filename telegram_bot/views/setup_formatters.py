@@ -32,7 +32,11 @@ def format_setup_wizard_card(
     role_badge = format_role_badge(role, current_creds.source if current_creds else None)
 
     if current_creds is not None:
-        mode_lbl = "🧪 BINANCE TESTNET" if current_creds.testnet else "🏦 BINANCE LIVE"
+        prov_lbl = (
+            f"📱 EXNESS GO / MT5 ({html.escape(current_creds.server_name)})"
+            if current_creds.provider == "exness_mt5"
+            else ("🧪 BINANCE TESTNET" if current_creds.testnet else "🏦 BINANCE LIVE")
+        )
         src_lbl = (
             "Brankas /setup Pribadi"
             if current_creds.source == "user_setup"
@@ -40,37 +44,45 @@ def format_setup_wizard_card(
         )
         status_block = (
             f"<b>✅ Status Akun Saat Ini: TERHUBUNG</b>\n"
-            f"• <b>Mode Jaringan:</b> <code>{mode_lbl}</code>\n"
+            f"• <b>Provider &amp; Jaringan:</b> <code>{prov_lbl}</code>\n"
             f"• <b>Sumber Kredensial:</b> <code>{src_lbl}</code>\n"
-            f"• <b>API Key:</b> <code>{html.escape(current_creds.masked_api_key)}</code>\n"
-            f"• <b>Saldo Terverifikasi:</b> <code>${current_creds.verified_usdt_balance:,.2f} USDT</code>\n\n"
+            f"• <b>Login / API Key:</b> <code>{html.escape(current_creds.masked_api_key)}</code>\n"
+            f"• <b>Saldo Terverifikasi:</b> <code>${current_creds.verified_usdt_balance:,.2f} USD/USDT</code>\n\n"
         )
     else:
         status_block = (
             "<b>⚠️ Status Akun Saat Ini: BELUM TERHUBUNG</b>\n"
-            "<i>Anda wajib menghubungkan akun Binance pribadi terlebih dahulu sebelum menggunakan fitur Auto-Trade.</i>\n\n"
+            "<i>Anda wajib menghubungkan akun Exness Go / MT5 atau Binance pribadi terlebih dahulu sebelum menggunakan fitur Auto-Trade.</i>\n\n"
         )
 
     return (
-        f"🔐 <b>SETUP AKUN BINANCE PRIBADI — NEXUSTRADE AI</b>\n"
+        f"🔐 <b>SETUP AKUN TRADING PRIBADI — NEXUSTRADE AI</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"Halo <b>{safe_name}</b> (ID: <code>{user_id}</code>)\n"
         f"• <b>Role Anda:</b> {role_badge}\n\n"
         f"{status_block}"
-        f"<b>🛡️ Jaminan Keamanan Multi-User:</b>\n"
-        f"1️⃣ Setiap user memiliki brankas terenkripsi sendiri (<code>PBKDF2-HMAC-SHA256</code>).\n"
-        f"2️⃣ Data pada <code>.env</code> <b>hanya berlaku untuk Role Admin</b>. User biasa wajib <code>/setup</code> mandiri.\n"
-        f"3️⃣ Pesan chat Anda yang berisi <code>API Secret</code> akan <b>dihapus otomatis</b> oleh bot.\n"
-        f"4️⃣ Hanya aktifkan izin <b>Read &amp; Spot Trading</b> di Binance (<b>JANGAN</b> aktifkan izin Withdraw).\n\n"
-        f"<b>🚀 Cara Menghubungkan Akun Binance Anda:</b>\n"
-        f"• <b>Cara 1 (Interaktif):</b> Tekan tombol <b>🧪 Pilih Testnet</b> atau <b>🏦 Pilih Live</b> di bawah, lalu kirim <code>API_KEY API_SECRET</code>.\n"
+        f"<b>🌐 Pilihan Provider yang Didukung (BUY &amp; SELL 2 Arah):</b>\n"
+        f"• <b>📱 Exness Go / MetaTrader 5:</b> Mendukung <b>SEMUA ASET</b> (Crypto, Emas <code>XAUUSDm</code>, Forex <code>EURUSDm</code>, Saham AS <code>NVDA</code>, Indeks <code>US500</code>) untuk <b>BUY &amp; SELL</b> + SL/TP otomatis.\n"
+        f"• <b>🟡 Binance (Spot / Futures):</b> Khusus aset Crypto (<code>BTCUSDT</code>, <code>ETHUSDT</code>, dll.).\n\n"
+        f"<b>🚀 Cara Menghubungkan Akun:</b>\n"
+        f"• <b>Cara 1 (Interaktif):</b> Tekan tombol <b>📱 Pilih Exness Go / MT5</b> atau <b>🧪 Pilih Binance</b> di bawah.\n"
         f"• <b>Cara 2 (Perintah Langsung):</b>\n"
-        f"  <code>/setup testnet API_KEY_ANDA API_SECRET_ANDA</code>\n"
-        f"  <code>/setup live API_KEY_ANDA API_SECRET_ANDA</code>"
+        f"  <code>/setup exness LOGIN_MT5 PASSWORD_ATAU_TOKEN [Exness-MT5Trial|Exness-MT5Real]</code>\n"
+        f"  <code>/setup testnet API_KEY_BINANCE API_SECRET_BINANCE</code>\n"
+        f"  <code>/setup live API_KEY_BINANCE API_SECRET_BINANCE</code>"
     )
 
 
-def format_setup_prompt_key_card(testnet: bool) -> str:
+def format_setup_prompt_key_card(testnet: bool, provider: str = "binance_spot") -> str:
+    if provider == "exness_mt5":
+        srv = "Exness-MT5Trial (Demo)" if testnet else "Exness-MT5Real (Live)"
+        return (
+            f"📱 <b>PROVIDER DIPILIH: EXNESS GO / METATRADER 5 ({srv})</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Silakan balas pesan ini dengan mengirim <b>Login ID MT5 / Account ID</b> dan <b>Password Trading / MetaApi Token</b> (serta nama Server opsional):\n\n"
+            f"<code>LOGIN_ID_MT5 PASSWORD_ANDA Exness-MT5Trial</code>\n\n"
+            f"<i>🔒 Pesan Anda akan langsung dihapus otomatis oleh bot begitu diterima. Ketik /cancel untuk membatalkan.</i>"
+        )
     mode_str = "🧪 BINANCE SPOT TESTNET" if testnet else "🏦 BINANCE SPOT LIVE"
     return (
         f"🔑 <b>MODE DIPILIH: {mode_str}</b>\n"
@@ -87,15 +99,20 @@ def format_setup_success_card(
     verification: BinanceAccountVerification,
     secret_deleted: bool = True,
 ) -> str:
-    mode_str = "🧪 BINANCE TESTNET" if creds.testnet else "🏦 BINANCE LIVE"
+    if creds.provider == "exness_mt5":
+        mode_str = f"📱 EXNESS GO / MT5 ({html.escape(creds.server_name)})"
+        header_title = "✅ <b>SETUP AKUN EXNESS GO / MT5 BERHASIL!</b>"
+    else:
+        mode_str = "🧪 BINANCE TESTNET" if creds.testnet else "🏦 BINANCE LIVE"
+        header_title = "✅ <b>SETUP AKUN BINANCE BERHASIL!</b>"
     role_badge = format_role_badge(creds.role, creds.source)
     del_note = (
-        "🗑️ <i>Pesan chat berisi API Secret Anda telah dihapus otomatis demi keamanan.</i>\n\n"
+        "🗑️ <i>Pesan chat berisi kredensial rahasia Anda telah dihapus otomatis demi keamanan.</i>\n\n"
         if secret_deleted
         else ""
     )
     return (
-        f"✅ <b>SETUP AKUN BINANCE BERHASIL!</b>\n"
+        f"{header_title}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{del_note}"
         f"• <b>ID Telegram:</b> <code>{creds.user_id}</code> ({html.escape(creds.username)})\n"
@@ -134,7 +151,10 @@ def format_myaccount_card(
             f"Silakan ketik <code>/setup</code> terlebih dahulu.</i>"
         )
 
-    mode_str = "🧪 TESTNET" if creds.testnet else "🏦 LIVE"
+    if creds.provider == "exness_mt5":
+        mode_str = f"📱 EXNESS GO / MT5 ({html.escape(creds.server_name)})"
+    else:
+        mode_str = "🧪 BINANCE TESTNET" if creds.testnet else "🏦 BINANCE LIVE"
     src_str = "Setup Pribadi (/setup)" if creds.source == "user_setup" else "Konfigurasi Admin (.env)"
     auto_badge = "🟢 <b>AKTIF (ON)</b>" if creds.autotrade_enabled else "⚪ <b>NONAKTIF (OFF)</b>"
 
@@ -150,12 +170,12 @@ def format_myaccount_card(
         pos_block = "  <i>Belum ada posisi terbuka saat ini.</i>"
 
     return (
-        f"👤 <b>PROFIL AKUN BINANCE — {safe_name}</b>\n"
+        f"👤 <b>PROFIL AKUN TRADING — {safe_name}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• <b>ID Telegram:</b> <code>{user_id}</code>\n"
         f"• <b>Role:</b> {role_badge}\n"
         f"• <b>Sumber Akun:</b> <code>{src_str}</code>\n"
-        f"• <b>Jaringan:</b> <code>{mode_str}</code>\n"
+        f"• <b>Provider &amp; Server:</b> <code>{mode_str}</code>\n"
         f"• <b>API Key:</b> <code>{html.escape(creds.masked_api_key)}</code>\n"
         f"• <b>Saldo USDT:</b> <code>${creds.verified_usdt_balance:,.2f} USDT</code>\n"
         f"• <b>Status Auto-Trade:</b> {auto_badge}\n"

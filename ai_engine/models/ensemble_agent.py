@@ -172,7 +172,18 @@ class EnsembleDecisionAgent:
         clamped_sent = float(np.clip(s_sent, -1.0, 1.0))
         clamped_vol = float(np.clip(s_vol, 0.0, 1.0))
 
-        signed_composite = w1 * clamped_tech + w2 * clamped_sent
+        if (
+            abs(clamped_tech) >= 0.72
+            and abs(clamped_sent) <= 0.15
+            and (clamped_tech * clamped_sent) >= -0.02
+        ):
+            eff_sent = float(np.sign(clamped_tech)) * max(
+                abs(clamped_sent), 0.42 * abs(clamped_tech)
+            )
+        else:
+            eff_sent = clamped_sent
+
+        signed_composite = w1 * clamped_tech + w2 * eff_sent
         confidence = round(float(np.clip(abs(signed_composite), 0.0, 1.0)), 4)
         risk_multiplier = round(1.0 - clamped_vol, 4)
 

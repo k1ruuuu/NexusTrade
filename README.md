@@ -36,9 +36,9 @@
 ### 5. Interactive Telegram Bot Terminal (`telegram_bot/`)
 - Built with `aiogram` v3 featuring `WhitelistAuthMiddleware`, sliding-window `RateLimitMiddleware`, human-friendly Indonesian HTML cards with ASCII progress bars, and interactive inline keyboards.
 - **Multi-User `/setup` Vault & 6-Gate Smart Auto-Trader (`ai_engine/auto_trader/`):**
-  - **Strict Admin vs. User Role Isolation:** Credentials in `.env` (`BINANCE_API_KEY` / `BINANCE_API_SECRET`) apply **strictly to Admin users**. Regular users must run `/setup` in Telegram to connect their own personal Binance account (encrypted per user via `PBKDF2-HMAC-SHA256`, with automatic secret chat deletion).
-  - **6-Gate Pre-Trade Checklist (`SmartAutoTraderEngine`):** Never opens a position blindly — requires (1) verified `/setup` account, (2) aligned breaking news & FinBERT sentiment, (3) high-conviction 5Y+live technical signal, (4) structural Support/Resistance clearance (`S1`/`R1`), (5) normal volatility & zero duplicate symbol position, and (6) automatic `2xATR` Stop-Loss & `TP1`/`TP2` locking.
-
+  - **Multi-Provider 2-Way Execution (`Exness Go / MetaTrader 5` & `Binance`):** Supports connecting **Exness Go / MetaTrader 5** (`/setup exness <login> <password> [Exness-MT5Trial|Exness-MT5Real]`) for **2-way `BUY` (Long) & `SELL` (Short)** across **all asset classes** (Crypto `BTCUSDm`, Gold `XAUUSDm`, Forex `EURUSDm`, US Stocks `NVDAm`, Indices `US500m`) with native server-side `Stop Loss` & `Take Profit`, alongside **Binance Spot / Futures**.
+  - **Strict Admin vs. User Role Isolation:** Credentials in `.env` (`BINANCE_API_KEY` / `BINANCE_API_SECRET`) apply **strictly to Admin users**. Regular users must run `/setup` in Telegram to connect their own personal account (encrypted per user via `PBKDF2-HMAC-SHA256`, with automatic secret chat deletion).
+  - **6-Gate Pre-Trade Checklist (`SmartAutoTraderEngine`):** Never opens a position blindly — requires (1) verified `/setup` account, (2) aligned breaking news & FinBERT sentiment, (3) symmetric high-conviction 5Y+live technical signal (`BUY` or `SELL`), (4) structural Support/Resistance clearance (`S1`/`R1`), (5) normal volatility & zero duplicate symbol position, and (6) automatic `2xATR` Stop-Loss & `TP1`/`TP2` locking.
 - **Admin Control Panel (`/admin`):**
   - **Management User:** Add, edit expiration (`1 Hari`, `1 Minggu`, `1 Bulan`), and delete/revoke users via Telegram ID, with automatic middleware expiration enforcement.
   - **Broadcast:** Send custom official announcements to all active users.
@@ -97,7 +97,8 @@ NexusTrade/
 │   │   ├── user_vault.py                         # Encrypted SQLite multi-user vault (Admin vs User isolation)
 │   │   ├── admin_models.py                       # Managed user, expiry preset, & audit dataclasses
 │   │   ├── admin_store.py                        # SQLite Admin store (User expiry, Maintenance, Broadcast, Audit)
-│   │   ├── binance_client.py                     # Async HMAC-SHA256 Binance Spot & Testnet client
+│   │   ├── binance_client.py                     # Async HMAC-SHA256 Binance Spot & Futures client
+│   │   ├── mt5_exness_client.py                  # MetaTrader 5 / Exness Go all-asset 2-way BUY/SELL client
 │   │   └── engine.py                             # 6-Gate Smart Auto-Trader execution engine
 │   ├── risk_management/
 │   │   ├── stop_loss_manager.py              # 2x ATR(14) Stop-Loss, TP1/TP2, & trailing stop engine

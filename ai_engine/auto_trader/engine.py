@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from ai_engine.auto_trader.binance_client import BinanceOrderResult, BinanceSpotClient
+from ai_engine.auto_trader.mt5_exness_client import MT5ExnessClient
 from ai_engine.auto_trader.user_vault import (
     UserBinanceCredentials,
     UserPositionRecord,
@@ -62,11 +63,13 @@ class SmartAutoTraderEngine:
         ensemble_agent: Optional[EnsembleDecisionAgent] = None,
         user_vault: Optional[UserVault] = None,
         binance_client: Optional[BinanceSpotClient] = None,
+        mt5_client: Optional[MT5ExnessClient] = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.ensemble_agent = ensemble_agent or EnsembleDecisionAgent(self.settings)
         self.vault = user_vault or UserVault(self.settings)
         self.binance_client = binance_client or BinanceSpotClient()
+        self.mt5_client = mt5_client or MT5ExnessClient()
 
     async def evaluate_and_execute(
         self,
@@ -125,14 +128,18 @@ class SmartAutoTraderEngine:
                 rejection_summary="Saklar Auto-Trade sedang OFF.",
             )
 
+        is_mt5_provider = creds.provider == "exness_mt5"
         is_crypto, _ = is_crypto_symbol(clean_sym)
-        if not is_crypto:
+        if not is_mt5_provider and not is_crypto:
             gates.append(
                 AutoTradeGateCheck(
                     gate_number=1,
-                    name="Kompatibilitas Simbol Binance",
+                    name="Kompatibilitas Simbol Broker",
                     passed=False,
-                    detail=f"DITOLAK: {clean_sym} bukan aset Crypto yang diperdagangkan di Binance Spot.",
+                    detail=(
+                        f"DITOLAK: {clean_sym} bukan aset Crypto Binance. "
+                        f"Gunakan provider Exness Go / MT5 (/setup exness) untuk trading Emas, Forex, Saham AS & Indeks."
+                    ),
                 )
             )
             return AutoTradeExecutionReport(
@@ -143,9 +150,10 @@ class SmartAutoTraderEngine:
                 executed=False,
                 credentials=creds,
                 gates=gates,
-                rejection_summary=f"Simbol {clean_sym} bukan pasangan Crypto Binance Spot.",
+                rejection_summary=(
+                    f"Simbol {clean_sym} membutuhkan provider Exness Go / MT5 (/setup exness)."
+                ),
             )
-
         if creds.verified_usdt_balance < 10.0:
             gates.append(
                 AutoTradeGateCheck(
@@ -322,23 +330,37 @@ class SmartAutoTraderEngine:
         qty = target_notional / max(decision.entry_price, 1e-9)
 
         order_side = "BUY" if decision.action == "BUY" else "SELL"
-        order_res = await self.binance_client.place_market_order(
-            api_key=creds.api_key,
-            api_secret=creds.api_secret,
-            symbol=clean_sym,
-            side=order_side,
-            quantity=qty,
-            reference_price=decision.entry_price,
-            testnet=creds.testnet,
-        )
+        if is_mt5_provider:
+            order_res = await self.mt5_client.place_market_order(
+                account_id_or_login=creds.api_key,
+                token_or_password=creds.api_secret,
+                symbol=clean_sym,
+                side=order_side,
+                quantity=qty,
+                reference_price=decision.entry_price,
+                stop_loss=decision.stop_loss,
+                take_profit=decision.take_profit_1,
+                server_name=creds.server_name,
+                testnet=creds.testnet,
+            )
+        else:
+            order_res = await self.binance_client.place_market_order(
+                api_key=creds.api_key,
+                api_secret=creds.api_secret,
+                symbol=clean_sym,
+                side=order_side,
+                quantity=qty,
+                reference_price=decision.entry_price,
+                testnet=creds.testnet,
+            )
 
         if not order_res.executed:
             gates.append(
                 AutoTradeGateCheck(
                     gate_number=6,
-                    name="Eksekusi Order ke Binance",
+                    name="Eksekusi Order ke Broker",
                     passed=False,
-                    detail=order_res.error_message or "Order gagal dieksekusi oleh Binance.",
+                    detail=order_res.error_message or "Order gagal dieksekusi oleh broker.",
                 )
             )
             return AutoTradeExecutionReport(
@@ -351,7 +373,7 @@ class SmartAutoTraderEngine:
                 credentials=creds,
                 gates=gates,
                 order_result=order_res,
-                rejection_summary=order_res.error_message or "Eksekusi order ditolak oleh Binance.",
+                rejection_summary=order_res.error_message or "Eksekusi order ditolak oleh broker.",
             )
 
         pos_record = self.vault.record_open_position(

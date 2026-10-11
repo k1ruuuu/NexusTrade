@@ -19,7 +19,7 @@ logger = get_logger("nexustrade.auto_trader.vault")
 
 UserRole = Literal["admin", "user"]
 CredentialSource = Literal["user_setup", "admin_env"]
-
+BrokerProvider = Literal["binance_spot", "binance_futures", "exness_mt5"]
 @dataclass
 class UserBinanceCredentials:
     """Decrypted in-memory Binance credentials isolated to a single Telegram user_id."""
@@ -35,6 +35,8 @@ class UserBinanceCredentials:
     autotrade_enabled: bool = False
     risk_per_trade_pct: float = 0.01
     verified_usdt_balance: float = 0.0
+    provider: BrokerProvider = "binance_spot"
+    server_name: str = "Binance-Spot"
     updated_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
@@ -104,10 +106,20 @@ class UserVault:
                     autotrade_enabled INTEGER NOT NULL DEFAULT 0,
                     risk_per_trade_pct REAL NOT NULL DEFAULT 0.01,
                     verified_usdt_balance REAL NOT NULL DEFAULT 0.0,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    provider TEXT NOT NULL DEFAULT 'binance_spot',
+                    server_name TEXT NOT NULL DEFAULT 'Binance-Spot'
                 )
                 """
             )
+            for col_sql in (
+                "ALTER TABLE user_accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'binance_spot'",
+                "ALTER TABLE user_accounts ADD COLUMN server_name TEXT NOT NULL DEFAULT 'Binance-Spot'",
+            ):
+                try:
+                    conn.execute(col_sql)
+                except sqlite3.OperationalError:
+                    pass
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS user_positions (
@@ -160,12 +172,18 @@ class UserVault:
         risk_per_trade_pct: Optional[float] = None,
         verified_usdt_balance: float = 0.0,
         autotrade_enabled: bool = False,
+        provider: BrokerProvider = "binance_spot",
+        server_name: Optional[str] = None,
     ) -> UserBinanceCredentials:
-        """Encrypt and persist a user's personal Binance API credentials."""
+        """Encrypt and persist a user's personal Broker/Exchange credentials."""
         clean_key = api_key.strip()
         clean_secret = api_secret.strip()
-        if len(clean_key) < 8 or len(clean_secret) < 8:
-            raise ValueError("API Key dan API Secret harus minimal 8 karakter.")
+        min_key_len = 5 if provider == "exness_mt5" else 8
+        min_sec_len = 6 if provider == "exness_mt5" else 8
+        if len(clean_key) < min_key_len or len(clean_secret) < min_sec_len:
+            raise ValueError(
+                f"Kredensial tidak valid (Key min {min_key_len} karakter, Secret/Password min {min_sec_len} karakter)."
+            )
 
         eff_risk = (
             float(risk_per_trade_pct)
@@ -173,6 +191,11 @@ class UserVault:
             else min(0.01, self.settings.max_account_risk_per_trade)
         )
         eff_risk = max(0.001, min(eff_risk, self.settings.max_account_risk_per_trade))
+        resolved_server = server_name or (
+            ("Exness-MT5Trial" if testnet else "Exness-MT5Real")
+            if provider == "exness_mt5"
+            else ("Binance-Futures" if provider == "binance_futures" else "Binance-Spot")
+        )
 
         enc_key = self.encrypt_for_user(user_id, clean_key)
         enc_secret = self.encrypt_for_user(user_id, clean_secret)
@@ -185,8 +208,8 @@ class UserVault:
                 INSERT INTO user_accounts (
                     user_id, username, encrypted_api_key, encrypted_api_secret,
                     masked_api_key, testnet, autotrade_enabled, risk_per_trade_pct,
-                    verified_usdt_balance, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    verified_usdt_balance, updated_at, provider, server_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     username = excluded.username,
                     encrypted_api_key = excluded.encrypted_api_key,
@@ -196,7 +219,9 @@ class UserVault:
                     autotrade_enabled = excluded.autotrade_enabled,
                     risk_per_trade_pct = excluded.risk_per_trade_pct,
                     verified_usdt_balance = excluded.verified_usdt_balance,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    provider = excluded.provider,
+                    server_name = excluded.server_name
                 """,
                 (
                     int(user_id),
@@ -209,14 +234,18 @@ class UserVault:
                     eff_risk,
                     float(verified_usdt_balance),
                     now_iso,
+                    provider,
+                    resolved_server,
                 ),
             )
             conn.commit()
 
         logger.info(
-            "Saved encrypted Binance credentials in UserVault",
+            "Saved encrypted trading credentials in UserVault",
             user_id=user_id,
             role=self.get_user_role(user_id),
+            provider=provider,
+            server_name=resolved_server,
             masked_key=masked,
             testnet=testnet,
         )
@@ -232,6 +261,8 @@ class UserVault:
             autotrade_enabled=autotrade_enabled,
             risk_per_trade_pct=eff_risk,
             verified_usdt_balance=float(verified_usdt_balance),
+            provider=provider,
+            server_name=resolved_server,
             updated_at=now_iso,
         )
 
@@ -254,6 +285,14 @@ class UserVault:
         if row is not None:
             api_key = self.decrypt_for_user(uid, str(row["encrypted_api_key"]))
             api_secret = self.decrypt_for_user(uid, str(row["encrypted_api_secret"]))
+            row_keys = row.keys()
+            prov_raw = str(row["provider"]) if "provider" in row_keys else "binance_spot"
+            prov: BrokerProvider = (
+                prov_raw  # type: ignore[assignment]
+                if prov_raw in ("binance_spot", "binance_futures", "exness_mt5")
+                else "binance_spot"
+            )
+            srv_name = str(row["server_name"]) if "server_name" in row_keys else "Binance-Spot"
             return UserBinanceCredentials(
                 user_id=uid,
                 username=str(row["username"]),
@@ -266,9 +305,10 @@ class UserVault:
                 autotrade_enabled=bool(row["autotrade_enabled"]),
                 risk_per_trade_pct=float(row["risk_per_trade_pct"]),
                 verified_usdt_balance=float(row["verified_usdt_balance"]),
+                provider=prov,
+                server_name=srv_name,
                 updated_at=str(row["updated_at"]),
             )
-
         # Strict Admin-only .env fallback
         if role == "admin":
             env_key = self.settings.binance_api_key.strip()

@@ -544,3 +544,86 @@ async def test_logic_flow_audit_regressions_lf01_to_lf11(tmp_path: Path) -> None
     await bot_service.dispatch_webhook_alert(alert, strong_buy_dec, None)
     assert len(bot_service.broadcast_history[-1]["autotrade_reports"]) == 1
     assert bot_service.broadcast_history[-1]["autotrade_reports"][0].executed is True
+
+
+@pytest.mark.asyncio
+async def test_exness_mt5_provider_all_asset_buy_and_sell_execution(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        telegram_allowed_user_ids=[111, 333],
+        telegram_admin_user_ids=[111],
+        telegram_admin_chat_id=111,
+        use_live_market_data=False,
+        use_live_news_feed=False,
+    )
+    vault = UserVault(settings=settings)
+    agent = EnsembleDecisionAgent(settings=settings)
+    auto_trader = SmartAutoTraderEngine(
+        settings=settings,
+        ensemble_agent=agent,
+        user_vault=vault,
+    )
+    ctx = {
+        "settings": settings,
+        "ensemble_agent": agent,
+        "user_vault": vault,
+        "auto_trader": auto_trader,
+    }
+
+    # 1. User 333 sets up an Exness Go / MT5 account via /setup exness
+    ex_msg = _make_fake_message(333, "/setup exness 88333444 ExnessGoPass2026 Exness-MT5Trial")
+    await handle_setup(ex_msg, **ctx)
+    ex_msg.delete.assert_awaited_once()
+    ex_reply = ex_msg.answer.call_args[0][0]
+    assert "SETUP AKUN EXNESS GO / MT5 BERHASIL" in ex_reply
+
+    creds = vault.resolve_credentials(333)
+    assert creds is not None
+    assert creds.provider == "exness_mt5"
+    assert creds.server_name == "Exness-MT5Trial"
+
+    # 2. Symmetric SELL execution on Gold (XAUUSD -> XAUUSDm) with neutral news (s_sent=0.0)
+    sell_gold_dec = agent.synthesize_scores(
+        s_tech=-0.92,
+        s_vol=0.20,
+        s_sent=0.0,
+        symbol="XAUUSD",
+        entry_price=4380.0,
+        atr_14=12.0,
+        headlines=["Gold market awaits macro catalyst"],
+    )
+    assert sell_gold_dec.action == "SELL"
+    assert sell_gold_dec.confidence >= 0.72
+
+    sell_report = await auto_trader.evaluate_and_execute(
+        user_id=333,
+        symbol="XAUUSD",
+        decision_override=sell_gold_dec,
+    )
+    assert sell_report.executed is True
+    assert sell_report.order_result is not None
+    assert sell_report.order_result.side == "SELL"
+    assert sell_report.order_result.symbol == "XAUUSDm"
+    assert sell_report.position_record is not None
+    assert sell_report.position_record.stop_loss > sell_report.position_record.entry_price
+    assert sell_report.position_record.take_profit_1 < sell_report.position_record.entry_price
+
+    # 3. Multi-Asset BUY execution on US Equities (NVDA -> NVDAm) on Exness Go / MT5
+    buy_nvda_dec = agent.synthesize_scores(
+        s_tech=0.90,
+        s_vol=0.22,
+        s_sent=0.65,
+        symbol="NVDA",
+        entry_price=138.50,
+        atr_14=2.40,
+        headlines=["AI data center GPU demand surges"],
+    )
+    buy_report = await auto_trader.evaluate_and_execute(
+        user_id=333,
+        symbol="NVDA",
+        decision_override=buy_nvda_dec,
+    )
+    assert buy_report.executed is True
+    assert buy_report.order_result is not None
+    assert buy_report.order_result.side == "BUY"
+    assert buy_report.order_result.symbol == "NVDAm"
