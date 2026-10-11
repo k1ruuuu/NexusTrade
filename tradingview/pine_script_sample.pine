@@ -1,0 +1,81 @@
+//@version=5
+strategy("NexusTrade AI - Institutional TrendBreakout v2", overlay=true, initial_capital=100000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.05)
+
+// ============================================================================
+// 1. User Inputs & Webhook Configuration
+// ============================================================================
+webhookSecret = input.string("YOUR_ENCRYPTED_WEBHOOK_SECRET", title="Webhook Secret Passphrase", group="NexusTrade AI Webhook")
+strategyTag   = input.string("TrendBreakout_v2", title="Strategy Identifier", group="NexusTrade AI Webhook")
+emaFastLen    = input.int(20, title="Fast EMA Length", minval=2, group="Technical Indicators")
+emaMidLen     = input.int(50, title="Medium EMA Length", minval=5, group="Technical Indicators")
+emaSlowLen    = input.int(200, title="Slow EMA Length", minval=20, group="Technical Indicators")
+rsiLen        = input.int(14, title="RSI Length", minval=2, group="Technical Indicators")
+atrLen        = input.int(14, title="ATR Length", minval=2, group="Risk Management")
+atrStopMult   = input.float(2.0, title="ATR Stop-Loss Multiplier", minval=0.5, step=0.1, group="Risk Management")
+minRrr        = input.float(2.0, title="Minimum Reward-to-Risk Ratio", minval=1.0, step=0.1, group="Risk Management")
+
+// ============================================================================
+// 2. Indicator Calculations (Zero Lookahead / Confirmed Bar Execution)
+// ============================================================================
+emaFast = ta.ema(close, emaFastLen)
+emaMid  = ta.ema(close, emaMidLen)
+emaSlow = ta.ema(close, emaSlowLen)
+rsiVal  = ta.rsi(close, rsiLen)
+[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+atrVal  = ta.atr(atrLen)
+
+// ============================================================================
+// 3. Institutional Trend & Momentum Entry Conditions
+// ============================================================================
+bullishRegime = emaFast > emaMid and emaMid > emaSlow
+bearishRegime = emaFast < emaMid and emaMid < emaSlow
+
+longCondition  = barstate.isconfirmed and bullishRegime and ta.crossover(macdLine, signalLine) and rsiVal > 50 and rsiVal < 72
+shortCondition = barstate.isconfirmed and bearishRegime and ta.crossunder(macdLine, signalLine) and rsiVal < 50 and rsiVal > 28
+
+// ============================================================================
+// 4. Dynamic 2x ATR(14) Stop-Loss & 1:2 RRR Take-Profit Targets
+// ============================================================================
+stopDist  = atrVal * atrStopMult
+longStop  = close - stopDist
+longTp    = close + (stopDist * minRrr)
+shortStop = close + stopDist
+shortTp   = close - (stopDist * minRrr)
+
+// ============================================================================
+// 5. JSON Payload Builder for POST /api/v1/tradingview/webhook
+// ============================================================================
+f_buildPayload(string actionStr) =>
+    isoTime = str.format_time(time_close, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC")
+    payload = '{"secret":"' + webhookSecret + '",' +
+              '"ticker":"' + syminfo.prefix + ':' + syminfo.ticker + '",' +
+              '"interval":"' + timeframe.period + '",' +
+              '"action":"' + actionStr + '",' +
+              '"price":' + str.tostring(close, "#.####") + ',' +
+              '"strategy":"' + strategyTag + '",' +
+              '"indicators":{' +
+                  '"rsi":' + str.tostring(rsiVal, "#.##") + ',' +
+                  '"macd":' + str.tostring(macdLine, "#.####") + ',' +
+                  '"atr":' + str.tostring(atrVal, "#.####") +
+              '},' +
+              '"timestamp":"' + isoTime + '"}'
+    payload
+
+if longCondition
+    strategy.entry("NexusLong", strategy.long)
+    strategy.exit("NexusLongExit", from_entry="NexusLong", stop=longStop, limit=longTp)
+    alert(f_buildPayload("BUY"), alert.freq_once_per_bar_close)
+
+if shortCondition
+    strategy.entry("NexusShort", strategy.short)
+    strategy.exit("NexusShortExit", from_entry="NexusShort", stop=shortStop, limit=shortTp)
+    alert(f_buildPayload("SELL"), alert.freq_once_per_bar_close)
+
+// ============================================================================
+// 6. Visual Overlays
+// ============================================================================
+plot(emaFast, title="EMA 20", color=color.new(#3b82f6, 0), linewidth=2)
+plot(emaMid,  title="EMA 50", color=color.new(#f59e0b, 0), linewidth=2)
+plot(emaSlow, title="EMA 200", color=color.new(#a855f7, 0), linewidth=2)
+plotshape(longCondition,  title="BUY Signal",  style=shape.labelup,   location=location.belowbar, color=color.new(#10b981, 0), text="BUY",  textcolor=color.white, size=size.small)
+plotshape(shortCondition, title="SELL Signal", style=shape.labeldown, location=location.abovebar, color=color.new(#ef4444, 0), text="SELL", textcolor=color.white, size=size.small)
