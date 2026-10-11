@@ -14,6 +14,7 @@ from aiogram.types import (
 from ai_engine.auto_trader.binance_client import BinanceSpotClient
 from ai_engine.auto_trader.mt5_exness_client import MT5ExnessClient
 from ai_engine.auto_trader.engine import SmartAutoTraderEngine
+from ai_engine.auto_trader.session_manager import is_session_duration_token
 from ai_engine.auto_trader.user_vault import UserVault
 from ai_engine.models.ensemble_agent import EnsembleDecisionAgent
 from config.settings import Settings, get_settings
@@ -31,6 +32,7 @@ from telegram_bot.views.setup_formatters import (
     format_myaccount_card,
     format_setup_prompt_key_card,
     format_setup_success_card,
+    format_timed_session_started_card,
 )
 
 autotrade_router = Router(name="autotrade")
@@ -145,13 +147,19 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         )
         return
 
-    if sub == "off":
+    if sub in ("off", "stop"):
+        stopped_sessions = auto_trader.stop_user_sessions(user_id)
         vault.set_autotrade_enabled(user_id, False)
         updated = vault.resolve_credentials(user_id)
         positions = vault.get_open_positions(user_id)
+        stop_note = (
+            f" ({len(stopped_sessions)} sesi berjangka waktu dihentikan)"
+            if stopped_sessions
+            else ""
+        )
         await message.answer(
-            "⚪ <b>Auto-Trade Dinonaktifkan.</b>\n"
-            "Bot tidak akan membuka posisi otomatis baru sampai Anda mengaktifkannya kembali.\n\n"
+            f"⚪ <b>Auto-Trade Dinonaktifkan{stop_note}.</b>\n"
+            f"Bot tidak akan membuka posisi otomatis baru sampai Anda mengaktifkannya kembali.\n\n"
             + format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), updated, positions),
             parse_mode="HTML",
             reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=False),
@@ -160,19 +168,91 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
 
     if sub == "status":
         positions = vault.get_open_positions(user_id)
+        active_sessions = auto_trader.get_user_sessions(user_id)
+        sess_lines = ""
+        if active_sessions:
+            s_items = [
+                f"• <b>{s.symbol} ({s.duration_label})</b>: Sisa <code>{s.remaining_human}</code> | "
+                f"Siklus: <code>{s.cycles_completed}x</code> | <i>{s.last_check_summary}</i>"
+                for s in active_sessions
+            ]
+            sess_lines = "\n\n<b>⏱️ Sesi Auto-Trade Berjangka Aktif:</b>\n" + "\n".join(s_items)
         await message.answer(
-            format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), creds, positions),
+            format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), creds, positions)
+            + sess_lines,
             parse_mode="HTML",
             reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=creds.autotrade_enabled),
         )
         return
 
-    if sub == "scan":
-        symbol = normalize_symbol(args[1]) if len(args) >= 2 else "BTCUSDT"
-        timeframe = normalize_timeframe(args[2]) if len(args) >= 3 else "15m"
-    else:
-        symbol = normalize_symbol(args[0])
-        timeframe = normalize_timeframe(args[1]) if len(args) >= 2 else "15m"
+    # Parse `/autotrade <SYMBOL> <DURATION> [TIMEFRAME]` or `/autotrade scan <SYMBOL> [DURATION|TIMEFRAME]`
+    raw_tokens = args[1:] if sub == "scan" else args
+    symbol = normalize_symbol(raw_tokens[0]) if len(raw_tokens) >= 1 else "BTCUSDT"
+    duration_token: str | None = None
+    timeframe = "15m"
+
+    if len(raw_tokens) >= 2:
+        if is_session_duration_token(raw_tokens[1]):
+            duration_token = raw_tokens[1]
+            if len(raw_tokens) >= 3:
+                timeframe = normalize_timeframe(raw_tokens[2])
+        else:
+            timeframe = normalize_timeframe(raw_tokens[1])
+            if len(raw_tokens) >= 3 and is_session_duration_token(raw_tokens[2]):
+                duration_token = raw_tokens[2]
+
+    if duration_token is not None:
+        async def _notify_user(uid: int, text_html: str) -> None:
+            try:
+                await message.answer(text_html, parse_mode="HTML")
+            except Exception:
+                pass
+
+        session_state, first_res = await auto_trader.start_timed_session(
+            user_id=user_id,
+            symbol=symbol,
+            duration_code=duration_token,
+            timeframe=timeframe,
+            notify_callback=_notify_user,
+        )
+        await message.answer(
+            format_timed_session_started_card(session_state, first_res),
+            parse_mode="HTML",
+            reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=True),
+        )
+        return
+
+    # If user already has an OPEN position on `symbol`, monitor & hold it (ratchet Trailing Stop / check TP/SL)
+    existing_open = vault.get_open_positions(user_id, symbol=symbol)
+    if existing_open:
+        mon_res = await auto_trader.monitor_and_manage_open_position(
+            user_id=user_id,
+            symbol=symbol,
+            timeframe=timeframe,
+        )
+        p = mon_res.position or existing_open[0]
+        if mon_res.action_taken in ("CLOSED_TP", "CLOSED_SL"):
+            await message.answer(
+                f"🎯 <b>POSISI {p.symbol} ({p.side}) DITUTUP OTOMATIS</b>\n"
+                f"• <b>Alasan:</b> {mon_res.exit_reason}\n"
+                f"• <b>Harga Keluar:</b> <code>${mon_res.current_price:,.2f}</code>\n"
+                f"• <b>Realized PnL:</b> <code>${mon_res.realized_pnl_usdt:+.2f} USDT</code>",
+                parse_mode="HTML",
+                reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=creds.autotrade_enabled),
+            )
+            return
+        await message.answer(
+            f"🛡️ <b>MENAHAN POSISI {p.symbol} ({p.side}) MENUJU TARGET PROFIT BESAR</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Harga Masuk:</b> <code>${p.entry_price:,.2f}</code> | <b>Harga Saat Ini:</b> <code>${mon_res.current_price:,.2f}</code>\n"
+            f"• <b>Floating PnL:</b> <code>${mon_res.unrealized_pnl_usdt:+.2f} USDT ({mon_res.unrealized_pnl_pct:+.2f}%)</code>\n"
+            f"• <b>Stop Loss / Trailing Stop:</b> <code>${p.stop_loss:,.2f}</code>\n"
+            f"• <b>Target Profit 1 &amp; 2:</b> <code>${p.take_profit_1:,.2f}</code> | <code>${p.take_profit_2:,.2f}</code>\n\n"
+            f"<i>💡 AI tidak menutup posisi terlalu cepat. Posisi terus dikawal dengan Trailing Stop hingga menyentuh TP1/TP2.</i>",
+            parse_mode="HTML",
+            reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=creds.autotrade_enabled),
+        )
+        return
 
     report = await auto_trader.evaluate_and_execute(
         user_id=user_id,

@@ -588,7 +588,7 @@ async def test_exness_mt5_provider_all_asset_buy_and_sell_execution(tmp_path: Pa
         s_vol=0.20,
         s_sent=0.0,
         symbol="XAUUSD",
-        entry_price=4380.0,
+        entry_price=4175.0,
         atr_14=12.0,
         headlines=["Gold market awaits macro catalyst"],
     )
@@ -627,3 +627,54 @@ async def test_exness_mt5_provider_all_asset_buy_and_sell_execution(tmp_path: Pa
     assert buy_report.order_result is not None
     assert buy_report.order_result.side == "BUY"
     assert buy_report.order_result.symbol == "NVDAm"
+
+    # 4. Timed session `/autotrade XAUUSD 5H` + Position Holding / Trailing Stop / TP Closing
+    sess_msg = _make_fake_message(333, "/autotrade XAUUSD 5H")
+    await handle_autotrade(sess_msg, **ctx)
+    sess_reply = sess_msg.answer.call_args[0][0]
+    assert "SESI AUTO-TRADE OTOMATIS (5 JAM) AKTIF" in sess_reply
+
+    active_sessions = auto_trader.get_user_sessions(333)
+    assert len(active_sessions) == 1
+    assert active_sessions[0].symbol == "XAUUSD"
+    assert active_sessions[0].duration_seconds == 5 * 3600
+
+    # Open position on XAUUSD is HELD on small move (4175 -> 4170), NOT closed prematurely
+    hold_res = await auto_trader.monitor_and_manage_open_position(
+        user_id=333,
+        symbol="XAUUSD",
+        price_override=4170.0,
+        high_override=4172.0,
+        low_override=4169.0,
+    )
+    assert hold_res.action_taken == "HOLDING"
+    assert len(vault.get_open_positions(333, "XAUUSD")) == 1
+
+    # Move >= 1.0*ATR in favor (4175 -> 4158) ratchets Trailing Stop into profit while STILL holding
+    trail_res = await auto_trader.monitor_and_manage_open_position(
+        user_id=333,
+        symbol="XAUUSD",
+        price_override=4158.0,
+        high_override=4161.0,
+        low_override=4157.0,
+    )
+    assert trail_res.action_taken == "TRAILING_UPDATED"
+    assert trail_res.new_stop_loss is not None and trail_res.new_stop_loss < 4175.0
+    assert len(vault.get_open_positions(333, "XAUUSD")) == 1
+
+    # Reaching Take-Profit 1 (4125 <= 4127) closes position with full target profit
+    tp_res = await auto_trader.monitor_and_manage_open_position(
+        user_id=333,
+        symbol="XAUUSD",
+        price_override=4125.0,
+        high_override=4128.0,
+        low_override=4124.0,
+    )
+    assert tp_res.action_taken == "CLOSED_TP"
+    assert tp_res.realized_pnl_usdt > 0
+    assert len(vault.get_open_positions(333, "XAUUSD")) == 0
+
+    # /autotrade off stops the running 5H session
+    stop_msg = _make_fake_message(333, "/autotrade off")
+    await handle_autotrade(stop_msg, **ctx)
+    assert len(auto_trader.get_user_sessions(333)) == 0

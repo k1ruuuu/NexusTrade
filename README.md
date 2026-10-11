@@ -99,6 +99,7 @@ NexusTrade/
 │   │   ├── admin_store.py                        # SQLite Admin store (User expiry, Maintenance, Broadcast, Audit)
 │   │   ├── binance_client.py                     # Async HMAC-SHA256 Binance Spot & Futures client
 │   │   ├── mt5_exness_client.py                  # MetaTrader 5 / Exness Go all-asset 2-way BUY/SELL client
+│   │   ├── session_manager.py                    # Timed autonomous trading session & trailing-stop position holder
 │   │   └── engine.py                             # 6-Gate Smart Auto-Trader execution engine
 │   ├── risk_management/
 │   │   ├── stop_loss_manager.py              # 2x ATR(14) Stop-Loss, TP1/TP2, & trailing stop engine
@@ -157,7 +158,7 @@ NexusTrade/
 | `/setup` | Connect personal Binance account (Testnet/Live) with auto-deleted secret chat | `/setup testnet KEY SECRET` |
 | `/myaccount` | View personal Binance connection, role (`Admin` vs `User`), balance, & open positions | `/myaccount` |
 | `/unlink` | Delete personal Binance credentials from the encrypted vault | `/unlink` |
-| `/autotrade [on\|off\|scan]` | Toggle Auto-Trade or run 6-Gate AI check & execute on your Binance account | `/autotrade scan BTCUSDT` |
+| `/autotrade <sym> [dur]` | Run timed autonomous trading session (`5H`, `2H`, `30M`, `1D`) holding positions to TP1/TP2 with Trailing Stop | `/autotrade XAUUSD 5H` |
 | `/admin` | Open Admin Control Panel (User Add/Edit/Delete `1d`/`1w`/`1m`, Broadcast, Maintenance `ON`/`OFF`, Audit) | `/admin` |
 
 ---

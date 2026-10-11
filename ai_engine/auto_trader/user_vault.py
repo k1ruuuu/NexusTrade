@@ -475,6 +475,61 @@ class UserVault:
             for r in rows
         ]
 
+    def update_position_stop_loss(self, position_id: int, new_stop_loss: float) -> None:
+        """Ratchet trailing stop-loss on an active OPEN position."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE user_positions SET stop_loss = ? WHERE position_id = ? AND status = 'OPEN'",
+                (float(new_stop_loss), int(position_id)),
+            )
+            conn.commit()
+
+    def close_position(
+        self,
+        position_id: int,
+        exit_price: float,
+        pnl_usdt: float,
+    ) -> Optional[UserPositionRecord]:
+        """Mark an open position as CLOSED once Take-Profit or Trailing Stop-Loss is hit."""
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        pid = int(position_id)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE user_positions
+                SET status = 'CLOSED', closed_at = ?, exit_price = ?, pnl_usdt = ?
+                WHERE position_id = ?
+                """,
+                (now_iso, float(exit_price), float(pnl_usdt), pid),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM user_positions WHERE position_id = ?", (pid,)
+            ).fetchone()
+
+        if row is None:
+            return None
+        return UserPositionRecord(
+            position_id=int(row["position_id"]),
+            user_id=int(row["user_id"]),
+            symbol=str(row["symbol"]),
+            side="BUY" if str(row["side"]) == "BUY" else "SELL",
+            entry_price=float(row["entry_price"]),
+            quantity=float(row["quantity"]),
+            notional_usdt=float(row["notional_usdt"]),
+            stop_loss=float(row["stop_loss"]),
+            take_profit_1=float(row["take_profit_1"]),
+            take_profit_2=float(row["take_profit_2"]),
+            confidence=float(row["confidence"]),
+            status="CLOSED",
+            order_id=str(row["order_id"]),
+            testnet=bool(row["testnet"]),
+            opened_at=str(row["opened_at"]),
+            closed_at=str(row["closed_at"]) if row["closed_at"] else now_iso,
+            exit_price=float(row["exit_price"]) if row["exit_price"] is not None else float(exit_price),
+            pnl_usdt=float(row["pnl_usdt"]),
+        )
+
     def list_autotrade_enabled_user_ids(self) -> list[int]:
         """Return all user_ids (including Admin .env accounts) that currently have autotrade_enabled=True."""
         enabled_ids: set[int] = set()

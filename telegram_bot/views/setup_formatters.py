@@ -5,6 +5,10 @@ from typing import Optional
 
 from ai_engine.auto_trader.binance_client import BinanceAccountVerification
 from ai_engine.auto_trader.engine import AutoTradeExecutionReport
+from ai_engine.auto_trader.session_manager import (
+    AutoTradeSessionState,
+    PositionMonitorResult,
+)
 from ai_engine.auto_trader.user_vault import (
     UserBinanceCredentials,
     UserPositionRecord,
@@ -182,7 +186,62 @@ def format_myaccount_card(
         f"• <b>Risiko / Transaksi:</b> <code>{creds.risk_per_trade_pct * 100:.2f}%</code>\n\n"
         f"<b>📂 Posisi Auto-Trade Aktif ({len(positions)}):</b>\n"
         f"{pos_block}\n\n"
-        f"<i>Perintah: <code>/autotrade on</code> | <code>/autotrade off</code> | <code>/autotrade scan BTCUSDT</code> | <code>/unlink</code></i>"
+        f"<i>Perintah: <code>/autotrade XAUUSD 5H</code> | <code>/autotrade BTCUSDT 2H</code> | <code>/autotrade off</code> | <code>/unlink</code></i>"
+    )
+
+
+def format_timed_session_started_card(
+    session: AutoTradeSessionState,
+    first_cycle_result: object,
+) -> str:
+    """Format confirmation & initial cycle report when user starts `/autotrade <SYMBOL> <DURATION>`."""
+    sym = html.escape(session.symbol)
+    tf = html.escape(session.timeframe)
+    dur = html.escape(session.duration_label)
+
+    if isinstance(first_cycle_result, AutoTradeExecutionReport):
+        if first_cycle_result.setup_required:
+            return format_autotrade_report_card(first_cycle_result)
+        if first_cycle_result.executed and first_cycle_result.order_result and first_cycle_result.position_record:
+            ord_r = first_cycle_result.order_result
+            pos_r = first_cycle_result.position_record
+            cycle_block = (
+                f"🚀 <b>Siklus #1: POSISI {ord_r.side} DIBUKA &amp; DITAHAN UNTUK PROFIT OPTIMAL!</b>\n"
+                f"• <b>Order ID:</b> <code>{html.escape(ord_r.order_id)}</code> ({html.escape(ord_r.symbol)})\n"
+                f"• <b>Volume &amp; Entry:</b> <code>{ord_r.executed_qty}</code> @ <code>{format_price(ord_r.avg_price)}</code>\n"
+                f"• <b>Stop Loss Awal (2xATR):</b> <code>{format_price(pos_r.stop_loss)}</code>\n"
+                f"• <b>Target Profit (TP1 | TP2):</b> <code>{format_price(pos_r.take_profit_1)}</code> | <code>{format_price(pos_r.take_profit_2)}</code>\n"
+                f"• <b>Strategi Hold:</b> Posisi <b>TIDAK</b> akan ditutup cepat dengan profit kecil. AI menahan posisi &amp; menggeser <i>Trailing Stop</i> sampai mencapai <b>TP1/TP2</b>!"
+            )
+        else:
+            reason = html.escape(
+                first_cycle_result.rejection_summary or "Menunggu konfirmasi 6 Gerbang Akurasi..."
+            )
+            cycle_block = (
+                f"🔍 <b>Siklus #1: MEMANTAU PASAR (BELUM BUKA POSISI)</b>\n"
+                f"• <b>Status 6 Gerbang:</b> <i>{reason}</i>\n"
+                f"• <b>Tindakan AI:</b> Bot terus memantau grafik &amp; berita secara otomatis selama <b>{dur}</b> dan akan langsung membuka posisi begitu ke-6 Gerbang terpenuhi."
+            )
+    elif isinstance(first_cycle_result, PositionMonitorResult) and first_cycle_result.position is not None:
+        p = first_cycle_result.position
+        cycle_block = (
+            f"🛡️ <b>Siklus #1: MENGAWAL POSISI {p.side} YANG SEDANG BERJALAN</b>\n"
+            f"• <b>Entry:</b> <code>{format_price(p.entry_price)}</code> | <b>Harga Saat Ini:</b> <code>{format_price(first_cycle_result.current_price)}</code>\n"
+            f"• <b>Floating PnL:</b> <code>${first_cycle_result.unrealized_pnl_usdt:+.2f} ({first_cycle_result.unrealized_pnl_pct:+.2f}%)</code>\n"
+            f"• <b>Stop Loss / Trailing:</b> <code>{format_price(p.stop_loss)}</code> | <b>TP1:</b> <code>{format_price(p.take_profit_1)}</code>"
+        )
+    else:
+        cycle_block = "🔍 <b>Siklus #1: Memantau pergerakan harga &amp; berita secara otomatis...</b>"
+
+    return (
+        f"⏱️ <b>SESI AUTO-TRADE OTOMATIS ({dur.upper()}) AKTIF — {sym} ({tf})</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Simbol &amp; Timeframe:</b> <code>{sym} ({tf})</code>\n"
+        f"• <b>Durasi Sesi Trading:</b> <b>{dur}</b>\n"
+        f"• <b>Waktu Mulai:</b> <code>{html.escape(session.started_at_iso)}</code>\n"
+        f"• <b>Berakhir Pada:</b> <code>{html.escape(session.ends_at_iso)}</code> (Sisa: <code>{html.escape(session.remaining_human)}</code>)\n\n"
+        f"{cycle_block}\n\n"
+        f"<i>💡 Ketik <code>/autotrade status</code> untuk cek sisa waktu &amp; posisi, atau <code>/autotrade off</code> untuk menghentikan sesi.</i>"
     )
 
 

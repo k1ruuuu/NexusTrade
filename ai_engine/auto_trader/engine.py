@@ -5,6 +5,14 @@ from typing import Optional
 
 from ai_engine.auto_trader.binance_client import BinanceOrderResult, BinanceSpotClient
 from ai_engine.auto_trader.mt5_exness_client import MT5ExnessClient
+from ai_engine.auto_trader.session_manager import (
+    AutoTradeSessionManager,
+    AutoTradeSessionState,
+    NotifyCallback,
+    PositionMonitorResult,
+    is_session_duration_token,
+    parse_session_duration,
+)
 from ai_engine.auto_trader.user_vault import (
     UserBinanceCredentials,
     UserPositionRecord,
@@ -70,6 +78,54 @@ class SmartAutoTraderEngine:
         self.vault = user_vault or UserVault(self.settings)
         self.binance_client = binance_client or BinanceSpotClient()
         self.mt5_client = mt5_client or MT5ExnessClient()
+        self.session_manager = AutoTradeSessionManager(self)
+
+    async def start_timed_session(
+        self,
+        user_id: int,
+        symbol: str,
+        duration_code: str = "5H",
+        timeframe: str = "15m",
+        poll_interval_seconds: float = 30.0,
+        notify_callback: Optional[NotifyCallback] = None,
+    ) -> tuple[AutoTradeSessionState, object]:
+        """Start a timed autonomous trading session (e.g. `/autotrade XAUUSD 5H`)."""
+        return await self.session_manager.start_timed_session(
+            user_id=user_id,
+            symbol=symbol,
+            duration_code=duration_code,
+            timeframe=timeframe,
+            poll_interval_seconds=poll_interval_seconds,
+            notify_callback=notify_callback,
+        )
+
+    def get_user_sessions(self, user_id: int) -> list[AutoTradeSessionState]:
+        return self.session_manager.get_user_sessions(user_id)
+
+    def stop_user_sessions(
+        self,
+        user_id: int,
+        symbol: Optional[str] = None,
+    ) -> list[AutoTradeSessionState]:
+        return self.session_manager.stop_user_sessions(user_id, symbol=symbol)
+
+    async def monitor_and_manage_open_position(
+        self,
+        user_id: int,
+        symbol: str,
+        timeframe: str = "15m",
+        price_override: Optional[float] = None,
+        high_override: Optional[float] = None,
+        low_override: Optional[float] = None,
+    ) -> PositionMonitorResult:
+        return await self.session_manager.monitor_and_manage_open_position(
+            user_id=user_id,
+            symbol=symbol,
+            timeframe=timeframe,
+            price_override=price_override,
+            high_override=high_override,
+            low_override=low_override,
+        )
 
     async def evaluate_and_execute(
         self,
