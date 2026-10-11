@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import os
 import sqlite3
 from typing import Optional
 
@@ -99,6 +100,11 @@ class AdminStore:
                 """
             )
             conn.commit()
+        if self.db_path.exists():
+            try:
+                os.chmod(self.db_path, 0o600)
+            except OSError:
+                pass
 
     # ------------------------------------------------------------------
     # 1. Management User (Add, Edit Expiry, Delete, Check Access)
@@ -351,10 +357,12 @@ class AdminStore:
         uid = int(user_id or 0)
         uname = (username or f"user_{uid}").strip()
         clean_action = action.strip()
-        # Redact raw secrets from /setup logs
-        if clean_action.lower().startswith("/setup") and len(clean_action.split()) >= 3:
+        # SEC-201: Redact raw secrets from /setup logs (with or without testnet/live prefix)
+        if clean_action.lower().startswith("/setup"):
             parts = clean_action.split()
-            clean_action = f"{parts[0]} {parts[1]} [REDACTED_API_KEY]"
+            if len(parts) >= 2:
+                mode_tok = parts[1].lower() if parts[1].lower() in ("testnet", "live", "spot") else "default"
+                clean_action = f"/setup {mode_tok} [REDACTED_CREDENTIALS]"
 
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         with self._connect() as conn:
@@ -365,6 +373,14 @@ class AdminStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (uid, uname, role, event_type, clean_action[:180], status, now_iso),
+            )
+            conn.execute(
+                """
+                DELETE FROM user_audit_logs
+                WHERE log_id NOT IN (
+                    SELECT log_id FROM user_audit_logs ORDER BY log_id DESC LIMIT 5000
+                )
+                """
             )
             conn.commit()
 

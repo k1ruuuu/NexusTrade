@@ -159,6 +159,14 @@ class Settings(BaseSettings):
                 or "your_telegram_bot_token" in self.telegram_bot_token
             ):
                 raise ValueError("Production environment requires a valid TELEGRAM_BOT_TOKEN")
+            if (
+                self.vault_encryption_secret == "nexustrade_vault_master_secret_key_2026"
+                or "change_this" in self.vault_encryption_secret.lower()
+                or len(self.vault_encryption_secret.strip()) < 32
+            ):
+                raise ValueError(
+                    "Production environment requires a strong, non-default VAULT_ENCRYPTION_SECRET (>=32 chars)"
+                )
         return self
 
     def is_admin_user(self, user_id: Optional[int]) -> bool:

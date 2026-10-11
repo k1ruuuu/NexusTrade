@@ -8,6 +8,7 @@ from aiogram.types import CallbackQuery, Message, TelegramObject
 from ai_engine.auto_trader.admin_store import AdminStore
 from config.logging_config import get_logger
 from config.settings import Settings, get_settings
+from telegram_bot.handlers.handler_utils import _PENDING_SETUP_MODE
 
 logger = get_logger("nexustrade.telegram.auth")
 
@@ -61,6 +62,12 @@ class WhitelistAuthMiddleware(BaseMiddleware):
         if is_msg:
             event_type = "COMMAND" if (getattr(event, "text", "") or "").startswith("/") else "MESSAGE"
             action_str = str(getattr(event, "text", None) or "[non-text message]")
+            if (
+                user_id is not None
+                and int(user_id) in _PENDING_SETUP_MODE
+                and not action_str.strip().startswith("/")
+            ):
+                action_str = "[REDACTED_INTERACTIVE_SETUP_CREDENTIALS]"
         elif is_cb:
             event_type = "CALLBACK"
             action_str = f"cb:{getattr(event, 'data', '')}"

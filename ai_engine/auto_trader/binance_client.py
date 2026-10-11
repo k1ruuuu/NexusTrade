@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 import httpx
 
 from config.logging_config import get_logger
+from config.settings import get_settings
 from data_pipeline.market_symbols import is_crypto_symbol, normalize_symbol
 
 logger = get_logger("nexustrade.auto_trader.binance_client")
@@ -74,10 +75,11 @@ class BinanceSpotClient:
 
     @staticmethod
     def _is_sandbox_demo_key(api_key: str) -> bool:
-        """Allow deterministic sandbox verification for keys prefixed with TESTNET_ or DEMO_."""
+        """Allow deterministic sandbox verification ONLY in non-production environments."""
+        if get_settings().environment == "production":
+            return False
         upper = api_key.strip().upper()
         return upper.startswith("TESTNET_") or upper.startswith("DEMO_")
-
     async def verify_credentials(
         self,
         api_key: str,
@@ -130,7 +132,7 @@ class BinanceSpotClient:
             if resp.status_code != 200:
                 try:
                     err_json = resp.json()
-                    msg = err_json.get("msg") or f"HTTP {resp.status_code}"
+                    msg = str(err_json.get("msg") or f"HTTP {resp.status_code}")[:160]
                 except Exception:
                     msg = f"HTTP {resp.status_code}"
                 return BinanceAccountVerification(
@@ -271,7 +273,7 @@ class BinanceSpotClient:
             if resp.status_code != 200:
                 try:
                     err_json = resp.json()
-                    msg = err_json.get("msg") or f"HTTP {resp.status_code}"
+                    msg = str(err_json.get("msg") or f"HTTP {resp.status_code}")[:160]
                 except Exception:
                     msg = f"HTTP {resp.status_code}"
                 return BinanceOrderResult(

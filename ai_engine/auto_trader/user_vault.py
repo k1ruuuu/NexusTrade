@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+import os
 import sqlite3
 from typing import Literal, Optional
 
@@ -132,6 +133,11 @@ class UserVault:
                 """
             )
             conn.commit()
+        if self.db_path.exists():
+            try:
+                os.chmod(self.db_path, 0o600)
+            except OSError:
+                pass
 
     def encrypt_for_user(self, user_id: int, plaintext: str) -> str:
         """Encrypt a secret string with per-user PBKDF2-HMAC-SHA256 + authenticated tag."""

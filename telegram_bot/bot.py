@@ -87,10 +87,10 @@ class NexusTradeBotService:
         rate_mw = RateLimitMiddleware(self.settings)
         auth_mw = WhitelistAuthMiddleware(self.settings, admin_store=self.admin_store)
 
-        dp.message.middleware(auth_mw)
         dp.message.middleware(rate_mw)
-        dp.callback_query.middleware(auth_mw)
+        dp.message.middleware(auth_mw)
         dp.callback_query.middleware(rate_mw)
+        dp.callback_query.middleware(auth_mw)
 
         for router in (
             commands_router,
