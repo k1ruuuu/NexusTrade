@@ -1,0 +1,34 @@
+# Core Async & Web Framework
+aiogram>=3.10.0
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+httpx>=0.27.0
+
+# Configuration & Logging
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+rich>=13.7.1
+structlog>=24.2.0
+
+# Quantitative Data Pipeline & Storage
+numpy>=1.26.4
+pandas>=2.2.2
+pyarrow>=16.1.0
+kaggle>=1.6.14
+
+# Machine Learning & NLP Ensemble
+scikit-learn>=1.5.0
+lightgbm>=4.3.0
+transformers>=4.41.0
+torch>=2.3.0
+
+# Charting & Visualization
+matplotlib>=3.9.0
+Pillow>=10.3.0
+
+# Cache & Persistence
+redis>=5.0.4
+
+# Testing & Quality
+pytest>=8.2.0
+pytest-asyncio>=0.23.7

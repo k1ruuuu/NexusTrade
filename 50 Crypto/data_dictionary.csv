@@ -1,0 +1,9 @@
+column_name,description
+time,UNIX timestamp for the trading day
+date,Calendar date in YYYY-MM-DD format
+open,Opening price for the day
+high,Highest price during the day
+low,Lowest price during the day
+close,Closing price for the day
+volume,Total traded volume
+trading_count,Number of executed trades
