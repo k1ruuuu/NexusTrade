@@ -76,6 +76,7 @@ async def _process_and_save_credentials(
     provider: BrokerProvider = "binance_spot",
     server_name: Optional[str] = None,
     mt5_client: Optional[MT5ExnessClient] = None,
+    metaapi_token_override: Optional[str] = None,
 ) -> None:
     """Delete secret message, verify against Broker/Exchange API, save encrypted in UserVault, and reply."""
     deleted = await _try_delete_secret_message(message)
@@ -88,6 +89,7 @@ async def _process_and_save_credentials(
             token_or_password=api_secret,
             server_name=eff_srv,
             testnet=testnet,
+            metaapi_token_override=metaapi_token_override,
         )
     else:
         eff_srv = server_name or ("Binance-Futures" if provider == "binance_futures" else "Binance-Spot")
@@ -193,7 +195,10 @@ async def handle_setup(message: Message, **data: Any) -> None:
     api_key = key_args[0]
     api_secret = key_args[1]
     risk_pct: Optional[float] = None
-    if len(key_args) >= 3 and server_name is None:
+    metaapi_tok: Optional[str] = None
+    if provider == "exness_mt5" and len(key_args) >= 4:
+        metaapi_tok = key_args[3]
+    elif len(key_args) >= 3 and server_name is None:
         try:
             raw_r = float(key_args[2])
             risk_pct = raw_r / 100.0 if raw_r > 0.1 else raw_r
@@ -213,6 +218,7 @@ async def handle_setup(message: Message, **data: Any) -> None:
         provider=provider,
         server_name=server_name,
         mt5_client=data.get("mt5_client"),
+        metaapi_token_override=metaapi_tok,
     )
 
 @setup_router.message(Command("cancel"))
@@ -232,6 +238,15 @@ async def handle_myaccount(message: Message, **data: Any) -> None:
     user_id, user_name = extract_user_identity(message, default_name="Trader")
     role = vault.get_user_role(user_id)
     creds = vault.resolve_credentials(user_id)
+    if creds is not None and creds.source == "user_setup":
+        if creds.provider == "exness_mt5" and not MT5ExnessClient._is_exness_trial_demo(creds.api_key, creds.testnet):
+            eff_mt5: MT5ExnessClient = data.get("mt5_client") or MT5ExnessClient()
+            ver = await eff_mt5.verify_credentials(
+                creds.api_key, creds.api_secret, server_name=creds.server_name, testnet=creds.testnet
+            )
+            if ver.valid and ver.total_usdt >= 0:
+                vault.update_verified_balance(user_id, ver.total_usdt)
+                creds.verified_usdt_balance = ver.total_usdt
     positions = vault.get_open_positions(user_id)
 
     card = format_myaccount_card(user_id, user_name, role, creds, positions)

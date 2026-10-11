@@ -570,13 +570,17 @@ async def test_exness_mt5_provider_all_asset_buy_and_sell_execution(tmp_path: Pa
         "auto_trader": auto_trader,
     }
 
-    # 1. User 333 sets up an Exness Go / MT5 account via /setup exness
-    ex_msg = _make_fake_message(333, "/setup exness 88333444 ExnessGoPass2026 Exness-MT5Trial")
+    # 1a. Numeric Exness login without METAAPI_TOKEN is NOT faked as $10,000 sandbox
+    raw_num_msg = _make_fake_message(333, "/setup exness 88333444 ExnessGoPass2026 Exness-MT5Trial")
+    await handle_setup(raw_num_msg, **ctx)
+    assert "METAAPI_TOKEN" in raw_num_msg.answer.call_args[0][0]
+
+    # 1b. User 333 sets up an Exness Go / MT5 account via /setup exness
+    ex_msg = _make_fake_message(333, "/setup exness EXNESS_DEMO_333 ExnessGoPass2026 Exness-MT5Trial")
     await handle_setup(ex_msg, **ctx)
     ex_msg.delete.assert_awaited_once()
     ex_reply = ex_msg.answer.call_args[0][0]
     assert "SETUP AKUN EXNESS GO / MT5 BERHASIL" in ex_reply
-
     creds = vault.resolve_credentials(333)
     assert creds is not None
     assert creds.provider == "exness_mt5"

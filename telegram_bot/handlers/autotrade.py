@@ -325,7 +325,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
 
     if cb_data == "setup:demo:exness":
         mt5_client: MT5ExnessClient = data.get("mt5_client") or MT5ExnessClient()
-        demo_login = f"88{user_id % 1000000:06d}"
+        demo_login = f"EXNESS_DEMO_{user_id}"
         demo_pass = f"ExnessGo_{user_id}_Trial"
         verification = await mt5_client.verify_credentials(
             demo_login, demo_pass, server_name="Exness-MT5Trial", testnet=True
