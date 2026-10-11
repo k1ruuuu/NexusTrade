@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Optional
 
 from config.logging_config import get_logger
@@ -40,33 +39,6 @@ class PositionSizer:
         self.settings = settings or get_settings()
         self.daily_start_equity: float = self.settings.portfolio_initial_capital
         self.current_equity: float = self.settings.portfolio_initial_capital
-        self.current_utc_date = datetime.now(timezone.utc).date()
-
-    def sync_daily_equity(
-        self,
-        current_equity: float,
-        now_utc: Optional[datetime] = None,
-    ) -> None:
-        """Update current equity and reset daily baseline at 00:00 UTC rollover."""
-        ts = now_utc or datetime.now(timezone.utc)
-        if ts.date() != self.current_utc_date:
-            self.current_utc_date = ts.date()
-            self.daily_start_equity = max(current_equity, 1e-6)
-        self.current_equity = max(current_equity, 0.0)
-
-    def record_realized_pnl(
-        self,
-        pnl_amount: float,
-        now_utc: Optional[datetime] = None,
-    ) -> float:
-        """Apply realized trade PnL to current portfolio equity."""
-        ts = now_utc or datetime.now(timezone.utc)
-        if ts.date() != self.current_utc_date:
-            self.current_utc_date = ts.date()
-            self.daily_start_equity = max(self.current_equity, 1e-6)
-        self.current_equity = max(0.0, self.current_equity + pnl_amount)
-        return self.current_equity
-
     @property
     def current_daily_drawdown(self) -> float:
         """Return today's drawdown fraction in [0.0, 1.0]."""

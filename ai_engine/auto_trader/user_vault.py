@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-import hashlib
-import hmac
 from pathlib import Path
-import secrets
 import sqlite3
 from typing import Literal, Optional
 
+from ai_engine.auto_trader.vault_crypto import (
+    decrypt_secret_for_user,
+    encrypt_secret_for_user,
+    mask_api_key,
+)
 from config.logging_config import get_logger
 from config.settings import Settings, get_settings
 
@@ -17,15 +18,6 @@ logger = get_logger("nexustrade.auto_trader.vault")
 
 UserRole = Literal["admin", "user"]
 CredentialSource = Literal["user_setup", "admin_env"]
-
-
-def mask_api_key(api_key: str) -> str:
-    """Mask an API key for safe Telegram display (e.g., 'ABCD****WXYZ')."""
-    cleaned = api_key.strip()
-    if len(cleaned) <= 8:
-        return "****"
-    return f"{cleaned[:4]}****{cleaned[-4:]}"
-
 
 @dataclass
 class UserBinanceCredentials:
@@ -141,49 +133,13 @@ class UserVault:
             )
             conn.commit()
 
-    def _derive_keys(self, user_id: int, nonce: bytes) -> tuple[bytes, bytes]:
-        master = self.settings.vault_encryption_secret.encode("utf-8")
-        salt = f"nexustrade_uid_{int(user_id)}_".encode("utf-8") + nonce
-        dk = hashlib.pbkdf2_hmac("sha256", master, salt, 60_000, dklen=64)
-        return dk[:32], dk[32:]
-
-    @staticmethod
-    def _xor_keystream(data: bytes, enc_key: bytes, nonce: bytes) -> bytes:
-        out = bytearray(len(data))
-        block_count = (len(data) + 31) // 32
-        for counter in range(block_count):
-            ctr_bytes = counter.to_bytes(4, "big")
-            keystream_block = hmac.new(enc_key, nonce + ctr_bytes, hashlib.sha256).digest()
-            start = counter * 32
-            end = min(start + 32, len(data))
-            for i in range(start, end):
-                out[i] = data[i] ^ keystream_block[i - start]
-        return bytes(out)
-
     def encrypt_for_user(self, user_id: int, plaintext: str) -> str:
         """Encrypt a secret string with per-user PBKDF2-HMAC-SHA256 + authenticated tag."""
-        nonce = secrets.token_bytes(16)
-        enc_key, mac_key = self._derive_keys(user_id, nonce)
-        raw_bytes = plaintext.encode("utf-8")
-        ciphertext = self._xor_keystream(raw_bytes, enc_key, nonce)
-        tag = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()
-        payload = nonce + tag + ciphertext
-        return base64.urlsafe_b64encode(payload).decode("ascii")
+        return encrypt_secret_for_user(self.settings.vault_encryption_secret, user_id, plaintext)
 
     def decrypt_for_user(self, user_id: int, token: str) -> str:
         """Verify HMAC tag and decrypt a user-bound secret string."""
-        raw = base64.urlsafe_b64decode(token.encode("ascii"))
-        if len(raw) < 48:
-            raise ValueError("Invalid encrypted vault token length")
-        nonce = raw[:16]
-        tag = raw[16:48]
-        ciphertext = raw[48:]
-        enc_key, mac_key = self._derive_keys(user_id, nonce)
-        expected_tag = hmac.new(mac_key, nonce + ciphertext, hashlib.sha256).digest()
-        if not hmac.compare_digest(tag, expected_tag):
-            raise ValueError("Vault token integrity check failed (wrong user_id or tampered)")
-        plaintext_bytes = self._xor_keystream(ciphertext, enc_key, nonce)
-        return plaintext_bytes.decode("utf-8")
+        return decrypt_secret_for_user(self.settings.vault_encryption_secret, user_id, token)
 
     def get_user_role(self, user_id: int) -> UserRole:
         return "admin" if self.settings.is_admin_user(user_id) else "user"

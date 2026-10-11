@@ -34,10 +34,6 @@ class WhitelistAuthMiddleware(BaseMiddleware):
         self.allowed_ids: set[int] = {int(uid) for uid in raw_ids}
         self.admin_store = admin_store or AdminStore(self.settings)
 
-    def is_authorized(self, user_id: Optional[int]) -> bool:
-        allowed, _, _ = self.admin_store.check_user_access(user_id, self.allowed_ids)
-        return allowed
-
     async def __call__(
         self,
         handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],

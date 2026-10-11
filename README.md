@@ -93,7 +93,9 @@ NexusTrade/
 │   │   ├── market_data_loader.py             # Local dataset & synthetic OHLCV loader
 │   │   └── ensemble_agent.py                 # Multimodal ensemble orchestrator & 5Y memory trainer
 │   ├── auto_trader/
+│   │   ├── vault_crypto.py                       # PBKDF2-HMAC-SHA256 cipher & key-masking helpers
 │   │   ├── user_vault.py                         # Encrypted SQLite multi-user vault (Admin vs User isolation)
+│   │   ├── admin_models.py                       # Managed user, expiry preset, & audit dataclasses
 │   │   ├── admin_store.py                        # SQLite Admin store (User expiry, Maintenance, Broadcast, Audit)
 │   │   ├── binance_client.py                     # Async HMAC-SHA256 Binance Spot & Testnet client
 │   │   └── engine.py                             # 6-Gate Smart Auto-Trader execution engine
@@ -115,10 +117,13 @@ NexusTrade/
 │   │   ├── auth_middleware.py                # TELEGRAM_ALLOWED_USER_IDS whitelist guard
 │   │   └── rate_limit.py                     # Sliding-window anti-spam rate limiter
 │   ├── handlers/
+│   │   ├── handler_utils.py                  # Shared user identity, command args, & wizard state helpers
 │   │   ├── commands.py                       # /start, /help, /status, /portfolio handlers
 │   │   ├── signals.py                        # /signal, /analyze, /sentiment, /volatility, /backtest, /learn
-│   │   ├── setup.py                              # /setup, /myaccount, /unlink, & /autotrade handlers
-│   │   ├── admin.py                              # /admin panel (User Add/Edit/Del, Broadcast, Maintenance, Audit)
+│   │   ├── setup.py                          # /setup, /cancel, /myaccount, & /unlink handlers
+│   │   ├── autotrade.py                      # /autotrade handler & setup/autotrade inline callbacks
+│   │   ├── admin.py                          # /admin command router (User, Broadcast, Maintenance, Audit)
+│   │   ├── admin_callbacks.py                # Interactive /admin wizard inputs & inline callbacks
 │   │   └── callbacks.py                      # Interactive inline keyboard callback router
 │   └── views/
 │       ├── formatter_utils.py                # Progress bars, badges, & plain-Indonesian helpers

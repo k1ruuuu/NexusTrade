@@ -14,6 +14,7 @@ from telegram_bot.handlers.commands import (
     build_main_dashboard_keyboard,
     build_symbol_action_keyboard,
 )
+from telegram_bot.handlers.handler_utils import parse_command_args as _parse_command_args
 from telegram_bot.views.formatters import (
     format_backtest_card,
     format_online_learning_card,
@@ -24,13 +25,6 @@ from telegram_bot.views.formatters import (
 from tradingview.chart_generator import ChartSnapshotGenerator
 
 signals_router = Router(name="signals")
-
-
-def _parse_command_args(text: str | None) -> list[str]:
-    if not text:
-        return []
-    parts = text.strip().split()
-    return parts[1:] if parts and parts[0].startswith("/") else parts
 
 
 async def send_signal_response(

@@ -459,18 +459,3 @@ class FinancialSentimentAnalyzer:
             online_updates_count=self.online_updates_count,
         )
 
-    def benchmark_phrasebank(self, df: pd.DataFrame) -> dict[str, float]:
-        """Evaluate directional accuracy on a labeled FinancialPhraseBank DataFrame."""
-        preprocessed = self.preprocessor.preprocess_dataframe(df)
-        if "sentiment_label" not in preprocessed.columns or preprocessed.empty:
-            return {"accuracy": 0.0, "samples": 0.0}
-
-        correct = 0
-        for _, row in preprocessed.iterrows():
-            score = self.score_headline(str(row["cleaned_text"]))
-            pred_int = 1 if score.label == "POSITIVE" else (-1 if score.label == "NEGATIVE" else 0)
-            if pred_int == int(row["sentiment_label"]):
-                correct += 1
-
-        accuracy = correct / len(preprocessed)
-        return {"accuracy": round(accuracy, 4), "samples": float(len(preprocessed))}

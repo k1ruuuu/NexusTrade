@@ -125,7 +125,7 @@ class SmartAutoTraderEngine:
                 rejection_summary="Saklar Auto-Trade sedang OFF.",
             )
 
-        is_crypto, binance_pair = is_crypto_symbol(clean_sym)
+        is_crypto, _ = is_crypto_symbol(clean_sym)
         if not is_crypto:
             gates.append(
                 AutoTradeGateCheck(
