@@ -1,0 +1,96 @@
+{
+  "action_normalization": {
+    "BUY": "BUY",
+    "LONG": "BUY",
+    "SELL": "SELL",
+    "SHORT": "SELL",
+    "HOLD": "HOLD",
+    "CLOSE": "HOLD"
+  },
+  "ticker_mappings": {
+    "BINANCE:BTCUSDT": {
+      "canonical_symbol": "BTCUSDT",
+      "asset_class": "crypto",
+      "local_csv": "btc_usdt_day.csv",
+      "tick_size": 0.01,
+      "quantity_precision": 4
+    },
+    "COINBASE:BTCUSD": {
+      "canonical_symbol": "BTCUSD",
+      "asset_class": "crypto",
+      "local_csv": "btc_usd_day.csv",
+      "tick_size": 0.01,
+      "quantity_precision": 4
+    },
+    "BINANCE:ETHUSDT": {
+      "canonical_symbol": "ETHUSDT",
+      "asset_class": "crypto",
+      "local_csv": "eth_usdt_day.csv",
+      "tick_size": 0.01,
+      "quantity_precision": 4
+    },
+    "BINANCE:SOLUSDT": {
+      "canonical_symbol": "SOLUSD",
+      "asset_class": "crypto",
+      "local_csv": "sol_usd_day.csv",
+      "tick_size": 0.01,
+      "quantity_precision": 2
+    },
+    "BINANCE:AVAXUSDT": {
+      "canonical_symbol": "AVAXUSD",
+      "asset_class": "crypto",
+      "local_csv": "avax_usd_day.csv",
+      "tick_size": 0.01,
+      "quantity_precision": 2
+    },
+    "BINANCE:LINKUSDT": {
+      "canonical_symbol": "LINKUSDT",
+      "asset_class": "crypto",
+      "local_csv": "link_usdt_day.csv",
+      "tick_size": 0.001,
+      "quantity_precision": 2
+    },
+    "BINANCE:DOGEUSDT": {
+      "canonical_symbol": "DOGEUSDT",
+      "asset_class": "crypto",
+      "local_csv": "doge_usdt_day.csv",
+      "tick_size": 0.00001,
+      "quantity_precision": 0
+    },
+    "OANDA:XAUUSD": {
+      "canonical_symbol": "XAUUSD",
+      "asset_class": "commodities",
+      "local_csv": "XAUUSD/XAUUSD_15m.csv",
+      "tick_size": 0.01,
+      "quantity_precision": 2
+    },
+    "XAUUSD": {
+      "canonical_symbol": "XAUUSD",
+      "asset_class": "commodities",
+      "local_csv": "XAUUSD/XAUUSD_15m.csv",
+      "tick_size": 0.01,
+      "quantity_precision": 2
+    },
+    "NASDAQ:AAPL": {
+      "canonical_symbol": "AAPL",
+      "asset_class": "equities",
+      "local_csv": null,
+      "tick_size": 0.01,
+      "quantity_precision": 0
+    },
+    "NASDAQ:NVDA": {
+      "canonical_symbol": "NVDA",
+      "asset_class": "equities",
+      "local_csv": null,
+      "tick_size": 0.01,
+      "quantity_precision": 0
+    },
+    "SP:SPX": {
+      "canonical_symbol": "SPX",
+      "asset_class": "indices",
+      "local_csv": null,
+      "tick_size": 0.01,
+      "quantity_precision": 2
+    }
+  }
+}

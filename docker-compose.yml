@@ -1,0 +1,52 @@
+version: "3.9"
+
+services:
+  nexustrade-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nexustrade-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis-cache:6379/0
+      - WEBHOOK_HOST=0.0.0.0
+      - WEBHOOK_PORT=8000
+      - DATA_DIR=/app/data
+    ports:
+      - "${WEBHOOK_PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./XAUUSD:/app/XAUUSD:ro
+      - "./50 Crypto:/app/50 Crypto:ro"
+    depends_on:
+      redis-cache:
+        condition: service_healthy
+    networks:
+      - nexustrade-net
+
+  redis-cache:
+    image: redis:7.2-alpine
+    container_name: nexustrade-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nexustrade-net
+
+volumes:
+  redis-data:
+
+networks:
+  nexustrade-net:
+    driver: bridge
