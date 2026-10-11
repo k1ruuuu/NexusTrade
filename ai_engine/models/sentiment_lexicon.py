@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+from typing import Literal
+
+SentimentLabel = Literal["POSITIVE", "NEUTRAL", "NEGATIVE"]
+
+BULLISH_LEXICON: dict[str, float] = {
+    "surge": 0.85,
+    "surged": 0.85,
+    "surges": 0.85,
+    "soar": 0.90,
+    "soared": 0.90,
+    "rally": 0.80,
+    "rallies": 0.80,
+    "rebound": 0.72,
+    "rebounds": 0.72,
+    "reclaim": 0.70,
+    "reclaims": 0.70,
+    "revive": 0.65,
+    "revives": 0.65,
+    "jump": 0.68,
+    "jumps": 0.68,
+    "rise": 0.58,
+    "rises": 0.58,
+    "demand": 0.52,
+    "defend": 0.55,
+    "support": 0.45,
+    "breakout": 0.78,
+    "bullish": 0.85,
+    "bulls": 0.72,
+    "outperform": 0.75,
+    "upgrade": 0.75,
+    "upgraded": 0.75,
+    "beat": 0.70,
+    "beats": 0.70,
+    "record": 0.65,
+    "profit": 0.65,
+    "profits": 0.65,
+    "growth": 0.60,
+    "gain": 0.60,
+    "gains": 0.60,
+    "spike": 0.68,
+    "spikes": 0.68,
+    "accumulation": 0.72,
+    "inflow": 0.75,
+    "inflows": 0.75,
+    "institutional": 0.45,
+    "adoption": 0.65,
+    "approval": 0.80,
+    "approved": 0.80,
+    "strong": 0.55,
+    "expansion": 0.60,
+    "upside": 0.70,
+    "buy": 0.55,
+    "positive": 0.65,
+    "recovery": 0.60,
+    "dividend": 0.50,
+    "high": 0.45,
+    "highs": 0.50,
+}
+
+BEARISH_LEXICON: dict[str, float] = {
+    "plunge": -0.90,
+    "plunged": -0.90,
+    "plunges": -0.90,
+    "crash": -0.95,
+    "crashed": -0.95,
+    "selloff": -0.85,
+    "bearish": -0.85,
+    "bears": -0.72,
+    "warning": -0.58,
+    "downgrade": -0.78,
+    "downgraded": -0.78,
+    "miss": -0.72,
+    "missed": -0.72,
+    "misses": -0.72,
+    "loss": -0.68,
+    "losses": -0.68,
+    "deficit": -0.65,
+    "decline": -0.65,
+    "declined": -0.65,
+    "drop": -0.60,
+    "dropped": -0.60,
+    "outflow": -0.75,
+    "outflows": -0.75,
+    "liquidation": -0.82,
+    "liquidations": -0.82,
+    "hack": -0.92,
+    "exploit": -0.90,
+    "lawsuit": -0.78,
+    "investigation": -0.70,
+    "ban": -0.85,
+    "default": -0.90,
+    "bankruptcy": -0.95,
+    "recession": -0.80,
+    "weak": -0.55,
+    "downside": -0.70,
+    "negative": -0.65,
+    "slump": -0.75,
+    "fear": -0.65,
+}
+
+BOOTSTRAP_TRAINING_CORPUS: list[tuple[str, int]] = [
+    ("Institutional spot Bitcoin ETF inflows surge to record high on strong accumulation", 1),
+    ("Company reports strong Q3 profit growth and beats revenue expectations with upside guidance", 1),
+    ("Bullish breakout as bulls defend critical support and volume rallies", 1),
+    ("Validator upgrades and institutional adoption drive record network expansion", 1),
+    ("Central bank gold accumulation supports strong XAUUSD rebound and inflows", 1),
+    ("Exchange hack triggers massive liquidation selloff and regulatory lawsuit", -1),
+    ("Company misses earnings guidance and reports severe quarterly loss amid slump", -1),
+    ("Bearish breakdown as bears target lower support following downgrade warning", -1),
+    ("Institutional outflows accelerate amid recession fear and liquidity deficit", -1),
+    ("Scheduled maintenance window completed during overnight session with flat volume", 0),
+    ("Market participants await central bank minutes as trading range remains unchanged", 0),
+    ("Options settlement concludes near equilibrium with balanced order book depth", 0),
+]
+
+DEFAULT_ASSET_HEADLINES: dict[str, list[str]] = {
+    "BTC": [
+        "Institutional spot Bitcoin ETF inflows surge to record high on strong accumulation",
+        "Bullish breakout in BTC derivatives as institutional adoption and profit growth expand",
+        "Spot Bitcoin demand rallies with strong institutional inflows and positive market structure",
+    ],
+    "ETH": [
+        "Ethereum Layer-2 transaction volume reaches record expansion alongside steady staking inflows",
+        "Institutional custody demand for ETH strengthens as DeFi protocol yields stabilize",
+        "Gas fee volatility remains neutral during off-peak settlement windows",
+    ],
+    "SOL": [
+        "Solana decentralized exchange volume surges past major competitors amid strong retail activity",
+        "Validator client upgrades improve network throughput and institutional staking confidence",
+    ],
+    "XAUUSD": [
+        "Central bank gold accumulation and sovereign safe-haven demand support strong XAUUSD breakout",
+        "Real Treasury yield compression drives institutional capital inflows into bullion markets",
+        "Spot gold consolidates near record highs as macro inflation expectations remain elevated",
+    ],
+}
+
+
+def classify_sentiment_polarity(
+    polarity: float,
+    threshold: float = 0.15,
+) -> SentimentLabel:
+    """Classify scalar sentiment polarity in [-1.0, 1.0] into discrete SentimentLabel."""
+    if polarity >= threshold:
+        return "POSITIVE"
+    if polarity <= -threshold:
+        return "NEGATIVE"
+    return "NEUTRAL"
