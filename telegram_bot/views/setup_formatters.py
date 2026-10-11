@@ -233,11 +233,17 @@ def format_timed_session_started_card(
     else:
         cycle_block = "🔍 <b>Siklus #1: Memantau pergerakan harga &amp; berita secara otomatis...</b>"
 
+    lot_lbl = (
+        f"<code>{session.custom_lot:.2f} Lot (Custom)</code>"
+        if session.custom_lot is not None and session.custom_lot > 0
+        else "<code>Otomatis (Sesuai Risiko Modal)</code>"
+    )
     return (
         f"⏱️ <b>SESI AUTO-TRADE OTOMATIS ({dur.upper()}) AKTIF — {sym} ({tf})</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• <b>Simbol &amp; Timeframe:</b> <code>{sym} ({tf})</code>\n"
         f"• <b>Durasi Sesi Trading:</b> <b>{dur}</b>\n"
+        f"• <b>Ukuran Lot Order:</b> {lot_lbl}\n"
         f"• <b>Waktu Mulai:</b> <code>{html.escape(session.started_at_iso)}</code>\n"
         f"• <b>Berakhir Pada:</b> <code>{html.escape(session.ends_at_iso)}</code> (Sisa: <code>{html.escape(session.remaining_human)}</code>)\n\n"
         f"{cycle_block}\n\n"

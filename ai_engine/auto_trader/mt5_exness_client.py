@@ -419,6 +419,7 @@ class MT5ExnessClient:
         take_profit: float = 0.0,
         server_name: str = "Exness-MT5Trial7",
         testnet: bool = True,
+        custom_lot: Optional[float] = None,
     ) -> BinanceOrderResult:
         """
         Execute a real-time 2-way (BUY Long or SELL Short) market order on MetaTrader 5 / Exness Go
@@ -426,9 +427,11 @@ class MT5ExnessClient:
         """
         mt5_symbol_m = resolve_mt5_symbol(symbol, standard_suffix="m")
         mt5_symbol_raw = resolve_mt5_symbol(symbol, standard_suffix="")
-        lots = calculate_mt5_lots(symbol, quantity, reference_price)
+        if custom_lot is not None and custom_lot > 0:
+            lots = round(max(0.01, min(float(custom_lot), 50.0)), 2)
+        else:
+            lots = calculate_mt5_lots(symbol, quantity, reference_price)
         est_notional = round(quantity * reference_price, 2)
-
         if self._is_exness_trial_demo(account_id_or_login, testnet):
             order_id = f"MT5-{int(time.time() * 1000)}"
             return BinanceOrderResult(

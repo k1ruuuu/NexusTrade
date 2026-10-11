@@ -185,21 +185,23 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         )
         return
 
-    # Parse `/autotrade <SYMBOL> <DURATION> [TIMEFRAME]` or `/autotrade scan <SYMBOL> [DURATION|TIMEFRAME]`
+    # Parse `/autotrade <SYMBOL> [DURATION] [LOT] [TIMEFRAME]` in any order
+    from ai_engine.auto_trader.session_manager import parse_custom_lot_token
+
     raw_tokens = args[1:] if sub == "scan" else args
     symbol = normalize_symbol(raw_tokens[0]) if len(raw_tokens) >= 1 else "BTCUSDT"
     duration_token: str | None = None
+    custom_lot: float | None = None
     timeframe = "15m"
 
-    if len(raw_tokens) >= 2:
-        if is_session_duration_token(raw_tokens[1]):
-            duration_token = raw_tokens[1]
-            if len(raw_tokens) >= 3:
-                timeframe = normalize_timeframe(raw_tokens[2])
+    for tok in raw_tokens[1:]:
+        lot_val = parse_custom_lot_token(tok)
+        if lot_val is not None and custom_lot is None:
+            custom_lot = lot_val
+        elif is_session_duration_token(tok) and duration_token is None:
+            duration_token = tok
         else:
-            timeframe = normalize_timeframe(raw_tokens[1])
-            if len(raw_tokens) >= 3 and is_session_duration_token(raw_tokens[2]):
-                duration_token = raw_tokens[2]
+            timeframe = normalize_timeframe(tok)
 
     if duration_token is not None:
         async def _notify_user(uid: int, text_html: str) -> None:
@@ -214,6 +216,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
             duration_code=duration_token,
             timeframe=timeframe,
             notify_callback=_notify_user,
+            custom_lot=custom_lot,
         )
         await message.answer(
             format_timed_session_started_card(session_state, first_res),
@@ -258,6 +261,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         user_id=user_id,
         symbol=symbol,
         timeframe=timeframe,
+        custom_lot=custom_lot,
     )
     await message.answer(
         format_autotrade_report_card(report),

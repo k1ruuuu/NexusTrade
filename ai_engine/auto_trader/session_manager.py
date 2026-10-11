@@ -18,6 +18,27 @@ DURATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+LOT_TOKEN_RE = re.compile(
+    r"^(?:lot[=:]?)?(\d+(?:\.\d+)?)(?:lots?|l)?$",
+    re.IGNORECASE,
+)
+
+
+def parse_custom_lot_token(token: str) -> Optional[float]:
+    """
+    Parse a custom lot size token (e.g. '0.01', '0.05', '0.1', '1.5', '0.05lot', 'lot=0.05').
+    Returns None if token is a duration or non-lot string.
+    """
+    cleaned = token.strip()
+    if not cleaned or is_session_duration_token(cleaned):
+        return None
+    m = LOT_TOKEN_RE.match(cleaned)
+    if not m:
+        return None
+    val = float(m.group(1))
+    if 0.001 <= val <= 50.0:
+        return round(max(0.01, val), 2)
+    return None
 
 def is_session_duration_token(token: str) -> bool:
     """
@@ -100,6 +121,7 @@ class AutoTradeSessionState:
     positions_closed: int = 0
     realized_pnl_usdt: float = 0.0
     last_check_summary: str = "Memulai sesi pemantauan..."
+    custom_lot: Optional[float] = None
     task: Optional[asyncio.Task[Any]] = field(default=None, repr=False)
 
     @property
@@ -374,6 +396,7 @@ class AutoTradeSessionManager:
         timeframe: str = "15m",
         poll_interval_seconds: float = 30.0,
         notify_callback: Optional[NotifyCallback] = None,
+        custom_lot: Optional[float] = None,
     ) -> tuple[AutoTradeSessionState, Any]:
         """
         Start a timed autonomous trading session for `(user_id, symbol)` running for `duration_code` (e.g. '5H'):
@@ -403,6 +426,7 @@ class AutoTradeSessionManager:
             ends_at_ts=end_dt.timestamp(),
             started_at_iso=now_dt.strftime("%Y-%m-%d %H:%M UTC"),
             ends_at_iso=end_dt.strftime("%Y-%m-%d %H:%M UTC"),
+            custom_lot=custom_lot,
         )
         self._sessions[(uid, clean_sym)] = sess
 
@@ -464,6 +488,7 @@ class AutoTradeSessionManager:
             symbol=sess.symbol,
             timeframe=sess.timeframe,
             require_autotrade_toggle=True,
+            custom_lot=sess.custom_lot,
         )
         if report.executed and report.order_result is not None:
             sess.positions_opened += 1

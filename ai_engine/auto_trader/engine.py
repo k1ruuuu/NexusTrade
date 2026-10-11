@@ -11,6 +11,7 @@ from ai_engine.auto_trader.session_manager import (
     NotifyCallback,
     PositionMonitorResult,
     is_session_duration_token,
+    parse_custom_lot_token,
     parse_session_duration,
 )
 from ai_engine.auto_trader.user_vault import (
@@ -88,8 +89,9 @@ class SmartAutoTraderEngine:
         timeframe: str = "15m",
         poll_interval_seconds: float = 30.0,
         notify_callback: Optional[NotifyCallback] = None,
+        custom_lot: Optional[float] = None,
     ) -> tuple[AutoTradeSessionState, object]:
-        """Start a timed autonomous trading session (e.g. `/autotrade XAUUSD 5H`)."""
+        """Start a timed autonomous trading session (e.g. `/autotrade XAUUSD 5H 0.05`)."""
         return await self.session_manager.start_timed_session(
             user_id=user_id,
             symbol=symbol,
@@ -97,6 +99,7 @@ class SmartAutoTraderEngine:
             timeframe=timeframe,
             poll_interval_seconds=poll_interval_seconds,
             notify_callback=notify_callback,
+            custom_lot=custom_lot,
         )
 
     def get_user_sessions(self, user_id: int) -> list[AutoTradeSessionState]:
@@ -157,6 +160,7 @@ class SmartAutoTraderEngine:
         timeframe: str = "15m",
         decision_override: Optional[SignalDecision] = None,
         require_autotrade_toggle: bool = True,
+        custom_lot: Optional[float] = None,
     ) -> AutoTradeExecutionReport:
         """
         Run the complete 6-Gate Pre-Trade Checklist for `user_id` on `symbol` (`timeframe`)
@@ -428,7 +432,11 @@ class SmartAutoTraderEngine:
         target_notional = min(user_sizing.position_notional, user_equity * 0.95, max_notional_by_user_risk)
         if target_notional < 10.0:
             target_notional = min(user_equity * 0.95, 10.0)
-        qty = target_notional / max(decision.entry_price, 1e-9)
+        qty = (
+            float(custom_lot)
+            if (custom_lot is not None and custom_lot > 0 and not is_mt5_provider)
+            else (target_notional / max(decision.entry_price, 1e-9))
+        )
 
         order_side = "BUY" if decision.action == "BUY" else "SELL"
         if is_mt5_provider:
@@ -443,6 +451,7 @@ class SmartAutoTraderEngine:
                 take_profit=decision.take_profit_1,
                 server_name=creds.server_name,
                 testnet=creds.testnet,
+                custom_lot=custom_lot,
             )
         else:
             order_res = await self.binance_client.place_market_order(
