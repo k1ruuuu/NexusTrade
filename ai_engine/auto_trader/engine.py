@@ -13,6 +13,7 @@ from ai_engine.auto_trader.session_manager import (
     AutoTradeSessionState,
     NotifyCallback,
     PositionMonitorResult,
+    format_position_closed_notification,
 )
 from ai_engine.auto_trader.user_vault import (
     UserBinanceCredentials,
@@ -72,11 +73,15 @@ class SmartAutoTraderEngine:
         ensemble_agent: Optional[EnsembleDecisionAgent] = None,
         user_vault: Optional[UserVault] = None,
         mt5_client: Optional[MT5ExnessClient] = None,
+        notify_user_callback: Optional[NotifyCallback] = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.ensemble_agent = ensemble_agent or EnsembleDecisionAgent(self.settings)
         self.vault = user_vault or UserVault(self.settings)
         self.mt5_client = mt5_client or MT5ExnessClient()
+        self.notify_user_callback: Optional[NotifyCallback] = notify_user_callback
+        self._last_broker_closed: dict[tuple[int, str], PositionMonitorResult] = {}
+        self._notified_closed_tickets: set[str] = set()
         self.session_manager = AutoTradeSessionManager(self)
     async def start_timed_session(
         self,
@@ -129,10 +134,15 @@ class SmartAutoTraderEngine:
             headlines_override=headlines_override,
         )
 
-    async def sync_live_mt5_positions(self, user_id: int) -> dict[str, dict[str, Any]]:
+    async def sync_live_mt5_positions(
+        self,
+        user_id: int,
+        notify_closures: bool = True,
+    ) -> dict[str, dict[str, Any]]:
         """
-        Reconcile SQLite OPEN positions against real-time Exness MT5 OpenedOrders.
-        Returns a mapping of `ticket_str -> live_order_dict` (`closePrice`, `profit`, `stopLoss`, etc.).
+        Reconcile SQLite OPEN positions against real-time Exness MT5 OpenedOrders & ClosedOrders.
+        When a position was closed on Exness MT5 (hit TP/SL or closed in Exness Go), records the exact
+        `closePrice` and `profit` from `/ClosedOrders` and triggers a Telegram notification.
         """
         creds = self.vault.resolve_credentials(user_id)
         if (
@@ -151,10 +161,84 @@ class SmartAutoTraderEngine:
                 t_id = str(o.get("ticket") or o.get("order") or "")
                 if t_id:
                     live_ticket_map[t_id] = o
-        for pos in self.vault.get_open_positions(user_id):
-            if pos.order_id not in live_ticket_map:
-                # Position was closed on Exness server (hit TP/SL or closed manually in Exness Go)
-                self.vault.close_position(pos.position_id, pos.entry_price, 0.0)
+
+        open_in_db = self.vault.get_open_positions(user_id)
+        missing_positions = [p for p in open_in_db if p.order_id not in live_ticket_map]
+        if not missing_positions:
+            return live_ticket_map
+
+        closed_map = await self.mt5_client.get_closed_orders_map(
+            creds.api_key, creds.api_secret, creds.server_name
+        )
+        for pos in missing_positions:
+            c_ord = closed_map.get(pos.order_id)
+            if isinstance(c_ord, dict):
+                exit_px = float(c_ord.get("closePrice") or pos.entry_price)
+                net_pnl = round(
+                    float(c_ord.get("profit") or 0.0)
+                    + float(c_ord.get("swap") or 0.0)
+                    + float(c_ord.get("commission") or 0.0),
+                    2,
+                )
+            else:
+                exit_px = pos.entry_price
+                net_pnl = 0.0
+
+            tp_hit = (
+                net_pnl > 0.0
+                or (
+                    pos.take_profit_1 > 0
+                    and pos.stop_loss > 0
+                    and abs(exit_px - pos.take_profit_1) <= abs(exit_px - pos.stop_loss)
+                )
+            )
+            if tp_hit:
+                action_type = "CLOSED_TP"
+                reason = f"Target Profit (TP @ ${exit_px:,.2f}) Tercapai di Exness MT5"
+            else:
+                is_profit_stop = (
+                    pos.stop_loss > pos.entry_price
+                    if pos.side == "BUY"
+                    else (0 < pos.stop_loss < pos.entry_price)
+                )
+                action_type = "CLOSED_TP" if is_profit_stop else "CLOSED_SL"
+                reason = (
+                    f"Trailing Stop Profit Terkunci (@ ${exit_px:,.2f}) di Exness MT5"
+                    if is_profit_stop
+                    else f"Batas Rugi Stop-Loss (SL @ ${exit_px:,.2f}) Tersentuh di Exness MT5"
+                )
+
+            closed_rec = self.vault.close_position(pos.position_id, exit_px, net_pnl)
+            pnl_pct = round((net_pnl / max(pos.notional_usdt, 1e-6)) * 100.0, 2)
+            mon_res = PositionMonitorResult(
+                action_taken=action_type,  # type: ignore[arg-type]
+                position=closed_rec or pos,
+                current_price=exit_px,
+                unrealized_pnl_usdt=0.0,
+                unrealized_pnl_pct=pnl_pct,
+                exit_reason=reason,
+                realized_pnl_usdt=net_pnl,
+            )
+            self._last_broker_closed[(int(user_id), normalize_symbol(pos.symbol))] = mon_res
+
+            if (
+                notify_closures
+                and self.notify_user_callback is not None
+                and pos.order_id not in self._notified_closed_tickets
+            ):
+                self._notified_closed_tickets.add(pos.order_id)
+                try:
+                    await self.notify_user_callback(
+                        int(user_id),
+                        format_position_closed_notification(
+                            mon_res,
+                            header_title=f"AUTO-TRADE MENUTUP POSISI (TP/SL EXNESS) — {pos.symbol}",
+                            pnl_label="Hasil PnL Bersih",
+                        ),
+                    )
+                except Exception as exc:
+                    logger.debug("Could not send TP/SL closure notification", error=str(exc))
+
         return live_ticket_map
     async def evaluate_and_execute(
         self,

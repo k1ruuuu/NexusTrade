@@ -849,3 +849,56 @@ async def test_exness_mt5_provider_all_asset_buy_and_sell_execution(tmp_path: Pa
     )
     adx_series = MultiFactorConfluenceAnalyzer.compute_confluence_series(trend_df)["adx_14"]
     assert float(adx_series.iloc[-1]) >= 25.0
+
+    # 9. Native Exness Server TP/SL Closure Reconciliation & Telegram Notification:
+    # When a position hits TP/SL natively on Exness MT5 (disappears from OpenedOrders and appears in ClosedOrders),
+    # sync_live_mt5_positions records the exact closePrice & profit and triggers notify_user_callback.
+    notified_msgs: list[tuple[int, str]] = []
+
+    async def _capture_notify(uid: int, text_html: str) -> None:
+        notified_msgs.append((uid, text_html))
+
+    auto_trader.notify_user_callback = _capture_notify
+    vault.save_user_credentials(
+        user_id=444,
+        api_key="434355782",
+        api_secret="RealPass123",
+        username="RealExnessUser",
+        testnet=True,
+        verified_usdt_balance=5000.0,
+        autotrade_enabled=True,
+        server_name="Exness-MT5Trial7",
+    )
+    vault.record_open_position(
+        user_id=444,
+        symbol="XAUUSD",
+        side="SELL",
+        entry_price=4185.73,
+        quantity=0.05,
+        notional_usdt=20928.65,
+        stop_loss=4190.71,
+        take_profit_1=4178.41,
+        take_profit_2=4174.60,
+        confidence=0.797,
+        order_id="4859999001",
+        testnet=True,
+    )
+    auto_trader.mt5_client.get_live_open_orders = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    auto_trader.mt5_client.get_closed_orders_map = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "4859999001": {
+                "ticket": 4859999001,
+                "symbol": "XAUUSDm",
+                "closePrice": 4178.41,
+                "profit": 36.60,
+                "swap": 0.0,
+                "commission": 0.0,
+            }
+        }
+    )
+    await auto_trader.sync_live_mt5_positions(444, notify_closures=True)
+    assert len(vault.get_open_positions(444, "XAUUSD")) == 0
+    assert len(notified_msgs) == 1
+    assert notified_msgs[0][0] == 444
+    assert "Target Profit (TP @ $4,178.41) Tercapai di Exness MT5" in notified_msgs[0][1]
+    assert "+36.60 USDT" in notified_msgs[0][1]

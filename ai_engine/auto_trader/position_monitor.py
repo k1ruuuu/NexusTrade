@@ -77,16 +77,27 @@ class PositionMonitorMixin:
         - Ratchets Trailing Stop into profit once price moves >= +0.60 * ATR in favor.
         - Closes position on broker & vault when TP1/TP2, Stop-Loss/Trailing-Stop, or Emergency News Exit triggers.
         """
+        clean_sym = normalize_symbol(symbol)
         live_ticket_map: dict[str, dict[str, Any]] = {}
         if hasattr(self.engine, "sync_live_mt5_positions"):
-            sync_res = await self.engine.sync_live_mt5_positions(user_id)
+            try:
+                sync_res = await self.engine.sync_live_mt5_positions(user_id, notify_closures=False)
+            except TypeError:
+                sync_res = await self.engine.sync_live_mt5_positions(user_id)
             if isinstance(sync_res, dict):
                 live_ticket_map = sync_res
-        clean_sym = normalize_symbol(symbol)
+
+        broker_closed = getattr(self.engine, "_last_broker_closed", {}).pop(
+            (int(user_id), clean_sym), None
+        )
+        if broker_closed is not None:
+            if broker_closed.position is not None and hasattr(self.engine, "_notified_closed_tickets"):
+                self.engine._notified_closed_tickets.add(broker_closed.position.order_id)
+            return broker_closed
+
         open_positions = self.engine.vault.get_open_positions(user_id, symbol=clean_sym)
         if not open_positions:
             return PositionMonitorResult(action_taken="NONE")
-
         pos = open_positions[0]
         live_ord = live_ticket_map.get(pos.order_id)
         live_close_px = float(live_ord.get("closePrice") or 0.0) if isinstance(live_ord, dict) else 0.0

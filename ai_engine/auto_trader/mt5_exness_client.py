@@ -323,6 +323,43 @@ class MT5ExnessClient:
             logger.debug("Could not fetch live MT5 open orders", error=str(exc))
         return None
 
+
+    async def get_closed_orders_map(
+        self,
+        account_id_or_login: str,
+        token_or_password: str,
+        server_name: str = "Exness-MT5Trial7",
+    ) -> dict[str, dict[str, Any]]:
+        """
+        Fetch closed order history from Exness MT5 (`/ClosedOrders`) and return
+        a mapping of `ticket_str -> closed_order_dict` (`closePrice`, `profit`, `stopLoss`, `takeProfit`).
+        """
+        if self._is_exness_trial_demo(account_id_or_login, True):
+            return {}
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                tok, _ = await self._get_or_connect_session_token(
+                    client, account_id_or_login, token_or_password, server_name
+                )
+                if not tok:
+                    return {}
+                resp = await client.get(
+                    f"{MT5_REST_DIRECT_URL}/ClosedOrders",
+                    params={"id": tok},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, list):
+                        out: dict[str, dict[str, Any]] = {}
+                        for item in data:
+                            if isinstance(item, dict):
+                                t_str = str(item.get("ticket") or item.get("order") or "")
+                                if t_str:
+                                    out[t_str] = item
+                        return out
+        except Exception as exc:
+            logger.debug("Could not fetch MT5 closed orders", error=str(exc))
+        return {}
     async def close_mt5_ticket(
         self,
         account_id_or_login: str,

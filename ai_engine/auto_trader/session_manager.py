@@ -129,8 +129,6 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         notify_callback: Optional[NotifyCallback] = None,
     ) -> Any:
         sess.cycles_completed += 1
-        if hasattr(self.engine, "sync_live_mt5_positions"):
-            await self.engine.sync_live_mt5_positions(sess.user_id)
         open_positions = self.engine.vault.get_open_positions(sess.user_id, symbol=sess.symbol)
 
         if open_positions:

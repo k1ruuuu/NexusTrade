@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any, Optional
-
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -56,18 +56,20 @@ class NexusTradeBotService:
         self.backtester = backtester or EventDrivenBacktester(self.settings)
         self.user_vault = user_vault or UserVault(self.settings)
         self.admin_store = admin_store or AdminStore(self.settings, db_path=self.user_vault.db_path)
-        self.auto_trader = auto_trader or SmartAutoTraderEngine(
-            settings=self.settings,
-            ensemble_agent=self.ensemble_agent,
-            user_vault=self.user_vault,
-        )
         self.bot = bot or Bot(
             token=self.settings.telegram_bot_token,
             default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         )
+        self.auto_trader = auto_trader or SmartAutoTraderEngine(
+            settings=self.settings,
+            ensemble_agent=self.ensemble_agent,
+            user_vault=self.user_vault,
+            notify_user_callback=self._send_user_notification,
+        )
+        if getattr(self.auto_trader, "notify_user_callback", None) is None:
+            self.auto_trader.notify_user_callback = self._send_user_notification
         self.dp = self._build_dispatcher()
         self.broadcast_history: list[dict[str, Any]] = []
-
     def _build_dispatcher(self) -> Dispatcher:
         dp = Dispatcher(
             settings=self.settings,
@@ -213,7 +215,38 @@ class NexusTradeBotService:
 
         return sent_ok
 
+    async def _send_user_notification(self, user_id: int, html_text: str) -> None:
+        """Send a real-time HTML notification (e.g., TP/SL hit on Exness MT5) to `user_id`."""
+        try:
+            await self.bot.send_message(
+                chat_id=int(user_id),
+                text=html_text,
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.debug("Failed to send user notification", user_id=user_id, error=str(exc))
+
+    async def _mt5_position_watcher_loop(self) -> None:
+        """
+        Background watcher that polls open positions every 15 seconds and dispatches
+        real-time Telegram notifications whenever TP or SL is hit on the Exness MT5 server.
+        """
+        while True:
+            try:
+                await asyncio.sleep(15.0)
+                for uid in self.user_vault.list_autotrade_enabled_user_ids():
+                    if self.user_vault.get_open_positions(uid):
+                        await self.auto_trader.sync_live_mt5_positions(uid, notify_closures=True)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.debug("MT5 position watcher iteration error", error=str(exc))
+
     async def start_polling(self, handle_signals: bool = True) -> None:
-        """Start Aiogram v3 long-polling loop."""
+        """Start Aiogram v3 long-polling loop + background Exness MT5 TP/SL watcher."""
         logger.info("Starting NexusTrade AI Telegram Bot polling")
-        await self.dp.start_polling(self.bot, handle_signals=handle_signals)
+        watcher_task = asyncio.create_task(self._mt5_position_watcher_loop())
+        try:
+            await self.dp.start_polling(self.bot, handle_signals=handle_signals)
+        finally:
+            watcher_task.cancel()
