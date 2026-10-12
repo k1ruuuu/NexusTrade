@@ -552,24 +552,34 @@ class MT5ExnessClient:
                                 },
                             )
                             if mod_resp.status_code != 200 and sl_dist > 0:
+                                close_ok = False
                                 try:
-                                    await client.get(
+                                    c_resp = await client.get(
                                         f"{MT5_REST_DIRECT_URL}/OrderCloseSafe",
                                         params={"id": tok, "ticket": int(ticket), "lots": exec_lots, "slippage": 50},
                                     )
+                                    close_ok = c_resp.status_code == 200
                                 except Exception:
-                                    pass
+                                    close_ok = False
                                 return BinanceOrderResult(
                                     executed=False,
                                     order_id=ticket,
                                     symbol=candidate_sym,
                                     side=side,
-                                    executed_qty=0.0,
+                                    executed_qty=exec_lots,
                                     avg_price=round(open_px, decimals),
-                                    notional_usdt=0.0,
+                                    notional_usdt=round(
+                                        exec_lots * get_mt5_contract_size(candidate_sym) * open_px, 2
+                                    ),
                                     testnet=testnet,
-                                    status="UNPROTECTED_ABORTED",
-                                    error_message="Gagal mengonfirmasi SL/TP di broker; posisi ditutup darurat.",
+                                    status="UNPROTECTED_CLOSED_CONFIRMED" if close_ok else "FILLED_UNPROTECTED",
+                                    error_message=(
+                                        "Gagal mengonfirmasi SL/TP di broker; posisi ditutup darurat dan terkonfirmasi."
+                                        if close_ok
+                                        else "PERINGATAN: Order terisi tanpa SL/TP dan penutupan darurat belum terkonfirmasi."
+                                    ),
+                                    protection_confirmed=False,
+                                    emergency_closed=close_ok,
                                 )
                         return BinanceOrderResult(
                             executed=True,
@@ -625,24 +635,34 @@ class MT5ExnessClient:
                                     },
                                 )
                                 if mod_resp.status_code != 200:
+                                    close_ok = False
                                     try:
-                                        await client.get(
+                                        c_resp = await client.get(
                                             f"{MT5_REST_DIRECT_URL}/OrderCloseSafe",
                                             params={"id": tok, "ticket": ticket_int, "lots": exec_lots, "slippage": 50},
                                         )
+                                        close_ok = c_resp.status_code == 200
                                     except Exception:
-                                        pass
+                                        close_ok = False
                                     return BinanceOrderResult(
                                         executed=False,
                                         order_id=str(ticket_int),
                                         symbol=candidate_sym,
                                         side=side,
-                                        executed_qty=0.0,
+                                        executed_qty=exec_lots,
                                         avg_price=round(open_px, decimals),
-                                        notional_usdt=0.0,
+                                        notional_usdt=round(
+                                            exec_lots * get_mt5_contract_size(candidate_sym) * open_px, 2
+                                        ),
                                         testnet=testnet,
-                                        status="UNPROTECTED_ABORTED",
-                                        error_message="Gagal memasang proteksi SL/TP setelah fill; posisi ditutup darurat.",
+                                        status="UNPROTECTED_CLOSED_CONFIRMED" if close_ok else "FILLED_UNPROTECTED",
+                                        error_message=(
+                                            "Gagal memasang proteksi SL/TP setelah fill; posisi ditutup darurat dan terkonfirmasi."
+                                            if close_ok
+                                            else "PERINGATAN: Order terisi tanpa SL/TP dan penutupan darurat belum terkonfirmasi."
+                                        ),
+                                        protection_confirmed=False,
+                                        emergency_closed=close_ok,
                                     )
                             return BinanceOrderResult(
                                 executed=True,

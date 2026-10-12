@@ -298,6 +298,16 @@ class FinancialSentimentAnalyzer:
         for item in new_items:
             tokenized = self.preprocessor.tokenize_text(item.headline)
             lex_pol, _, _ = self._compute_lexicon_polarity(tokenized.tokens)
+            # NT-09: If market_df is supplied, require matured post-publication bars (>= 2 bars after pub_ts)
+            if market_df is not None and not market_df.empty:
+                try:
+                    pub_ts = pd.to_datetime(item.published_at, utc=True)
+                    idx = market_df.index
+                    if isinstance(idx, pd.DatetimeIndex) and len(market_df.loc[idx >= pub_ts]) < 2:
+                        # Outcome not yet mature; leave pending for future cycle
+                        continue
+                except Exception:
+                    pass
             mkt_ret = self._estimate_market_reaction_return(item.published_at, market_df)
             mkt_signal = float(np.tanh(mkt_ret * 120.0))
 
@@ -327,11 +337,13 @@ class FinancialSentimentAnalyzer:
                 }
             )
 
+        if not new_texts:
+            return live_items, 0
+
         x_new = self.vectorizer.transform(new_texts)
         y_new = np.asarray(new_labels, dtype=np.int32)
         self.online_classifier.partial_fit(x_new, y_new, classes=self.CLASSES)
         self.online_updates_count += 1
-
         try:
             new_df = pd.DataFrame(new_records)
             if self.corpus_path.exists():

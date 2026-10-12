@@ -35,6 +35,8 @@ class BinanceOrderResult:
     testnet: bool
     status: str
     error_message: Optional[str] = None
+    protection_confirmed: bool = True
+    emergency_closed: bool = False
 MT5_INDEX_COMMODITY_MAP: dict[str, str] = {
     "SPX": "US500",
     "NDX": "USTEC",

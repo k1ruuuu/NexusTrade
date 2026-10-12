@@ -288,8 +288,7 @@ class OHLCVPredictor:
                 binary_target = (y_val == cls_idx).astype(int)
                 if binary_target.nunique() == 2:
                     class_aucs.append(float(roc_auc_score(binary_target, val_probs[:, cls_idx])))
-            auc = float(np.mean(class_aucs)) if class_aucs else 0.85
-
+            auc = float(np.mean(class_aucs)) if class_aucs else 0.0
             roc_auc_round = round(auc, 4)
             acc_round = round(acc, 4)
             mem_bars = int(len(x_train) + len(x_val))

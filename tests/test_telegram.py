@@ -904,3 +904,96 @@ async def test_exness_mt5_provider_all_asset_buy_and_sell_execution(tmp_path: Pa
     assert notified_msgs[0][0] == 444
     assert "Target Profit (TP @ $4,178.41) Tercapai di Exness MT5" in notified_msgs[0][1]
     assert "+36.60 USDT" in notified_msgs[0][1]
+
+
+@pytest.mark.asyncio
+async def test_audit_r01_to_r06_and_nt_improvements(tmp_path: Path) -> None:
+    """Regression test covering R01-R06 and NT-01..NT-19 improvements from the report."""
+    import pandas as pd
+    from ai_engine.models.market_data_loader import _align_dataframe_timeframe
+
+    # R03: Preserve original historical timestamps when coarser data is requested as '1m'
+    daily = pd.DataFrame(
+        {"close": [100.0, 101.0, 102.0]},
+        index=pd.date_range("2020-01-01", periods=3, freq="1D", tz="UTC"),
+    )
+    changed = _align_dataframe_timeframe(daily, "1m")
+    assert str(changed.index[0]) == "2020-01-01 00:00:00+00:00"
+    assert changed.index[1] - changed.index[0] == pd.Timedelta(days=1)
+    assert changed.attrs.get("timeframe_mismatch") is True
+
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        data_dir=tmp_path / "data",
+        use_live_market_data=False,
+        use_live_news_feed=False,
+        online_learning_enabled=False,
+        use_transformers_pipeline=False,
+        telegram_admin_user_ids=[],
+        telegram_admin_chat_id=None,
+    )
+    vault = UserVault(settings)
+    agent = EnsembleDecisionAgent(settings)
+    engine = SmartAutoTraderEngine(settings, ensemble_agent=agent, user_vault=vault)
+    engine.sync_live_mt5_positions = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    # R04: Repeated close_position on the same position is 100% idempotent
+    vault.save_user_credentials(
+        900001,
+        "EXNESS_DEMO_DOCUMENT",
+        "dummy-document-password",
+        verified_usdt_balance=1000.0,
+        autotrade_enabled=True,
+        risk_per_trade_pct=0.005,
+    )
+    pos = vault.record_open_position(
+        user_id=900001,
+        symbol="XAUUSD",
+        side="BUY",
+        entry_price=2000.0,
+        quantity=0.01,
+        notional_usdt=2000.0,
+        stop_loss=1990.0,
+        take_profit_1=2020.0,
+        take_profit_2=2030.0,
+        confidence=0.8,
+        order_id="DOC-ONLY-MOCK",
+        testnet=True,
+    )
+    vault.close_position(pos.position_id, 1990.0, -10.0)
+    vault.close_position(pos.position_id, 1990.0, -10.0)
+    assert vault.get_user_daily_drawdown(900001)[2] == 990.0
+
+    # R01 & R02: Strict min(user, global) risk budget & reject MIN_LOT_EXCEEDS_RISK without narrowing SL
+    dec_xag = agent.synthesize_scores(
+        0.92, 0.2, 0.65, symbol="XAGUSD", entry_price=30.0, atr_14=0.25, headlines=["audit"]
+    )
+    orig_sl = dec_xag.stop_loss
+    rep_xag = await engine.evaluate_and_execute(900001, "XAGUSD", decision_override=dec_xag)
+    assert rep_xag.executed is False
+    assert "MIN_LOT_EXCEEDS_RISK" in (rep_xag.rejection_summary or "")
+    assert dec_xag.stop_loss == orig_sl
+
+    # R06: Account-scoped risk & position ledger across users sharing or isolating broker accounts
+    vault.save_user_credentials(
+        101, "SHARED_LOGIN_888", "pass888", verified_usdt_balance=1000.0, autotrade_enabled=True
+    )
+    vault.save_user_credentials(
+        102, "SHARED_LOGIN_888", "pass888", verified_usdt_balance=1000.0, autotrade_enabled=True
+    )
+    vault.save_user_credentials(
+        202, "OTHER_LOGIN_999", "pass999", verified_usdt_balance=1000.0, autotrade_enabled=True
+    )
+    p_shared = vault.record_open_position(
+        101, "BTCUSDT", "BUY", 80000.0, 0.01, 800.0, 79000.0, 82000.0, 83000.0, 0.8, "ORD-S1"
+    )
+    assert len(vault.get_open_positions(102, "BTCUSDT")) == 1
+    assert len(vault.get_open_positions(202, "BTCUSDT")) == 0
+    vault.close_position(p_shared.position_id, 79000.0, -60.0)
+    assert vault.get_user_daily_drawdown(102)[0] == 0.06
+    assert vault.get_user_daily_drawdown(202)[0] == 0.0
+
+    # NT-13: synthesize_scores without headlines does not artificially boost neutral sentiment
+    neutral_dec = agent.synthesize_scores(0.92, 0.2, 0.0, entry_price=100.0, atr_14=1.0)
+    assert neutral_dec.confidence == round(0.65 * 0.92, 4)

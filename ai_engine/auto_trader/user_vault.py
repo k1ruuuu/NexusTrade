@@ -18,6 +18,7 @@ from ai_engine.auto_trader.vault_positions import (
     UserPositionRecord,
     UserRole,
     close_position_in_db,
+    compute_broker_account_id,
     insert_open_position,
     query_open_positions,
     refresh_live_exness_balance,
@@ -86,6 +87,7 @@ class UserVault:
             for col_sql in (
                 "ALTER TABLE user_accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'exness_mt5'",
                 "ALTER TABLE user_accounts ADD COLUMN server_name TEXT NOT NULL DEFAULT 'Exness-MT5Trial7'",
+                "ALTER TABLE user_accounts ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
             ):
                 try:
                     conn.execute(col_sql)
@@ -111,10 +113,15 @@ class UserVault:
                     opened_at TEXT NOT NULL,
                     closed_at TEXT,
                     exit_price REAL,
-                    pnl_usdt REAL NOT NULL DEFAULT 0.0
+                    pnl_usdt REAL NOT NULL DEFAULT 0.0,
+                    account_id TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
+            try:
+                conn.execute("ALTER TABLE user_positions ADD COLUMN account_id TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS user_daily_risk (
@@ -123,7 +130,25 @@ class UserVault:
                     start_equity REAL NOT NULL,
                     current_equity REAL NOT NULL,
                     realized_pnl REAL NOT NULL DEFAULT 0.0,
+                    account_id TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY (user_id, utc_date)
+                )
+                """
+            )
+            try:
+                conn.execute("ALTER TABLE user_daily_risk ADD COLUMN account_id TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS account_daily_risk (
+                    account_id TEXT NOT NULL,
+                    utc_date TEXT NOT NULL,
+                    start_equity REAL NOT NULL,
+                    current_equity REAL NOT NULL,
+                    realized_pnl REAL NOT NULL DEFAULT 0.0,
+                    breaker_latched INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (account_id, utc_date)
                 )
                 """
             )
@@ -177,6 +202,7 @@ class UserVault:
         resolved_server = server_name or (
             "Exness-MT5Trial7" if testnet else "Exness-MT5Real"
         )
+        acct_id = compute_broker_account_id(provider, resolved_server, clean_key, testnet)
         enc_key = self.encrypt_for_user(user_id, clean_key)
         enc_secret = self.encrypt_for_user(user_id, clean_secret)
         masked = mask_api_key(clean_key)
@@ -188,8 +214,8 @@ class UserVault:
                 INSERT INTO user_accounts (
                     user_id, username, encrypted_api_key, encrypted_api_secret,
                     masked_api_key, testnet, autotrade_enabled, risk_per_trade_pct,
-                    verified_usdt_balance, updated_at, provider, server_name
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    verified_usdt_balance, updated_at, provider, server_name, account_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     username = excluded.username,
                     encrypted_api_key = excluded.encrypted_api_key,
@@ -201,7 +227,8 @@ class UserVault:
                     verified_usdt_balance = excluded.verified_usdt_balance,
                     updated_at = excluded.updated_at,
                     provider = excluded.provider,
-                    server_name = excluded.server_name
+                    server_name = excluded.server_name,
+                    account_id = excluded.account_id
                 """,
                 (
                     int(user_id),
@@ -216,19 +243,26 @@ class UserVault:
                     now_iso,
                     provider,
                     resolved_server,
+                    acct_id,
                 ),
             )
             today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             init_eq = float(verified_usdt_balance) if verified_usdt_balance > 0 else self.settings.portfolio_initial_capital
             conn.execute(
                 """
-                INSERT INTO user_daily_risk (user_id, utc_date, start_equity, current_equity, realized_pnl)
-                VALUES (?, ?, ?, ?, 0.0)
-                ON CONFLICT(user_id, utc_date) DO UPDATE SET
-                    start_equity = MAX(user_daily_risk.start_equity, excluded.start_equity),
-                    current_equity = excluded.current_equity
+                INSERT INTO user_daily_risk (user_id, utc_date, start_equity, current_equity, realized_pnl, account_id)
+                VALUES (?, ?, ?, ?, 0.0, ?)
+                ON CONFLICT(user_id, utc_date) DO NOTHING
                 """,
-                (int(user_id), today_utc, init_eq, init_eq),
+                (int(user_id), today_utc, init_eq, init_eq, acct_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO account_daily_risk (account_id, utc_date, start_equity, current_equity, realized_pnl, breaker_latched)
+                VALUES (?, ?, ?, ?, 0.0, 0)
+                ON CONFLICT(account_id, utc_date) DO NOTHING
+                """,
+                (acct_id, today_utc, init_eq, init_eq),
             )
             conn.commit()
         logger.info(
@@ -254,6 +288,7 @@ class UserVault:
             verified_usdt_balance=float(verified_usdt_balance),
             provider=provider,
             server_name=resolved_server,
+            account_id=acct_id,
             updated_at=now_iso,
         )
 
@@ -283,6 +318,11 @@ class UserVault:
                 if ("server_name" in row_keys and str(row["server_name"]).strip())
                 else ("Exness-MT5Trial7" if bool(row["testnet"]) else "Exness-MT5Real")
             )
+            acct_id = (
+                str(row["account_id"])
+                if ("account_id" in row_keys and str(row["account_id"]).strip())
+                else compute_broker_account_id(prov, srv_name, api_key, bool(row["testnet"]))
+            )
             return UserBinanceCredentials(
                 user_id=uid,
                 username=str(row["username"]),
@@ -297,6 +337,7 @@ class UserVault:
                 verified_usdt_balance=float(row["verified_usdt_balance"]),
                 provider=prov,
                 server_name=srv_name,
+                account_id=acct_id,
                 updated_at=str(row["updated_at"]),
             )
         # Strict Admin-only .env fallback
@@ -304,6 +345,8 @@ class UserVault:
             env_key = self.settings.binance_api_key.strip()
             env_secret = self.settings.binance_api_secret.strip()
             if len(env_key) >= 5 and len(env_secret) >= 6:
+                srv_env = "Exness-MT5Trial7" if self.settings.binance_testnet else "Exness-MT5Real"
+                acct_env = compute_broker_account_id("exness_mt5", srv_env, env_key, self.settings.binance_testnet)
                 return UserBinanceCredentials(
                     user_id=uid,
                     username="Admin (.env)",
@@ -317,7 +360,8 @@ class UserVault:
                     risk_per_trade_pct=min(0.01, self.settings.max_account_risk_per_trade),
                     verified_usdt_balance=self.settings.portfolio_initial_capital,
                     provider="exness_mt5",
-                    server_name="Exness-MT5Trial7" if self.settings.binance_testnet else "Exness-MT5Real",
+                    server_name=srv_env,
+                    account_id=acct_env,
                     updated_at="env-configured",
                 )
 
@@ -345,6 +389,8 @@ class UserVault:
 
     def update_verified_balance(self, user_id: int, usdt_balance: float) -> None:
         uid = int(user_id)
+        creds = self.resolve_credentials(uid)
+        acct_id = creds.account_id if creds else f"user:{uid}"
         now_dt = datetime.now(timezone.utc)
         now_iso = now_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         today_utc = now_dt.strftime("%Y-%m-%d")
@@ -356,17 +402,27 @@ class UserVault:
             )
             conn.execute(
                 """
-                INSERT INTO user_daily_risk (user_id, utc_date, start_equity, current_equity, realized_pnl)
-                VALUES (?, ?, ?, ?, 0.0)
+                INSERT INTO user_daily_risk (user_id, utc_date, start_equity, current_equity, realized_pnl, account_id)
+                VALUES (?, ?, ?, ?, 0.0, ?)
                 ON CONFLICT(user_id, utc_date) DO UPDATE SET
                     current_equity = excluded.current_equity
                 """,
-                (uid, today_utc, bal, bal),
+                (uid, today_utc, bal, bal, acct_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO account_daily_risk (account_id, utc_date, start_equity, current_equity, realized_pnl, breaker_latched)
+                VALUES (?, ?, ?, ?, 0.0, 0)
+                ON CONFLICT(account_id, utc_date) DO UPDATE SET
+                    current_equity = excluded.current_equity
+                """,
+                (acct_id, today_utc, bal, bal),
             )
             conn.commit()
         self._sync_linked_sizer(uid)
+
     def delete_user_credentials(self, user_id: int) -> bool:
-        """Remove personal Binance credentials for user_id from the vault (/unlink)."""
+        """Remove personal Broker credentials for user_id from the vault (/unlink)."""
         uid = int(user_id)
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM user_accounts WHERE user_id = ?", (uid,))
@@ -389,7 +445,11 @@ class UserVault:
         confidence: float,
         order_id: str,
         testnet: bool = True,
+        account_id: Optional[str] = None,
+        status: Literal["OPEN", "CLOSED", "FILLED_UNPROTECTED"] = "OPEN",
     ) -> UserPositionRecord:
+        creds = self.resolve_credentials(int(user_id))
+        resolved_acct = account_id or (creds.account_id if creds else f"user:{int(user_id)}")
         with self._connect() as conn:
             return insert_open_position(
                 conn=conn,
@@ -405,21 +465,26 @@ class UserVault:
                 confidence=confidence,
                 order_id=order_id,
                 testnet=testnet,
+                account_id=resolved_acct,
+                status=status,
             )
 
     def get_open_positions(
         self,
         user_id: int,
         symbol: Optional[str] = None,
+        account_id: Optional[str] = None,
     ) -> list[UserPositionRecord]:
+        creds = self.resolve_credentials(int(user_id))
+        resolved_acct = account_id or (creds.account_id if creds else None)
         with self._connect() as conn:
-            return query_open_positions(conn, user_id=user_id, symbol=symbol)
+            return query_open_positions(conn, user_id=user_id, symbol=symbol, account_id=resolved_acct)
 
     def update_position_stop_loss(self, position_id: int, new_stop_loss: float) -> None:
         """Ratchet trailing stop-loss on an active OPEN position."""
         with self._connect() as conn:
             conn.execute(
-                "UPDATE user_positions SET stop_loss = ? WHERE position_id = ? AND status = 'OPEN'",
+                "UPDATE user_positions SET stop_loss = ? WHERE position_id = ? AND status IN ('OPEN', 'FILLED_UNPROTECTED')",
                 (float(new_stop_loss), int(position_id)),
             )
             conn.commit()
@@ -430,12 +495,19 @@ class UserVault:
         exit_price: float,
         pnl_usdt: float,
     ) -> Optional[UserPositionRecord]:
-        """Mark an open position as CLOSED and update the user's UTC daily drawdown ledger."""
+        """
+        Idempotently mark an open position as CLOSED and update the account/user UTC daily drawdown ledger
+        atomically in a single transaction (R04 / NT-03). Repeated calls on an already-closed position do NOT double-count PnL.
+        """
         today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        newly_closed = False
         with self._connect() as conn:
-            closed_rec = close_position_in_db(conn, position_id, exit_price, pnl_usdt)
-            if closed_rec is not None:
+            closed_rec, newly_closed = close_position_in_db(
+                conn, position_id, exit_price, pnl_usdt, commit=False
+            )
+            if closed_rec is not None and newly_closed:
                 uid = int(closed_rec.user_id)
+                acct_id = closed_rec.account_id or f"user:{uid}"
                 acc_row = conn.execute(
                     "SELECT verified_usdt_balance FROM user_accounts WHERE user_id = ?", (uid,)
                 ).fetchone()
@@ -446,30 +518,52 @@ class UserVault:
                 )
                 conn.execute(
                     """
-                    INSERT INTO user_daily_risk (user_id, utc_date, start_equity, current_equity, realized_pnl)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO user_daily_risk (user_id, utc_date, start_equity, current_equity, realized_pnl, account_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(user_id, utc_date) DO UPDATE SET
                         realized_pnl = user_daily_risk.realized_pnl + excluded.realized_pnl,
                         current_equity = MAX(0.0, user_daily_risk.start_equity + user_daily_risk.realized_pnl + excluded.realized_pnl)
                     """,
-                    (uid, today_utc, base_eq, max(0.0, base_eq + float(pnl_usdt)), float(pnl_usdt)),
+                    (uid, today_utc, base_eq, max(0.0, base_eq + float(pnl_usdt)), float(pnl_usdt), acct_id),
                 )
-                conn.commit()
-        if closed_rec is not None:
+                conn.execute(
+                    """
+                    INSERT INTO account_daily_risk (account_id, utc_date, start_equity, current_equity, realized_pnl, breaker_latched)
+                    VALUES (?, ?, ?, ?, ?, 0)
+                    ON CONFLICT(account_id, utc_date) DO UPDATE SET
+                        realized_pnl = account_daily_risk.realized_pnl + excluded.realized_pnl,
+                        current_equity = MAX(0.0, account_daily_risk.start_equity + account_daily_risk.realized_pnl + excluded.realized_pnl)
+                    """,
+                    (acct_id, today_utc, base_eq, max(0.0, base_eq + float(pnl_usdt)), float(pnl_usdt)),
+                )
+            conn.commit()
+        if closed_rec is not None and newly_closed:
             self._sync_linked_sizer(closed_rec.user_id)
         return closed_rec
 
-    def get_user_daily_drawdown(self, user_id: int) -> tuple[float, float, float]:
-        """Return `(drawdown_fraction, start_equity, current_equity)` for `user_id` on the current UTC date."""
+    def get_user_daily_drawdown(
+        self,
+        user_id: int,
+        account_id: Optional[str] = None,
+    ) -> tuple[float, float, float]:
+        """Return `(drawdown_fraction, start_equity, current_equity)` scoped by `account_id` (or `user_id`) on current UTC date."""
         uid = int(user_id)
+        creds = self.resolve_credentials(uid)
+        acct_id = account_id or (creds.account_id if creds else None)
         today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT start_equity, current_equity, realized_pnl FROM user_daily_risk WHERE user_id = ? AND utc_date = ?",
-                (uid, today_utc),
-            ).fetchone()
+            row = None
+            if acct_id:
+                row = conn.execute(
+                    "SELECT start_equity, current_equity, realized_pnl FROM account_daily_risk WHERE account_id = ? AND utc_date = ?",
+                    (acct_id, today_utc),
+                ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    "SELECT start_equity, current_equity, realized_pnl FROM user_daily_risk WHERE user_id = ? AND utc_date = ?",
+                    (uid, today_utc),
+                ).fetchone()
         if row is None:
-            creds = self.resolve_credentials(uid)
             eq = float(creds.verified_usdt_balance) if creds and creds.verified_usdt_balance > 0 else self.settings.portfolio_initial_capital
             return 0.0, eq, eq
         start_eq = max(float(row["start_equity"]), 1e-6)

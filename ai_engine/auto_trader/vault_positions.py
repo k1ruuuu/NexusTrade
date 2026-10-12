@@ -27,10 +27,10 @@ class UserBinanceCredentials:
     verified_usdt_balance: float = 0.0
     provider: BrokerProvider = "exness_mt5"
     server_name: str = "Exness-MT5Trial7"
+    account_id: str = ""
     updated_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
-
 
 @dataclass
 class UserPositionRecord:
@@ -47,16 +47,39 @@ class UserPositionRecord:
     take_profit_1: float
     take_profit_2: float
     confidence: float
-    status: Literal["OPEN", "CLOSED"]
+    status: Literal["OPEN", "CLOSED", "FILLED_UNPROTECTED"]
     order_id: str
     testnet: bool
     opened_at: str
     closed_at: Optional[str] = None
     exit_price: Optional[float] = None
     pnl_usdt: float = 0.0
+    account_id: str = ""
+
+
+def compute_broker_account_id(
+    provider: str,
+    server_name: str,
+    api_key: str,
+    testnet: bool,
+) -> str:
+    """Build canonical BrokerAccountIdentity key (`provider:server:env:login`)."""
+    prov = (provider or "exness_mt5").strip().lower()
+    srv = (server_name or "Exness-MT5Trial7").strip().upper()
+    env_tag = "TEST" if testnet else "LIVE"
+    login = (api_key or "unknown").strip()
+    return f"{prov}:{srv}:{env_tag}:{login}"
 
 
 def row_to_position_record(r: sqlite3.Row) -> UserPositionRecord:
+    raw_status = str(r["status"])
+    status_val: Literal["OPEN", "CLOSED", "FILLED_UNPROTECTED"] = (
+        "CLOSED"
+        if raw_status == "CLOSED"
+        else ("FILLED_UNPROTECTED" if raw_status == "FILLED_UNPROTECTED" else "OPEN")
+    )
+    r_keys = r.keys()
+    acct_id = str(r["account_id"]) if ("account_id" in r_keys and r["account_id"]) else ""
     return UserPositionRecord(
         position_id=int(r["position_id"]),
         user_id=int(r["user_id"]),
@@ -69,15 +92,15 @@ def row_to_position_record(r: sqlite3.Row) -> UserPositionRecord:
         take_profit_1=float(r["take_profit_1"]),
         take_profit_2=float(r["take_profit_2"]),
         confidence=float(r["confidence"]),
-        status="OPEN" if str(r["status"]) == "OPEN" else "CLOSED",
+        status=status_val,
         order_id=str(r["order_id"]),
         testnet=bool(r["testnet"]),
         opened_at=str(r["opened_at"]),
         closed_at=str(r["closed_at"]) if r["closed_at"] else None,
         exit_price=float(r["exit_price"]) if r["exit_price"] is not None else None,
         pnl_usdt=float(r["pnl_usdt"]),
+        account_id=acct_id,
     )
-
 
 def insert_open_position(
     conn: sqlite3.Connection,
@@ -93,6 +116,8 @@ def insert_open_position(
     confidence: float,
     order_id: str,
     testnet: bool = True,
+    account_id: str = "",
+    status: Literal["OPEN", "CLOSED", "FILLED_UNPROTECTED"] = "OPEN",
 ) -> UserPositionRecord:
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     cur = conn.execute(
@@ -100,8 +125,8 @@ def insert_open_position(
         INSERT INTO user_positions (
             user_id, symbol, side, entry_price, quantity, notional_usdt,
             stop_loss, take_profit_1, take_profit_2, confidence,
-            status, order_id, testnet, opened_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?)
+            status, order_id, testnet, opened_at, account_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             int(user_id),
@@ -114,9 +139,11 @@ def insert_open_position(
             float(take_profit_1),
             float(take_profit_2),
             float(confidence),
+            status,
             str(order_id),
             1 if testnet else 0,
             now_iso,
+            str(account_id),
         ),
     )
     conn.commit()
@@ -133,10 +160,11 @@ def insert_open_position(
         take_profit_1=float(take_profit_1),
         take_profit_2=float(take_profit_2),
         confidence=float(confidence),
-        status="OPEN",
+        status=status,
         order_id=str(order_id),
         testnet=testnet,
         opened_at=now_iso,
+        account_id=str(account_id),
     )
 
 
@@ -144,16 +172,28 @@ def query_open_positions(
     conn: sqlite3.Connection,
     user_id: int,
     symbol: Optional[str] = None,
+    account_id: Optional[str] = None,
 ) -> list[UserPositionRecord]:
     uid = int(user_id)
-    if symbol:
+    if account_id:
+        if symbol:
+            rows = conn.execute(
+                "SELECT * FROM user_positions WHERE (account_id = ? OR (account_id = '' AND user_id = ?)) AND status IN ('OPEN', 'FILLED_UNPROTECTED') AND symbol = ? ORDER BY position_id DESC",
+                (account_id, uid, symbol.upper()),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM user_positions WHERE (account_id = ? OR (account_id = '' AND user_id = ?)) AND status IN ('OPEN', 'FILLED_UNPROTECTED') ORDER BY position_id DESC",
+                (account_id, uid),
+            ).fetchall()
+    elif symbol:
         rows = conn.execute(
-            "SELECT * FROM user_positions WHERE user_id = ? AND status = 'OPEN' AND symbol = ? ORDER BY position_id DESC",
+            "SELECT * FROM user_positions WHERE user_id = ? AND status IN ('OPEN', 'FILLED_UNPROTECTED') AND symbol = ? ORDER BY position_id DESC",
             (uid, symbol.upper()),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM user_positions WHERE user_id = ? AND status = 'OPEN' ORDER BY position_id DESC",
+            "SELECT * FROM user_positions WHERE user_id = ? AND status IN ('OPEN', 'FILLED_UNPROTECTED') ORDER BY position_id DESC",
             (uid,),
         ).fetchall()
     return [row_to_position_record(r) for r in rows]
@@ -164,25 +204,31 @@ def close_position_in_db(
     position_id: int,
     exit_price: float,
     pnl_usdt: float,
-) -> Optional[UserPositionRecord]:
+    commit: bool = True,
+) -> tuple[Optional[UserPositionRecord], bool]:
+    """
+    Idempotently transition a position to CLOSED only if it is not already CLOSED.
+    Returns `(position_record, newly_closed)`.
+    """
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     pid = int(position_id)
-    conn.execute(
+    cur = conn.execute(
         """
         UPDATE user_positions
         SET status = 'CLOSED', closed_at = ?, exit_price = ?, pnl_usdt = ?
-        WHERE position_id = ?
+        WHERE position_id = ? AND status != 'CLOSED'
         """,
         (now_iso, float(exit_price), float(pnl_usdt), pid),
     )
-    conn.commit()
+    newly_closed = cur.rowcount > 0
+    if commit:
+        conn.commit()
     row = conn.execute(
         "SELECT * FROM user_positions WHERE position_id = ?", (pid,)
     ).fetchone()
     if row is None:
-        return None
-    return row_to_position_record(row)
-
+        return None, False
+    return row_to_position_record(row), newly_closed
 
 async def refresh_live_exness_balance(
     vault: Any,
