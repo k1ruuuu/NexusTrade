@@ -249,17 +249,17 @@ class SmartAutoTraderEngine:
             symbol=clean_sym, timeframe=clean_tf
         )
 
-        # Gate 2: Breaking News & FinBERT Sentiment Alignment
+        # Gate 2: Breaking News & FinBERT Sentiment Alignment (Neutral band (-0.15, +0.15) is allowed)
         n_news = len(decision.headlines)
         if decision.action == "BUY":
-            news_ok = decision.s_sent >= -0.05
+            news_ok = decision.s_sent > -0.15
             news_detail = (
                 f"Sentimen Berita Selaras ({decision.s_sent:+.2f} dari {n_news} berita mendukung/netral untuk BELI)"
                 if news_ok
                 else f"DITOLAK: Berita sedang negatif ({decision.s_sent:+.2f}), berbahaya untuk membuka posisi BELI"
             )
         elif decision.action == "SELL":
-            news_ok = decision.s_sent <= 0.05
+            news_ok = decision.s_sent < 0.15
             news_detail = (
                 f"Sentimen Berita Selaras ({decision.s_sent:+.2f} dari {n_news} berita mendukung/netral untuk JUAL)"
                 if news_ok

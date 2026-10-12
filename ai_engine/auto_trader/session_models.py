@@ -9,7 +9,7 @@ from typing import Any, Callable, Coroutine, Literal, Optional
 from ai_engine.auto_trader.user_vault import UserPositionRecord
 
 DURATION_RE = re.compile(
-    r"^(\d+(?:\.\d+)?)\s*(s|sec|detik|m|min|menit|h|hr|jam|hour|hours|d|day|days|hari)$",
+    r"^(\d+(?:\.\d+)?)\s*(s|sec|detik|m|min|menit|h|hr|j|jam|hour|hours|d|day|days|hari)$",
     re.IGNORECASE,
 )
 

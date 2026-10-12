@@ -265,11 +265,11 @@ class MultiFactorConfluenceAnalyzer:
         if p4_ok:
             pillars_passed += 1
 
-        # Pillar 5: Fundamental / News Catalyst Alignment
+        # Pillar 5: Fundamental / News Catalyst Alignment (Neutral band is (-0.15, +0.15))
         if action == "BUY":
-            p5_ok = s_sent >= -0.05
+            p5_ok = s_sent > -0.15
         elif action == "SELL":
-            p5_ok = s_sent <= 0.05
+            p5_ok = s_sent < 0.15
         else:
             p5_ok = False
         if p5_ok:
