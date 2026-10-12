@@ -134,13 +134,30 @@ class NexusTradeBotService:
         sent_ok = False
         try:
             if chart_path is not None and chart_path.exists():
-                await self.bot.send_photo(
-                    chat_id=target_chat_id,
-                    photo=FSInputFile(str(chart_path)),
-                    caption=caption,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=reply_markup,
-                )
+                try:
+                    await self.bot.send_photo(
+                        chat_id=target_chat_id,
+                        photo=FSInputFile(str(chart_path)),
+                        caption=caption,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=reply_markup,
+                    )
+                except Exception as photo_exc:
+                    if "caption is too long" in str(photo_exc).lower():
+                        await self.bot.send_photo(
+                            chat_id=target_chat_id,
+                            photo=FSInputFile(str(chart_path)),
+                            caption=f"📡 <b>GRAFIK SINYAL AI — {decision.symbol} ({decision.timeframe})</b>",
+                            parse_mode=ParseMode.HTML,
+                        )
+                        await self.bot.send_message(
+                            chat_id=target_chat_id,
+                            text=caption,
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=reply_markup,
+                        )
+                    else:
+                        raise
             else:
                 await self.bot.send_message(
                     chat_id=target_chat_id,

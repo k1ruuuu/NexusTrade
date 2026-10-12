@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -121,7 +123,12 @@ def test_message_formatters_html_cards(tmp_path: Path) -> None:
         entry_price=67420.50,
         atr_14=450.0,
     )
+    decision.validation_accuracy = 0.842
+    decision.validation_roc_auc = 0.948
+    decision.memory_bars_count = 2220
     signal_html = format_signal_card(decision)
+    plain_caption = html.unescape(re.sub(r"<[^>]+>", "", signal_html))
+    assert len(plain_caption.encode("utf-16-le")) // 2 <= 1024
     assert "STRONG BUY" in signal_html
     assert "Entry Price:" in signal_html
     assert "Stop Loss (2xATR):" in signal_html
@@ -131,7 +138,6 @@ def test_message_formatters_html_cards(tmp_path: Path) -> None:
     assert "Resistance Atas (R1 | R2):" in signal_html
     assert "Support Bawah (S1 | S2):" in signal_html
     assert decision.support_2 < decision.support_1 < decision.entry_price < decision.resistance_1 < decision.resistance_2
-
     sent_res = agent.sentiment_analyzer.analyze_headlines(symbol="BTCUSDT")
     sent_html = format_sentiment_card(sent_res)
     assert "FINBERT SENTIMENT ENGINE" in sent_html

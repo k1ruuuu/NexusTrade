@@ -44,12 +44,28 @@ async def send_signal_response(
         decision=decision,
     )
     caption = format_signal_card(decision)
-    await target_msg.answer_photo(
-        photo=FSInputFile(str(chart_path)),
-        caption=caption,
-        parse_mode="HTML",
-        reply_markup=build_symbol_action_keyboard(decision.symbol),
-    )
+    kb = build_symbol_action_keyboard(decision.symbol)
+    try:
+        await target_msg.answer_photo(
+            photo=FSInputFile(str(chart_path)),
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+    except Exception as exc:
+        if "caption is too long" in str(exc).lower():
+            await target_msg.answer_photo(
+                photo=FSInputFile(str(chart_path)),
+                caption=f"📡 <b>GRAFIK SINYAL AI — {decision.symbol} ({timeframe})</b>",
+                parse_mode="HTML",
+            )
+            await target_msg.answer(
+                caption,
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+        else:
+            raise
 
 
 async def send_sentiment_response(

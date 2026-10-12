@@ -97,33 +97,25 @@ def format_signal_card(decision: SignalDecision) -> str:
     r1_pct = format_pct_diff(decision.resistance_1, decision.entry_price)
     s1_pct = format_pct_diff(decision.support_1, decision.entry_price)
     approval_line = (
-        "🟢 <b>AMAN (Lolos Filter Risiko)</b>"
+        "🟢 <b>AMAN</b>"
         if decision.approved
-        else f"🔴 <b>DITAHAN ({html.escape(decision.rejection_reason or 'Filter Risiko')})</b>"
+        else f"🔴 <b>DITAHAN ({html.escape((decision.rejection_reason or 'Filter')[:32])})</b>"
     )
     acc_pct = decision.validation_accuracy * 100.0
     auc_pct = decision.validation_roc_auc * 100.0
-    acc_line = (
-        f"• <b>Akurasi AI (5Thn):</b> <code>{acc_pct:.1f}%</code> "
-        f"(AUC: <code>{auc_pct:.1f}%</code> | <code>{decision.memory_bars_count:,} bar</code>)\n"
+    mem_line = (
+        f"• <b>Memori 5Thn:</b> Akurasi <code>{acc_pct:.1f}%</code> (AUC <code>{auc_pct:.1f}%</code> | <code>{decision.memory_bars_count:,} bar</code>)\n"
         if acc_pct > 0
         else ""
-    )
-    macro_line = (
-        f"• <b>Tren Makro 5Thn:</b> {html.escape(decision.macro_regime)} "
-        f"(<code>{decision.five_year_percentile:.0f}%</code>)\n\n"
-        if decision.memory_bars_count > 500
-        else "\n"
     )
 
     return (
         f"📡 <b>SINYAL AI NEXUSTRADE — {sym} ({tf})</b>\n"
         f"━━━━━━━━━━━━━━━━\n"
-        f"<b>Keputusan AI:</b> {badge}\n"
-        f"<b>Keyakinan:</b> <code>[{conf_bar}] {decision.confidence * 100:.1f}%</code>\n"
-        f"<b>Status:</b> {approval_line}\n\n"
+        f"<b>Keputusan:</b> {badge}\n"
+        f"<b>Keyakinan:</b> <code>[{conf_bar}] {decision.confidence * 100:.1f}%</code> | {approval_line}\n"
         f"{summary_text}\n\n"
-        f"<b>🎯 Panduan Harga &amp; Level S/R:</b>\n"
+        f"<b>🎯 Level Harga &amp; S/R:</b>\n"
         f"• <b>Entry Price:</b> <code>{format_price(decision.entry_price)}</code>\n"
         f"• <b>Stop Loss (2xATR):</b> <code>{format_price(decision.stop_loss)}</code> (<code>{sl_pct}</code>)\n"
         f"• <b>Take Profit 1 (1:2):</b> <code>{format_price(decision.take_profit_1)}</code> (<code>{tp1_pct}</code>)\n"
@@ -131,14 +123,13 @@ def format_signal_card(decision: SignalDecision) -> str:
         f"• <b>Resistance Atas (R1 | R2):</b> <code>{format_price(decision.resistance_1)}</code> (<code>{r1_pct}</code>) | <code>{format_price(decision.resistance_2)}</code>\n"
         f"• <b>Support Bawah (S1 | S2):</b> <code>{format_price(decision.support_1)}</code> (<code>{s1_pct}</code>) | <code>{format_price(decision.support_2)}</code>\n"
         f"• <b>Posisi S/R:</b> <i>{html.escape(decision.sr_status)}</i>\n"
-        f"• <b>Struktur Pasar (ADX):</b> <i>{html.escape(decision.market_structure_status)}</i>\n\n"
-        f"<b>🧠 Analisis 6 Pilar &amp; Order Flow:</b>\n"
-        f"• <b>Teknikal &amp; CVD:</b> <code>{decision.s_tech:+.2f}</code> | CVD: <i>{html.escape(decision.cvd_status)}</i> (RVOL <code>{decision.relative_volume:.1f}x</code>)\n"
-        f"• <b>Sentimen &amp; Gejolak:</b> <code>{decision.s_sent:+.2f}</code> ({sent_desc}) | Vol: <code>{decision.s_vol:.2f}</code>\n"
-        f"• <b>Konfluensi &amp; Expectancy:</b> <code>{decision.confluence_pillars}/6 Pilar</code> | Expectancy: <code>{decision.expectancy_r:+.2f}R</code>\n"
-        f"{acc_line}"
-        f"{macro_line}"
-        f"<b>🛡️ Ukuran Posisi:</b> <code>{decision.position_units:,.4f} {sym}</code> (<code>${decision.position_notional:,.2f}</code> | Risiko <code>{decision.account_risk_pct * 100:.2f}%</code>)\n"
+        f"• <b>Struktur (ADX):</b> <i>{html.escape(decision.market_structure_status)}</i>\n\n"
+        f"<b>🧠 Analisis 6 Pilar:</b>\n"
+        f"• <b>Teknikal &amp; CVD:</b> <code>{decision.s_tech:+.2f}</code> | <i>{html.escape(decision.cvd_status)}</i> (RVOL <code>{decision.relative_volume:.1f}x</code>)\n"
+        f"• <b>Sentimen &amp; Vol:</b> <code>{decision.s_sent:+.2f}</code> ({sent_desc}) | Vol <code>{decision.s_vol:.2f}</code>\n"
+        f"• <b>Konfluensi:</b> <code>{decision.confluence_pillars}/6 Pilar</code> | Exp <code>{decision.expectancy_r:+.2f}R</code>\n"
+        f"{mem_line}"
+        f"<b>🛡️ Ukuran:</b> <code>{decision.position_units:,.4f} {sym}</code> (<code>${decision.position_notional:,.2f}</code> | Risiko <code>{decision.account_risk_pct * 100:.2f}%</code>)\n"
         f"⏱️ <i>UTC: {html.escape(decision.timestamp)}</i>"
     )
 
