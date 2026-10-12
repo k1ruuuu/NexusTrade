@@ -157,23 +157,6 @@ class AdminStore:
 
         return self.get_managed_user(uid)  # type: ignore[return-value]
 
-    def edit_user_expiry(
-        self,
-        user_id: int,
-        duration_code: str,
-        admin_id: int = 0,
-        now_override: Optional[datetime] = None,
-    ) -> Optional[ManagedUserRecord]:
-        """Update the expiration duration of a user (creates managed record if in static list)."""
-        existing = self.get_managed_user(user_id)
-        label = existing.label if existing else f"User {user_id}"
-        return self.add_or_update_user(
-            user_id=user_id,
-            duration_code=duration_code,
-            label=label,
-            admin_id=admin_id,
-            now_override=now_override,
-        )
 
     def delete_user(self, user_id: int) -> bool:
         """Delete a non-admin user from managed_users, disable their autotrade, and mark as revoked."""

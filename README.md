@@ -94,11 +94,14 @@ NexusTrade/
 │   │   └── ensemble_agent.py                 # Multimodal ensemble orchestrator & 5Y memory trainer
 │   ├── auto_trader/
 │   │   ├── vault_crypto.py                       # PBKDF2-HMAC-SHA256 cipher & key-masking helpers
+│   │   ├── vault_positions.py                    # Position records, SQLite position helpers, & live balance sync
 │   │   ├── user_vault.py                         # Encrypted SQLite multi-user vault (Admin vs User isolation)
 │   │   ├── admin_models.py                       # Managed user, expiry preset, & audit dataclasses
 │   │   ├── admin_store.py                        # SQLite Admin store (User expiry, Maintenance, Broadcast, Audit)
 │   │   ├── binance_client.py                     # Async HMAC-SHA256 Binance Spot & Futures client
+│   │   ├── mt5_symbols.py                        # MT5 symbol mapper, lot calculator, & SL/TP anchor helper
 │   │   ├── mt5_exness_client.py                  # MetaTrader 5 / Exness Go all-asset 2-way BUY/SELL client
+│   │   ├── session_models.py                     # Duration/lot token parsers & session state dataclasses
 │   │   ├── session_manager.py                    # Timed autonomous trading session & trailing-stop position holder
 │   │   └── engine.py                             # 6-Gate Smart Auto-Trader execution engine
 │   ├── risk_management/

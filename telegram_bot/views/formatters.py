@@ -12,8 +12,6 @@ from config.settings import Settings
 from telegram_bot.views.formatter_utils import (
     build_human_signal_summary as _build_human_signal_summary,
     describe_sentiment_score as _describe_sentiment_score,
-    describe_tech_score as _describe_tech_score,
-    describe_volatility_score as _describe_volatility_score,
     format_badge,
     format_pct_diff,
     format_price,
@@ -89,10 +87,7 @@ def format_signal_card(decision: SignalDecision) -> str:
     badge = format_badge(decision.action, decision.confidence)
     conf_bar = render_progress_bar(decision.confidence, length=10)
 
-    rsi_val = decision.indicators.get("rsi_14", 50.0)
-    tech_desc = _describe_tech_score(decision.s_tech, rsi_val)
     sent_desc = _describe_sentiment_score(decision.s_sent)
-    vol_desc = _describe_volatility_score(decision.s_vol, decision.volatility_regime)
     summary_text = _build_human_signal_summary(decision)
 
     sl_pct = format_pct_diff(decision.stop_loss, decision.entry_price)

@@ -10,14 +10,12 @@ from ai_engine.auto_trader.session_manager import (
     AutoTradeSessionState,
     NotifyCallback,
     PositionMonitorResult,
-    is_session_duration_token,
-    parse_custom_lot_token,
-    parse_session_duration,
 )
 from ai_engine.auto_trader.user_vault import (
     UserBinanceCredentials,
     UserPositionRecord,
     UserVault,
+    refresh_live_exness_balance,
 )
 from ai_engine.models.ensemble_agent import EnsembleDecisionAgent, SignalDecision
 from config.logging_config import get_logger
@@ -211,20 +209,7 @@ class SmartAutoTraderEngine:
                 rejection_summary="Saklar Auto-Trade sedang OFF.",
             )
 
-        if (
-            creds.source == "user_setup"
-            and creds.provider == "exness_mt5"
-            and not self.mt5_client._is_exness_trial_demo(creds.api_key, creds.testnet)
-        ):
-            live_ver = await self.mt5_client.verify_credentials(
-                creds.api_key,
-                creds.api_secret,
-                server_name=creds.server_name,
-                testnet=creds.testnet,
-            )
-            if live_ver.valid and live_ver.total_usdt >= 0:
-                self.vault.update_verified_balance(user_id, live_ver.total_usdt)
-                creds.verified_usdt_balance = live_ver.total_usdt
+        await refresh_live_exness_balance(self.vault, self.mt5_client, user_id, creds)
         is_mt5_provider = creds.provider == "exness_mt5"
         is_crypto, _ = is_crypto_symbol(clean_sym)
         if not is_mt5_provider and not is_crypto:

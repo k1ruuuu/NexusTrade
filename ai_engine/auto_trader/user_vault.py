@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 import os
@@ -12,60 +11,32 @@ from ai_engine.auto_trader.vault_crypto import (
     encrypt_secret_for_user,
     mask_api_key,
 )
+from ai_engine.auto_trader.vault_positions import (
+    BrokerProvider,
+    CredentialSource,
+    UserBinanceCredentials,
+    UserPositionRecord,
+    UserRole,
+    close_position_in_db,
+    insert_open_position,
+    query_open_positions,
+    refresh_live_exness_balance,
+)
 from config.logging_config import get_logger
 from config.settings import Settings, get_settings
 
 logger = get_logger("nexustrade.auto_trader.vault")
 
-UserRole = Literal["admin", "user"]
-CredentialSource = Literal["user_setup", "admin_env"]
-BrokerProvider = Literal["binance_spot", "binance_futures", "exness_mt5"]
-@dataclass
-class UserBinanceCredentials:
-    """Decrypted in-memory Binance credentials isolated to a single Telegram user_id."""
-
-    user_id: int
-    username: str
-    role: UserRole
-    source: CredentialSource
-    api_key: str = field(repr=False)
-    api_secret: str = field(repr=False)
-    masked_api_key: str = "****"
-    testnet: bool = True
-    autotrade_enabled: bool = False
-    risk_per_trade_pct: float = 0.01
-    verified_usdt_balance: float = 0.0
-    provider: BrokerProvider = "binance_spot"
-    server_name: str = "Binance-Spot"
-    updated_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    )
-
-
-@dataclass
-class UserPositionRecord:
-    """Active or closed auto-trade position belonging to a specific Telegram user_id."""
-
-    position_id: int
-    user_id: int
-    symbol: str
-    side: Literal["BUY", "SELL"]
-    entry_price: float
-    quantity: float
-    notional_usdt: float
-    stop_loss: float
-    take_profit_1: float
-    take_profit_2: float
-    confidence: float
-    status: Literal["OPEN", "CLOSED"]
-    order_id: str
-    testnet: bool
-    opened_at: str
-    closed_at: Optional[str] = None
-    exit_price: Optional[float] = None
-    pnl_usdt: float = 0.0
-
-
+__all__ = [
+    "BrokerProvider",
+    "CredentialSource",
+    "UserBinanceCredentials",
+    "UserPositionRecord",
+    "UserRole",
+    "UserVault",
+    "mask_api_key",
+    "refresh_live_exness_balance",
+]
 class UserVault:
     """
     Encrypted SQLite Multi-User Credential Vault for NexusTrade AI.
@@ -386,94 +357,30 @@ class UserVault:
         order_id: str,
         testnet: bool = True,
     ) -> UserPositionRecord:
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._connect() as conn:
-            cur = conn.execute(
-                """
-                INSERT INTO user_positions (
-                    user_id, symbol, side, entry_price, quantity, notional_usdt,
-                    stop_loss, take_profit_1, take_profit_2, confidence,
-                    status, order_id, testnet, opened_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?)
-                """,
-                (
-                    int(user_id),
-                    symbol.upper(),
-                    side,
-                    float(entry_price),
-                    float(quantity),
-                    float(notional_usdt),
-                    float(stop_loss),
-                    float(take_profit_1),
-                    float(take_profit_2),
-                    float(confidence),
-                    str(order_id),
-                    1 if testnet else 0,
-                    now_iso,
-                ),
+            return insert_open_position(
+                conn=conn,
+                user_id=user_id,
+                symbol=symbol,
+                side=side,
+                entry_price=entry_price,
+                quantity=quantity,
+                notional_usdt=notional_usdt,
+                stop_loss=stop_loss,
+                take_profit_1=take_profit_1,
+                take_profit_2=take_profit_2,
+                confidence=confidence,
+                order_id=order_id,
+                testnet=testnet,
             )
-            conn.commit()
-            pos_id = int(cur.lastrowid or 1)
-
-        return UserPositionRecord(
-            position_id=pos_id,
-            user_id=int(user_id),
-            symbol=symbol.upper(),
-            side=side,
-            entry_price=float(entry_price),
-            quantity=float(quantity),
-            notional_usdt=float(notional_usdt),
-            stop_loss=float(stop_loss),
-            take_profit_1=float(take_profit_1),
-            take_profit_2=float(take_profit_2),
-            confidence=float(confidence),
-            status="OPEN",
-            order_id=str(order_id),
-            testnet=testnet,
-            opened_at=now_iso,
-        )
 
     def get_open_positions(
         self,
         user_id: int,
         symbol: Optional[str] = None,
     ) -> list[UserPositionRecord]:
-        uid = int(user_id)
         with self._connect() as conn:
-            if symbol:
-                rows = conn.execute(
-                    "SELECT * FROM user_positions WHERE user_id = ? AND status = 'OPEN' AND symbol = ? ORDER BY position_id DESC",
-                    (uid, symbol.upper()),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM user_positions WHERE user_id = ? AND status = 'OPEN' ORDER BY position_id DESC",
-                    (uid,),
-                ).fetchall()
-
-        return [
-            UserPositionRecord(
-                position_id=int(r["position_id"]),
-                user_id=int(r["user_id"]),
-                symbol=str(r["symbol"]),
-                side="BUY" if str(r["side"]) == "BUY" else "SELL",
-                entry_price=float(r["entry_price"]),
-                quantity=float(r["quantity"]),
-                notional_usdt=float(r["notional_usdt"]),
-                stop_loss=float(r["stop_loss"]),
-                take_profit_1=float(r["take_profit_1"]),
-                take_profit_2=float(r["take_profit_2"]),
-                confidence=float(r["confidence"]),
-                status="OPEN" if str(r["status"]) == "OPEN" else "CLOSED",
-                order_id=str(r["order_id"]),
-                testnet=bool(r["testnet"]),
-                opened_at=str(r["opened_at"]),
-                closed_at=str(r["closed_at"]) if r["closed_at"] else None,
-                exit_price=float(r["exit_price"]) if r["exit_price"] is not None else None,
-                pnl_usdt=float(r["pnl_usdt"]),
-            )
-            for r in rows
-        ]
+            return query_open_positions(conn, user_id=user_id, symbol=symbol)
 
     def update_position_stop_loss(self, position_id: int, new_stop_loss: float) -> None:
         """Ratchet trailing stop-loss on an active OPEN position."""
@@ -491,44 +398,8 @@ class UserVault:
         pnl_usdt: float,
     ) -> Optional[UserPositionRecord]:
         """Mark an open position as CLOSED once Take-Profit or Trailing Stop-Loss is hit."""
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        pid = int(position_id)
         with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE user_positions
-                SET status = 'CLOSED', closed_at = ?, exit_price = ?, pnl_usdt = ?
-                WHERE position_id = ?
-                """,
-                (now_iso, float(exit_price), float(pnl_usdt), pid),
-            )
-            conn.commit()
-            row = conn.execute(
-                "SELECT * FROM user_positions WHERE position_id = ?", (pid,)
-            ).fetchone()
-
-        if row is None:
-            return None
-        return UserPositionRecord(
-            position_id=int(row["position_id"]),
-            user_id=int(row["user_id"]),
-            symbol=str(row["symbol"]),
-            side="BUY" if str(row["side"]) == "BUY" else "SELL",
-            entry_price=float(row["entry_price"]),
-            quantity=float(row["quantity"]),
-            notional_usdt=float(row["notional_usdt"]),
-            stop_loss=float(row["stop_loss"]),
-            take_profit_1=float(row["take_profit_1"]),
-            take_profit_2=float(row["take_profit_2"]),
-            confidence=float(row["confidence"]),
-            status="CLOSED",
-            order_id=str(row["order_id"]),
-            testnet=bool(row["testnet"]),
-            opened_at=str(row["opened_at"]),
-            closed_at=str(row["closed_at"]) if row["closed_at"] else now_iso,
-            exit_price=float(row["exit_price"]) if row["exit_price"] is not None else float(exit_price),
-            pnl_usdt=float(row["pnl_usdt"]),
-        )
+            return close_position_in_db(conn, position_id, exit_price, pnl_usdt)
 
     def list_autotrade_enabled_user_ids(self) -> list[int]:
         """Return all user_ids (including Admin .env accounts) that currently have autotrade_enabled=True."""

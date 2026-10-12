@@ -42,26 +42,6 @@ def format_badge(action: str, confidence: float) -> str:
     return "🟡 <b>NEUTRAL / HOLD (Tunggu Dulu)</b>"
 
 
-def describe_tech_score(s_tech: float, rsi: float) -> str:
-    if s_tech >= 0.50:
-        trend = "Tren Naik Kuat"
-    elif s_tech >= 0.15:
-        trend = "Tren Cenderung Naik"
-    elif s_tech <= -0.50:
-        trend = "Tren Turun Kuat"
-    elif s_tech <= -0.15:
-        trend = "Tren Cenderung Turun"
-    else:
-        trend = "Arah Mendatar"
-
-    if rsi >= 70.0:
-        rsi_note = "Jenuh Beli"
-    elif rsi <= 30.0:
-        rsi_note = "Jenuh Jual"
-    else:
-        rsi_note = "Normal"
-    return f"{trend}, RSI {rsi:.0f} ({rsi_note})"
-
 
 def describe_sentiment_score(s_sent: float) -> str:
     if s_sent >= 0.35:
@@ -74,16 +54,6 @@ def describe_sentiment_score(s_sent: float) -> str:
         return "Berita Cenderung Negatif"
     return "Berita Netral / Seimbang"
 
-
-def describe_volatility_score(s_vol: float, regime: str) -> str:
-    reg = regime.upper()
-    if reg == "LOW" or s_vol < 0.25:
-        return "Tenang / Risiko Rendah"
-    if reg == "NORMAL" or s_vol < 0.60:
-        return "Stabil / Normal"
-    if reg == "ELEVATED":
-        return "Gejolak Cukup Tinggi"
-    return "Ekstrem / Bahaya"
 
 
 def build_human_signal_summary(decision: SignalDecision) -> str:

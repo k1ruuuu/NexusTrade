@@ -9,90 +9,31 @@ from ai_engine.auto_trader.binance_client import (
     BinanceAccountVerification,
     BinanceOrderResult,
 )
+from ai_engine.auto_trader.mt5_symbols import (
+    EXNESS_SERVER_HOSTS_CACHE,
+    MT5_INDEX_COMMODITY_MAP,
+    calculate_mt5_lots,
+    compute_anchored_sl_tp,
+    resolve_mt5_symbol,
+)
 from config.logging_config import get_logger
 from config.settings import get_settings
-from data_pipeline.market_symbols import normalize_symbol
 
 logger = get_logger("nexustrade.auto_trader.mt5_exness")
 
 MT5_REST_DIRECT_URL = "https://mt5.mtapi.io"
 
-MT5_INDEX_COMMODITY_MAP: dict[str, str] = {
-    "SPX": "US500",
-    "NDX": "USTEC",
-    "DJI": "US30",
-    "VIX": "VIX",
-    "WTI": "USOIL",
-    "USOIL": "USOIL",
-    "BRENT": "UKOIL",
-    "NATGAS": "XNGUSD",
-    "XAUUSD": "XAUUSD",
-    "GOLD": "XAUUSD",
-    "XAGUSD": "XAGUSD",
-    "SILVER": "XAGUSD",
-}
-
-# Known Exness MT5 Trial & Real access hosts for fast connection fallback
-EXNESS_SERVER_HOSTS_CACHE: dict[str, list[tuple[str, int]]] = {
-    "EXNESS-MT5TRIAL7": [
-        ("52.221.81.217", 443),
-        ("13.114.223.90", 443),
-        ("47.245.95.97", 443),
-        ("13.232.4.164", 443),
-        ("47.81.14.118", 443),
-        ("8.213.236.229", 443),
-    ],
-}
-
 # Active mt5.mtapi.io session token cache: (login, server_upper) -> (token, timestamp)
 _MT5_SESSION_TOKENS: dict[tuple[str, str], tuple[str, float]] = {}
 
-
-def resolve_mt5_symbol(symbol: str, standard_suffix: str = "m") -> str:
-    """
-    Map canonical symbol (Crypto, Gold, Forex, US Equities, Global Indices)
-    to MetaTrader 5 / Exness ('Exness Go') instrument symbol (e.g. BTCUSDm, XAUUSDm, EURUSDm, NVDAm, US500m).
-    """
-    clean = normalize_symbol(symbol, strip_hyphen=True)
-    if clean.endswith("M") and len(clean) > 4 and symbol.endswith("m"):
-        return symbol.strip()
-
-    if clean in MT5_INDEX_COMMODITY_MAP:
-        base = MT5_INDEX_COMMODITY_MAP[clean]
-        return f"{base}{standard_suffix}"
-
-    if clean.endswith("USDT") and len(clean) > 4:
-        base_coin = clean[:-4]
-        return f"{base_coin}USD{standard_suffix}"
-    if clean.endswith("USDC") and len(clean) > 4:
-        base_coin = clean[:-4]
-        return f"{base_coin}USD{standard_suffix}"
-
-    if len(clean) == 6 and clean.isalpha():
-        return f"{clean}{standard_suffix}"
-
-    return f"{clean}{standard_suffix}" if standard_suffix else clean
-
-
-def calculate_mt5_lots(symbol: str, quantity_units: float, reference_price: float) -> float:
-    """
-    Convert asset unit quantity into MetaTrader 5 / Exness lot volume (min 0.01 lot).
-    - Gold (XAUUSD): 1 standard lot = 100 oz -> min 0.01 lot
-    - Forex (6-letter FX): 1 standard lot = 100,000 units -> min 0.01 lot
-    - Crypto / Stocks / Indices: 1 lot = 1 unit -> min 0.01 lot
-    """
-    clean = normalize_symbol(symbol, strip_hyphen=True)
-    if clean in ("XAUUSD", "GOLD"):
-        raw_lots = quantity_units / 100.0
-    elif len(clean) == 6 and clean.isalpha() and not clean.endswith("USD"):
-        raw_lots = (quantity_units * max(reference_price, 1.0)) / 100_000.0
-    elif len(clean) == 6 and clean[:3] in ("EUR", "GBP", "AUD", "NZD", "USD", "CAD", "CHF", "JPY"):
-        raw_lots = quantity_units / 100_000.0
-    else:
-        raw_lots = quantity_units
-
-    return round(max(0.01, min(raw_lots, 50.0)), 2)
-
+__all__ = [
+    "EXNESS_SERVER_HOSTS_CACHE",
+    "MT5ExnessClient",
+    "MT5_INDEX_COMMODITY_MAP",
+    "calculate_mt5_lots",
+    "compute_anchored_sl_tp",
+    "resolve_mt5_symbol",
+]
 
 class MT5ExnessClient:
     """
@@ -234,7 +175,6 @@ class MT5ExnessClient:
         token_or_password: str,
         server_name: str = "Exness-MT5Trial7",
         testnet: bool = True,
-        metaapi_token_override: Optional[str] = None,
     ) -> BinanceAccountVerification:
         """
         Verify MT5 / Exness Go account in real-time by connecting directly to the Exness MT5 server
@@ -488,14 +428,9 @@ class MT5ExnessClient:
                                 broker_px = bid_px
                     except Exception:
                         pass
-
-                    decimals = 2 if broker_px >= 10.0 else (4 if broker_px >= 0.1 else 5)
-                    if side == "BUY":
-                        eff_sl = round(broker_px - sl_dist, decimals) if sl_dist > 0 else 0.0
-                        eff_tp = round(broker_px + tp_dist, decimals) if tp_dist > 0 else 0.0
-                    else:
-                        eff_sl = round(broker_px + sl_dist, decimals) if sl_dist > 0 else 0.0
-                        eff_tp = round(max(broker_px * 0.05, broker_px - tp_dist), decimals) if tp_dist > 0 else 0.0
+                    eff_sl, eff_tp, decimals = compute_anchored_sl_tp(
+                        side, broker_px, sl_dist, tp_dist
+                    )
 
                     params: dict[str, Any] = {
                         "id": tok,
@@ -559,12 +494,9 @@ class MT5ExnessClient:
                             open_px = float(data.get("openPrice") or broker_px)
                             exec_lots = float(data.get("lots") or lots)
                             if ticket_int > 0 and (eff_sl > 0 or eff_tp > 0):
-                                if side == "BUY":
-                                    mod_sl = round(open_px - sl_dist, decimals) if sl_dist > 0 else 0.0
-                                    mod_tp = round(open_px + tp_dist, decimals) if tp_dist > 0 else 0.0
-                                else:
-                                    mod_sl = round(open_px + sl_dist, decimals) if sl_dist > 0 else 0.0
-                                    mod_tp = round(max(open_px * 0.05, open_px - tp_dist), decimals) if tp_dist > 0 else 0.0
+                                mod_sl, mod_tp, _ = compute_anchored_sl_tp(
+                                    side, open_px, sl_dist, tp_dist
+                                )
                                 await client.get(
                                     f"{MT5_REST_DIRECT_URL}/OrderModifySafe",
                                     params={

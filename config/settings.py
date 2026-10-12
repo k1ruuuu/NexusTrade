@@ -104,11 +104,6 @@ class Settings(BaseSettings):
     vault_encryption_secret: str = Field(
         default="nexustrade_vault_master_secret_key_2026", min_length=16
     )
-    metaapi_token: str = Field(
-        default="",
-        description="MetaApi Cloud API token (https://app.metaapi.cloud) for real-time MT5 / Exness Go auto-provisioning",
-    )
-    metaapi_region: str = Field(default="new-york")
     # Redis Cache Configuration
     redis_url: str = Field(default="redis://localhost:6379/0")
 
