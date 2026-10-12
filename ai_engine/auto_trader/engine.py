@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
+import math
 from typing import Any, Optional
 
 from ai_engine.auto_trader.mt5_exness_client import (
     BinanceOrderResult,
     MT5ExnessClient,
     anchor_targets_to_fill_price,
+    calculate_mt5_lots,
+    estimate_mt5_pnl_usdt,
+    get_mt5_contract_size,
 )
 from ai_engine.auto_trader.session_manager import (
     AutoTradeSessionManager,
@@ -78,10 +83,12 @@ class SmartAutoTraderEngine:
         self.settings = settings or get_settings()
         self.ensemble_agent = ensemble_agent or EnsembleDecisionAgent(self.settings)
         self.vault = user_vault or UserVault(self.settings)
+        self.vault._linked_position_sizer = self.ensemble_agent.position_sizer
         self.mt5_client = mt5_client or MT5ExnessClient()
         self.notify_user_callback: Optional[NotifyCallback] = notify_user_callback
         self._last_broker_closed: dict[tuple[int, str], PositionMonitorResult] = {}
         self._notified_closed_tickets: set[str] = set()
+        self._execution_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self.session_manager = AutoTradeSessionManager(self)
     async def start_timed_session(
         self,
@@ -174,18 +181,21 @@ class SmartAutoTraderEngine:
         )
         for pos in missing_positions:
             c_ord = closed_map.get(pos.order_id)
-            if isinstance(c_ord, dict):
-                exit_px = float(c_ord.get("closePrice") or pos.entry_price)
-                net_pnl = round(
-                    float(c_ord.get("profit") or 0.0)
-                    + float(c_ord.get("swap") or 0.0)
-                    + float(c_ord.get("commission") or 0.0),
-                    2,
+            if not isinstance(c_ord, dict):
+                # F08: Do NOT guess closure or zero PnL when ticket is not confirmed in /ClosedOrders
+                logger.debug(
+                    "Position missing from OpenedOrders but not yet in ClosedOrders (RECONCILIATION_PENDING)",
+                    user_id=user_id,
+                    order_id=pos.order_id,
                 )
-            else:
-                exit_px = pos.entry_price
-                net_pnl = 0.0
-
+                continue
+            exit_px = float(c_ord.get("closePrice") or pos.entry_price)
+            net_pnl = round(
+                float(c_ord.get("profit") or 0.0)
+                + float(c_ord.get("swap") or 0.0)
+                + float(c_ord.get("commission") or 0.0),
+                2,
+            )
             tp_hit = (
                 net_pnl > 0.0
                 or (
@@ -431,123 +441,240 @@ class SmartAutoTraderEngine:
             )
         )
 
-        # Gate 5: Volatility, Drawdown Circuit Breaker & Anti-Duplicate Position Guard
-        await self.sync_live_mt5_positions(user_id)
-        open_positions = self.vault.get_open_positions(user_id, symbol=clean_sym)
-        has_duplicate = len(open_positions) > 0
-        risk_ok = (
-            decision.approved
-            and decision.volatility_regime != "EXTREME"
-            and not has_duplicate
-        )
-        if has_duplicate:
-            risk_detail = f"DITOLAK: Masih ada {len(open_positions)} posisi {clean_sym} yang sedang OPEN di akun Anda"
-        elif not decision.approved or decision.volatility_regime == "EXTREME":
-            risk_detail = f"DITOLAK: {decision.rejection_reason or 'Volatilitas pasar terlalu ekstrem'}"
-        else:
-            risk_detail = f"Aman (Gejolak {decision.volatility_regime}, S_vol={decision.s_vol:.2f}, Tidak ada posisi ganda)"
+        # Gate 5 & 6: Atomic per-account/symbol lock prevents duplicate concurrent entries (F07)
+        acct_key = creds.api_key.strip() or str(user_id)
+        exec_lock = self._execution_locks.setdefault((acct_key, clean_sym), asyncio.Lock())
+        async with exec_lock:
+            await self.sync_live_mt5_positions(user_id)
+            open_positions = self.vault.get_open_positions(user_id, symbol=clean_sym)
+            has_duplicate = len(open_positions) > 0
+            user_dd, start_eq, curr_eq = self.vault.get_user_daily_drawdown(user_id)
+            if start_eq > 0:
+                self.ensemble_agent.position_sizer.daily_start_equity = start_eq
+                self.ensemble_agent.position_sizer.current_equity = curr_eq
+            eff_dd = max(user_dd, self.ensemble_agent.position_sizer.current_daily_drawdown)
+            cb_tripped = self.ensemble_agent.position_sizer.is_circuit_breaker_tripped(eff_dd)
 
-        gates.append(
-            AutoTradeGateCheck(
-                gate_number=5,
-                name="Filter Gejolak & Anti-Posisi Ganda",
-                passed=risk_ok,
-                detail=risk_detail,
+            risk_ok = (
+                decision.approved
+                and not cb_tripped
+                and decision.volatility_regime != "EXTREME"
+                and not has_duplicate
             )
-        )
+            if has_duplicate:
+                risk_detail = f"DITOLAK: Masih ada {len(open_positions)} posisi {clean_sym} yang sedang OPEN di akun Anda"
+            elif cb_tripped:
+                risk_detail = (
+                    f"DITOLAK: Circuit Breaker Rugi Harian aktif "
+                    f"(Drawdown {eff_dd * 100:.2f}% >= batas {self.settings.max_daily_drawdown_limit * 100:.1f}%)"
+                )
+            elif not decision.approved or decision.volatility_regime == "EXTREME":
+                risk_detail = f"DITOLAK: {decision.rejection_reason or 'Volatilitas pasar terlalu ekstrem'}"
+            else:
+                risk_detail = (
+                    f"Aman (Gejolak {decision.volatility_regime}, S_vol={decision.s_vol:.2f}, "
+                    f"Drawdown Harian {eff_dd * 100:.2f}%, Tidak ada posisi ganda)"
+                )
 
-        # Check if all pre-execution gates (1..5) passed
-        failed_gates = [g for g in gates if not g.passed]
-        if failed_gates:
-            first_fail = failed_gates[0]
-            return AutoTradeExecutionReport(
-                user_id=int(user_id),
-                symbol=clean_sym,
-                timeframe=clean_tf,
-                setup_required=False,
-                executed=False,
-                decision=decision,
-                credentials=creds,
-                gates=gates,
-                rejection_summary=f"Gerbang {first_fail.gate_number} ({first_fail.name}) belum terpenuhi: {first_fail.detail}",
-            )
-
-        # Gate 6: Calculate user-specific position size & execute on user's Binance account
-        user_equity = float(creds.verified_usdt_balance)
-        user_sizing = self.ensemble_agent.position_sizer.calculate_position(
-            entry_price=decision.entry_price,
-            stop_loss=decision.stop_loss,
-            confidence=decision.confidence,
-            s_vol=decision.s_vol,
-            portfolio_equity=user_equity,
-            reward_risk_ratio=self.settings.min_risk_reward_ratio,
-        )
-        risk_scale = creds.risk_per_trade_pct / max(self.settings.max_account_risk_per_trade, 1e-6)
-        max_notional_by_user_risk = user_sizing.position_notional * min(1.0, risk_scale)
-        target_notional = min(user_sizing.position_notional, user_equity * 0.95, max_notional_by_user_risk)
-        if target_notional < 10.0:
-            target_notional = min(user_equity * 0.95, 10.0)
-        qty = target_notional / max(decision.entry_price, 1e-9)
-        order_side = "BUY" if decision.action == "BUY" else "SELL"
-        order_res = await self.mt5_client.place_market_order(
-            account_id_or_login=creds.api_key,
-            token_or_password=creds.api_secret,
-            symbol=clean_sym,
-            side=order_side,
-            quantity=qty,
-            reference_price=decision.entry_price,
-            stop_loss=decision.stop_loss,
-            take_profit=decision.take_profit_1,
-            server_name=creds.server_name,
-            testnet=creds.testnet,
-            custom_lot=custom_lot,
-        )
-
-        if not order_res.executed:
             gates.append(
                 AutoTradeGateCheck(
-                    gate_number=6,
-                    name="Eksekusi Order ke Exness Go / MT5",
-                    passed=False,
-                    detail=order_res.error_message or "Order gagal dieksekusi oleh Exness MT5.",
+                    gate_number=5,
+                    name="Filter Gejolak, Circuit Breaker & Anti-Posisi Ganda",
+                    passed=risk_ok,
+                    detail=risk_detail,
                 )
             )
-            return AutoTradeExecutionReport(
-                user_id=int(user_id),
+
+            failed_gates = [g for g in gates if not g.passed]
+            if failed_gates:
+                first_fail = failed_gates[0]
+                return AutoTradeExecutionReport(
+                    user_id=int(user_id),
+                    symbol=clean_sym,
+                    timeframe=clean_tf,
+                    setup_required=False,
+                    executed=False,
+                    decision=decision,
+                    credentials=creds,
+                    gates=gates,
+                    rejection_summary=f"Gerbang {first_fail.gate_number} ({first_fail.name}) belum terpenuhi: {first_fail.detail}",
+                )
+
+            # Gate 6: Contract-size-verified lot sizing & risk budget verification (F01)
+            user_equity = float(creds.verified_usdt_balance)
+            user_sizing = self.ensemble_agent.position_sizer.calculate_position(
+                entry_price=decision.entry_price,
+                stop_loss=decision.stop_loss,
+                confidence=decision.confidence,
+                s_vol=decision.s_vol,
+                portfolio_equity=user_equity,
+                reward_risk_ratio=self.settings.min_risk_reward_ratio,
+                daily_drawdown_override=eff_dd,
+            )
+            if not user_sizing.approved:
+                gates.append(
+                    AutoTradeGateCheck(
+                        gate_number=6,
+                        name="Validasi Risiko & Ukuran Lot",
+                        passed=False,
+                        detail=f"DITOLAK: {user_sizing.rejection_reason or 'Tidak lolos validasi risiko posisi.'}",
+                    )
+                )
+                return AutoTradeExecutionReport(
+                    user_id=int(user_id),
+                    symbol=clean_sym,
+                    timeframe=clean_tf,
+                    setup_required=False,
+                    executed=False,
+                    decision=decision,
+                    credentials=creds,
+                    gates=gates,
+                    rejection_summary=user_sizing.rejection_reason or "Ditolak oleh PositionSizer.",
+                )
+
+            order_side = "BUY" if decision.action == "BUY" else "SELL"
+            max_risk_budget = user_equity * max(
+                float(creds.risk_per_trade_pct), float(self.settings.max_account_risk_per_trade)
+            )
+            qty = user_sizing.position_units
+            candidate_lots = (
+                round(max(0.01, min(float(custom_lot), 50.0)), 2)
+                if (custom_lot is not None and custom_lot > 0)
+                else calculate_mt5_lots(clean_sym, qty, decision.entry_price)
+            )
+            eff_stop_loss = decision.stop_loss
+            loss_at_stop = abs(
+                estimate_mt5_pnl_usdt(
+                    clean_sym, order_side, decision.entry_price, eff_stop_loss, candidate_lots
+                )
+            )
+            if loss_at_stop > max_risk_budget + 1e-6:
+                loss_per_lot = abs(
+                    estimate_mt5_pnl_usdt(
+                        clean_sym, order_side, decision.entry_price, eff_stop_loss, 1.0
+                    )
+                )
+                affordable_lots = (
+                    math.floor((max_risk_budget / max(loss_per_lot, 1e-9)) * 100.0 + 1e-9) / 100.0
+                )
+                if custom_lot is None and affordable_lots >= 0.01:
+                    candidate_lots = round(affordable_lots, 2)
+                elif custom_lot is None and candidate_lots == 0.01:
+                    contract_sz = get_mt5_contract_size(clean_sym)
+                    max_sl_dist = max_risk_budget / max(0.01 * contract_sz, 1e-9)
+                    if max_sl_dist >= decision.entry_price * 0.0005:
+                        eff_stop_loss = round(
+                            decision.entry_price - max_sl_dist
+                            if order_side == "BUY"
+                            else decision.entry_price + max_sl_dist,
+                            4,
+                        )
+                    else:
+                        gates.append(
+                            AutoTradeGateCheck(
+                                gate_number=6,
+                                name="Batas Risiko Lot Minimum",
+                                passed=False,
+                                detail=(
+                                    f"DITOLAK: Risiko minimum 0.01 Lot (${loss_at_stop:,.2f}) "
+                                    f"melampaui batas risiko akun (${max_risk_budget:,.2f})."
+                                ),
+                            )
+                        )
+                        return AutoTradeExecutionReport(
+                            user_id=int(user_id),
+                            symbol=clean_sym,
+                            timeframe=clean_tf,
+                            setup_required=False,
+                            executed=False,
+                            decision=decision,
+                            credentials=creds,
+                            gates=gates,
+                            rejection_summary="Lot minimum melebihi batas risiko akun.",
+                        )
+                else:
+                    gates.append(
+                        AutoTradeGateCheck(
+                            gate_number=6,
+                            name="Batas Risiko Custom Lot",
+                            passed=False,
+                            detail=(
+                                f"DITOLAK: Risiko {candidate_lots:.2f} Lot (${loss_at_stop:,.2f}) "
+                                f"melampaui batas risiko akun (${max_risk_budget:,.2f})."
+                            ),
+                        )
+                    )
+                    return AutoTradeExecutionReport(
+                        user_id=int(user_id),
+                        symbol=clean_sym,
+                        timeframe=clean_tf,
+                        setup_required=False,
+                        executed=False,
+                        decision=decision,
+                        credentials=creds,
+                        gates=gates,
+                        rejection_summary="Ukuran Lot melampaui batas risiko akun.",
+                    )
+
+            order_res = await self.mt5_client.place_market_order(
+                account_id_or_login=creds.api_key,
+                token_or_password=creds.api_secret,
                 symbol=clean_sym,
-                timeframe=clean_tf,
-                setup_required=False,
-                executed=False,
-                decision=decision,
-                credentials=creds,
-                gates=gates,
-                order_result=order_res,
-                rejection_summary=order_res.error_message or "Eksekusi order ditolak oleh Exness MT5.",
+                side=order_side,
+                quantity=qty,
+                reference_price=decision.entry_price,
+                stop_loss=eff_stop_loss,
+                take_profit=decision.take_profit_1,
+                server_name=creds.server_name,
+                testnet=creds.testnet,
+                custom_lot=candidate_lots,
             )
 
-        anchored_sl, anchored_tp1, anchored_tp2 = anchor_targets_to_fill_price(
-            side=order_side,
-            fill_price=order_res.avg_price,
-            ref_entry=decision.entry_price,
-            ref_sl=decision.stop_loss,
-            ref_tp1=decision.take_profit_1,
-            ref_tp2=decision.take_profit_2,
-        )
+            if not order_res.executed:
+                gates.append(
+                    AutoTradeGateCheck(
+                        gate_number=6,
+                        name="Eksekusi Order ke Exness Go / MT5",
+                        passed=False,
+                        detail=order_res.error_message or "Order gagal dieksekusi oleh Exness MT5.",
+                    )
+                )
+                return AutoTradeExecutionReport(
+                    user_id=int(user_id),
+                    symbol=clean_sym,
+                    timeframe=clean_tf,
+                    setup_required=False,
+                    executed=False,
+                    decision=decision,
+                    credentials=creds,
+                    gates=gates,
+                    order_result=order_res,
+                    rejection_summary=order_res.error_message or "Eksekusi order ditolak oleh Exness MT5.",
+                )
 
-        pos_record = self.vault.record_open_position(
-            user_id=int(user_id),
-            symbol=clean_sym,
-            side=order_side,
-            entry_price=order_res.avg_price,
-            quantity=order_res.executed_qty,
-            notional_usdt=order_res.notional_usdt,
-            stop_loss=anchored_sl,
-            take_profit_1=anchored_tp1,
-            take_profit_2=anchored_tp2,
-            confidence=decision.confidence,
-            order_id=order_res.order_id,
-            testnet=creds.testnet,
-        )
+            anchored_sl, anchored_tp1, anchored_tp2 = anchor_targets_to_fill_price(
+                side=order_side,
+                fill_price=order_res.avg_price,
+                ref_entry=decision.entry_price,
+                ref_sl=eff_stop_loss,
+                ref_tp1=decision.take_profit_1,
+                ref_tp2=decision.take_profit_2,
+            )
+
+            pos_record = self.vault.record_open_position(
+                user_id=int(user_id),
+                symbol=clean_sym,
+                side=order_side,
+                entry_price=order_res.avg_price,
+                quantity=order_res.executed_qty,
+                notional_usdt=order_res.notional_usdt,
+                stop_loss=anchored_sl,
+                take_profit_1=anchored_tp1,
+                take_profit_2=anchored_tp2,
+                confidence=decision.confidence,
+                order_id=order_res.order_id,
+                testnet=creds.testnet,
+            )
         gates.append(
             AutoTradeGateCheck(
                 gate_number=6,

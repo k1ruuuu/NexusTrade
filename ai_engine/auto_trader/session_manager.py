@@ -372,6 +372,9 @@ class AutoTradeSessionManager(PositionMonitorMixin):
                     )
         except asyncio.CancelledError:
             sess.status = "STOPPED"
+            self._sessions.pop((sess.user_id, sess.symbol), None)
             return
         except Exception as exc:
+            sess.status = "STOPPED"
+            self._sessions.pop((sess.user_id, sess.symbol), None)
             logger.warning("Timed auto-trade session loop error", session_id=sess.session_id, error=str(exc))

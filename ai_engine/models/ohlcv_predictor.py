@@ -191,16 +191,12 @@ class OHLCVPredictor:
             + 0.18 * (forward_ret / vol_scale)
         )
 
-        q_low = float(np.nanpercentile(normalized_score.dropna(), 33))
-        q_high = float(np.nanpercentile(normalized_score.dropna(), 67))
+        q_low = normalized_score.expanding(min_periods=1).quantile(0.33)
+        q_high = normalized_score.expanding(min_periods=1).quantile(0.67)
 
         labels = pd.Series(1, index=featured_df.index, dtype=np.int32)
-        if q_high > q_low:
-            labels = labels.mask(normalized_score <= q_low, 0)
-            labels = labels.mask(normalized_score >= q_high, 2)
-        else:
-            labels = labels.mask(normalized_score < q_low, 0)
-            labels = labels.mask(normalized_score > q_high, 2)
+        labels = labels.mask(normalized_score <= q_low, 0)
+        labels = labels.mask(normalized_score >= q_high, 2)
         return labels
 
     def _prepare_labeled_split(
@@ -220,8 +216,9 @@ class OHLCVPredictor:
         labels = labels.loc[valid_mask]
 
         split_idx = max(30, int(len(featured) * (1.0 - val_fraction)))
-        x_tr = featured.iloc[:split_idx][list(self.MODEL_FEATURES)]
-        y_tr = labels.iloc[:split_idx]
+        train_end = max(20, split_idx - max(1, horizon))
+        x_tr = featured.iloc[:train_end][list(self.MODEL_FEATURES)]
+        y_tr = labels.iloc[:train_end]
         x_va = featured.iloc[split_idx:][list(self.MODEL_FEATURES)]
         y_va = labels.iloc[split_idx:]
         return x_tr, y_tr, x_va, y_va

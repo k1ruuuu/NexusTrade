@@ -195,9 +195,9 @@ class OHLCVPreprocessor:
         out["macd_hist"] = out["macd"] - out["macd_signal"]
 
         # Bollinger Bands (20, 2.0)
-        bb_mid = close.rolling(window=20, min_periods=5).mean()
-        bb_std = close.rolling(window=20, min_periods=5).std(ddof=0).fillna(0.0)
-        out["bb_middle"] = bb_mid.bfill()
+        bb_mid = close.rolling(window=20, min_periods=1).mean()
+        bb_std = close.rolling(window=20, min_periods=1).std(ddof=0).fillna(0.0)
+        out["bb_middle"] = bb_mid
         out["bb_upper"] = out["bb_middle"] + 2.0 * bb_std
         out["bb_lower"] = out["bb_middle"] - 2.0 * bb_std
         band_range = (out["bb_upper"] - out["bb_lower"]).replace(0.0, np.nan)

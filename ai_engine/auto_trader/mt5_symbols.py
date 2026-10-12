@@ -90,23 +90,27 @@ def resolve_mt5_symbol(symbol: str, standard_suffix: str = "m") -> str:
 
 def calculate_mt5_lots(symbol: str, quantity_units: float, reference_price: float) -> float:
     """
-    Convert asset unit quantity into MetaTrader 5 / Exness lot volume (min 0.01 lot).
-    - Gold (XAUUSD): 1 standard lot = 100 oz -> min 0.01 lot
-    - Forex (6-letter FX): 1 standard lot = 100,000 units -> min 0.01 lot
-    - Crypto / Stocks / Indices: 1 lot = 1 unit -> min 0.01 lot
+    Convert asset unit quantity into MetaTrader 5 / Exness lot volume using instrument contract size:
+    - Gold (XAUUSD): 100 oz / lot
+    - Silver (XAGUSD): 5,000 oz / lot
+    - Crude Oil (WTI / USOIL / BRENT / UKOIL): 1,000 bbl / lot
+    - 6-letter Forex pairs: 100,000 units / lot
+    - Crypto / Stocks / Indices: 1 unit / lot
+    Floors to 0.01 lot step so unit-to-lot conversion never rounds up beyond risk budget.
     """
-    clean = normalize_symbol(symbol, strip_hyphen=True)
-    if clean in ("XAUUSD", "GOLD"):
-        raw_lots = quantity_units / 100.0
-    elif len(clean) == 6 and clean.isalpha() and not clean.endswith("USD"):
-        raw_lots = (quantity_units * max(reference_price, 1.0)) / 100_000.0
-    elif len(clean) == 6 and clean[:3] in ("EUR", "GBP", "AUD", "NZD", "USD", "CAD", "CHF", "JPY"):
-        raw_lots = quantity_units / 100_000.0
+    import math
+
+    clean = normalize_symbol(symbol, strip_hyphen=True).upper()
+    if clean.endswith("M") and len(clean) > 4 and symbol.endswith("m"):
+        clean = clean[:-1]
+    contract_size = get_mt5_contract_size(clean)
+    if len(clean) == 6 and clean.isalpha() and not clean.endswith("USD") and clean.startswith("USD"):
+        raw_lots = (quantity_units * max(reference_price, 1e-6)) / contract_size
     else:
-        raw_lots = quantity_units
+        raw_lots = quantity_units / max(contract_size, 1.0)
 
-    return round(max(0.01, min(raw_lots, 50.0)), 2)
-
+    floored = math.floor(max(0.0, raw_lots) * 100.0 + 1e-9) / 100.0
+    return round(max(0.01, min(floored, 50.0)), 2)
 
 def compute_anchored_sl_tp(
     side: Literal["BUY", "SELL"],

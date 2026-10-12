@@ -122,8 +122,7 @@ class EventDrivenBacktester:
             high_p = float(row["high"])
             low_p = float(row["low"])
             close_p = float(row["close"])
-            atr_val = max(float(row["atr_14"]), close_p * 0.008)
-
+            atr_val = max(float(row["atr_14"]), open_p * 0.008)
             # 1. Manage active position against current bar's High/Low
             if open_position is not None:
                 direction = open_position["direction"]
@@ -242,7 +241,50 @@ class EventDrivenBacktester:
                             "trail_dist": targets.trailing_stop_distance,
                             "units": sizing.position_units,
                         }
-
+                        # F13: Evaluate entry-bar intrabar SL/TP immediately (conservative SL-first ordering)
+                        entry_exit_px: Optional[float] = None
+                        entry_exit_reason = ""
+                        if signal_dir == "BUY":
+                            if low_p <= targets.stop_loss:
+                                entry_exit_px = targets.stop_loss
+                                entry_exit_reason = "STOP_LOSS"
+                            elif high_p >= targets.take_profit_1:
+                                entry_exit_px = targets.take_profit_1
+                                entry_exit_reason = "TAKE_PROFIT"
+                        elif signal_dir == "SELL":
+                            if high_p >= targets.stop_loss:
+                                entry_exit_px = targets.stop_loss
+                                entry_exit_reason = "STOP_LOSS"
+                            elif low_p <= targets.take_profit_1:
+                                entry_exit_px = targets.take_profit_1
+                                entry_exit_reason = "TAKE_PROFIT"
+                        if entry_exit_px is not None:
+                            units_e = sizing.position_units
+                            raw_pnl_e = (
+                                (entry_exit_px - open_p) * units_e
+                                if signal_dir == "BUY"
+                                else (open_p - entry_exit_px) * units_e
+                            )
+                            fee_e = (open_p + entry_exit_px) * units_e * 0.0005
+                            net_pnl_e = raw_pnl_e - fee_e
+                            equity = max(0.0, equity + net_pnl_e)
+                            self.position_sizer.current_equity = equity
+                            ret_pct_e = (net_pnl_e / max(open_p * units_e, 1e-6)) * 100.0
+                            trades.append(
+                                SimulatedTrade(
+                                    entry_time=bar_time,
+                                    exit_time=bar_time,
+                                    symbol=symbol.upper(),
+                                    direction=signal_dir,
+                                    entry_price=round(open_p, 4),
+                                    exit_price=round(entry_exit_px, 4),
+                                    units=round(units_e, 6),
+                                    pnl=round(net_pnl_e, 2),
+                                    return_pct=round(ret_pct_e, 2),
+                                    exit_reason=entry_exit_reason,
+                                )
+                            )
+                            open_position = None
             # Mark-to-market equity
             mtm_pnl = 0.0
             if open_position is not None:

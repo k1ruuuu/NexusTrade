@@ -542,7 +542,7 @@ class MT5ExnessClient:
                             mod_sl, mod_tp, decimals = compute_anchored_sl_tp(
                                 side, open_px, sl_dist, tp_dist
                             )
-                            await client.get(
+                            mod_resp = await client.get(
                                 f"{MT5_REST_DIRECT_URL}/OrderModifySafe",
                                 params={
                                     "id": tok,
@@ -551,6 +551,26 @@ class MT5ExnessClient:
                                     "takeprofit": mod_tp,
                                 },
                             )
+                            if mod_resp.status_code != 200 and sl_dist > 0:
+                                try:
+                                    await client.get(
+                                        f"{MT5_REST_DIRECT_URL}/OrderCloseSafe",
+                                        params={"id": tok, "ticket": int(ticket), "lots": exec_lots, "slippage": 50},
+                                    )
+                                except Exception:
+                                    pass
+                                return BinanceOrderResult(
+                                    executed=False,
+                                    order_id=ticket,
+                                    symbol=candidate_sym,
+                                    side=side,
+                                    executed_qty=0.0,
+                                    avg_price=round(open_px, decimals),
+                                    notional_usdt=0.0,
+                                    testnet=testnet,
+                                    status="UNPROTECTED_ABORTED",
+                                    error_message="Gagal mengonfirmasi SL/TP di broker; posisi ditutup darurat.",
+                                )
                         return BinanceOrderResult(
                             executed=True,
                             order_id=ticket,
@@ -595,7 +615,7 @@ class MT5ExnessClient:
                                 mod_sl, mod_tp, _ = compute_anchored_sl_tp(
                                     side, open_px, sl_dist, tp_dist
                                 )
-                                await client.get(
+                                mod_resp = await client.get(
                                     f"{MT5_REST_DIRECT_URL}/OrderModifySafe",
                                     params={
                                         "id": tok,
@@ -604,6 +624,26 @@ class MT5ExnessClient:
                                         "takeprofit": mod_tp,
                                     },
                                 )
+                                if mod_resp.status_code != 200:
+                                    try:
+                                        await client.get(
+                                            f"{MT5_REST_DIRECT_URL}/OrderCloseSafe",
+                                            params={"id": tok, "ticket": ticket_int, "lots": exec_lots, "slippage": 50},
+                                        )
+                                    except Exception:
+                                        pass
+                                    return BinanceOrderResult(
+                                        executed=False,
+                                        order_id=str(ticket_int),
+                                        symbol=candidate_sym,
+                                        side=side,
+                                        executed_qty=0.0,
+                                        avg_price=round(open_px, decimals),
+                                        notional_usdt=0.0,
+                                        testnet=testnet,
+                                        status="UNPROTECTED_ABORTED",
+                                        error_message="Gagal memasang proteksi SL/TP setelah fill; posisi ditutup darurat.",
+                                    )
                             return BinanceOrderResult(
                                 executed=True,
                                 order_id=str(ticket_int),
@@ -615,7 +655,6 @@ class MT5ExnessClient:
                                 testnet=testnet,
                                 status=f"FILLED ({server_name} • Ticket #{ticket_int} • {exec_lots} Lot)",
                             )
-
                     if candidate_sym == mt5_symbol_m and ("symbol" in last_err.lower() or "quote" in last_err.lower()):
                         continue
                     break

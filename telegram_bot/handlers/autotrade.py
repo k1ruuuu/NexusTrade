@@ -351,6 +351,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
 
     if cb_data == "setup:unlink":
         clear_pending_wizards(user_id)
+        auto_trader.stop_user_sessions(user_id)
         vault.delete_user_credentials(user_id)
         await msg.answer(
             "🗑️ Kredensial Exness Go / MT5 pribadi Anda telah dihapus dari brankas dan Auto-Trade dimatikan.",

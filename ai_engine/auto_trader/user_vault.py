@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import os
 import sqlite3
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from ai_engine.auto_trader.vault_crypto import (
     decrypt_secret_for_user,
@@ -56,8 +56,8 @@ class UserVault:
         self.db_path = db_path or (self.settings.processed_data_dir / "user_vault.db")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._admin_env_autotrade: dict[int, bool] = {}
+        self._linked_position_sizer: Any = None
         self._init_db()
-
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
@@ -112,6 +112,18 @@ class UserVault:
                     closed_at TEXT,
                     exit_price REAL,
                     pnl_usdt REAL NOT NULL DEFAULT 0.0
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_daily_risk (
+                    user_id INTEGER NOT NULL,
+                    utc_date TEXT NOT NULL,
+                    start_equity REAL NOT NULL,
+                    current_equity REAL NOT NULL,
+                    realized_pnl REAL NOT NULL DEFAULT 0.0,
+                    PRIMARY KEY (user_id, utc_date)
                 )
                 """
             )
@@ -206,8 +218,19 @@ class UserVault:
                     resolved_server,
                 ),
             )
+            today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            init_eq = float(verified_usdt_balance) if verified_usdt_balance > 0 else self.settings.portfolio_initial_capital
+            conn.execute(
+                """
+                INSERT INTO user_daily_risk (user_id, utc_date, start_equity, current_equity, realized_pnl)
+                VALUES (?, ?, ?, ?, 0.0)
+                ON CONFLICT(user_id, utc_date) DO UPDATE SET
+                    start_equity = MAX(user_daily_risk.start_equity, excluded.start_equity),
+                    current_equity = excluded.current_equity
+                """,
+                (int(user_id), today_utc, init_eq, init_eq),
+            )
             conn.commit()
-
         logger.info(
             "Saved encrypted trading credentials in UserVault",
             user_id=user_id,
@@ -322,14 +345,26 @@ class UserVault:
 
     def update_verified_balance(self, user_id: int, usdt_balance: float) -> None:
         uid = int(user_id)
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_dt = datetime.now(timezone.utc)
+        now_iso = now_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        today_utc = now_dt.strftime("%Y-%m-%d")
+        bal = float(usdt_balance)
         with self._connect() as conn:
             conn.execute(
                 "UPDATE user_accounts SET verified_usdt_balance = ?, updated_at = ? WHERE user_id = ?",
-                (float(usdt_balance), now_iso, uid),
+                (bal, now_iso, uid),
+            )
+            conn.execute(
+                """
+                INSERT INTO user_daily_risk (user_id, utc_date, start_equity, current_equity, realized_pnl)
+                VALUES (?, ?, ?, ?, 0.0)
+                ON CONFLICT(user_id, utc_date) DO UPDATE SET
+                    current_equity = excluded.current_equity
+                """,
+                (uid, today_utc, bal, bal),
             )
             conn.commit()
-
+        self._sync_linked_sizer(uid)
     def delete_user_credentials(self, user_id: int) -> bool:
         """Remove personal Binance credentials for user_id from the vault (/unlink)."""
         uid = int(user_id)
@@ -395,10 +430,61 @@ class UserVault:
         exit_price: float,
         pnl_usdt: float,
     ) -> Optional[UserPositionRecord]:
-        """Mark an open position as CLOSED once Take-Profit or Trailing Stop-Loss is hit."""
+        """Mark an open position as CLOSED and update the user's UTC daily drawdown ledger."""
+        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         with self._connect() as conn:
-            return close_position_in_db(conn, position_id, exit_price, pnl_usdt)
+            closed_rec = close_position_in_db(conn, position_id, exit_price, pnl_usdt)
+            if closed_rec is not None:
+                uid = int(closed_rec.user_id)
+                acc_row = conn.execute(
+                    "SELECT verified_usdt_balance FROM user_accounts WHERE user_id = ?", (uid,)
+                ).fetchone()
+                base_eq = (
+                    float(acc_row["verified_usdt_balance"])
+                    if acc_row is not None and float(acc_row["verified_usdt_balance"]) > 0
+                    else self.settings.portfolio_initial_capital
+                )
+                conn.execute(
+                    """
+                    INSERT INTO user_daily_risk (user_id, utc_date, start_equity, current_equity, realized_pnl)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, utc_date) DO UPDATE SET
+                        realized_pnl = user_daily_risk.realized_pnl + excluded.realized_pnl,
+                        current_equity = MAX(0.0, user_daily_risk.start_equity + user_daily_risk.realized_pnl + excluded.realized_pnl)
+                    """,
+                    (uid, today_utc, base_eq, max(0.0, base_eq + float(pnl_usdt)), float(pnl_usdt)),
+                )
+                conn.commit()
+        if closed_rec is not None:
+            self._sync_linked_sizer(closed_rec.user_id)
+        return closed_rec
 
+    def get_user_daily_drawdown(self, user_id: int) -> tuple[float, float, float]:
+        """Return `(drawdown_fraction, start_equity, current_equity)` for `user_id` on the current UTC date."""
+        uid = int(user_id)
+        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT start_equity, current_equity, realized_pnl FROM user_daily_risk WHERE user_id = ? AND utc_date = ?",
+                (uid, today_utc),
+            ).fetchone()
+        if row is None:
+            creds = self.resolve_credentials(uid)
+            eq = float(creds.verified_usdt_balance) if creds and creds.verified_usdt_balance > 0 else self.settings.portfolio_initial_capital
+            return 0.0, eq, eq
+        start_eq = max(float(row["start_equity"]), 1e-6)
+        curr_eq = float(row["current_equity"])
+        real_pnl = float(row["realized_pnl"])
+        loss = max(0.0, start_eq - curr_eq, -real_pnl)
+        dd = round(min(1.0, loss / start_eq), 6)
+        return dd, start_eq, min(curr_eq, start_eq - loss)
+
+    def _sync_linked_sizer(self, user_id: int) -> None:
+        if self._linked_position_sizer is not None:
+            _, start_eq, curr_eq = self.get_user_daily_drawdown(user_id)
+            if start_eq > 0:
+                self._linked_position_sizer.daily_start_equity = start_eq
+                self._linked_position_sizer.current_equity = curr_eq
     def list_autotrade_enabled_user_ids(self) -> list[int]:
         """Return all user_ids (including Admin .env accounts) that currently have autotrade_enabled=True."""
         enabled_ids: set[int] = set()

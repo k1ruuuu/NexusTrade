@@ -180,9 +180,18 @@ class LiveMarketDataFeed:
                 raw_df.loc[last_idx, "high"] = max(float(raw_df.loc[last_idx, "high"]), lp)
                 raw_df.loc[last_idx, "low"] = min(float(raw_df.loc[last_idx, "low"]), lp)
 
+            if timeframe == "4h":
+                raw_df = (
+                    raw_df.set_index("timestamp")
+                    .resample("4h")
+                    .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+                    .dropna(subset=["open", "high", "low", "close"])
+                    .reset_index()
+                )
             cleaned = self.preprocessor.clean_ohlcv(
                 raw_df.tail(limit), symbol=canonical_symbol, timeframe=timeframe
             )
+            cleaned.attrs["data_source"] = "live"
             logger.info(
                 "Fetched real-time Yahoo Finance OHLCV feed",
                 symbol=canonical_symbol,

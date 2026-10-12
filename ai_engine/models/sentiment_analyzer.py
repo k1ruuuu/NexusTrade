@@ -259,16 +259,11 @@ class FinancialSentimentAnalyzer:
                 return 0.0
             after_bars = market_df.loc[idx >= pub_ts]
             if len(after_bars) >= 2:
-                entry_p = float(after_bars["open"].iloc[0])
-                latest_p = float(after_bars["close"].iloc[-1])
+                horizon_bars = after_bars.iloc[:5]
+                entry_p = float(horizon_bars["open"].iloc[0])
+                latest_p = float(horizon_bars["close"].iloc[-1])
                 if entry_p > 0:
                     return float((latest_p - entry_p) / entry_p)
-            # Fallback: recent 4-bar momentum impulse
-            if len(market_df) >= 5:
-                p_prev = float(market_df["close"].iloc[-5])
-                p_last = float(market_df["close"].iloc[-1])
-                if p_prev > 0:
-                    return float((p_last - p_prev) / p_prev)
         except Exception:
             return 0.0
         return 0.0
@@ -407,9 +402,12 @@ class FinancialSentimentAnalyzer:
                 for item, w in zip(live_items, eff_weights)
             ]
         else:
-            effective_headlines = (
-                headlines if headlines else self.get_default_headlines_for_symbol(symbol)
-            )
+            if headlines is not None:
+                effective_headlines = list(headlines)
+            elif self.settings.use_live_news_feed:
+                effective_headlines = []
+            else:
+                effective_headlines = self.get_default_headlines_for_symbol(symbol)
             if not effective_headlines:
                 return SentimentAnalysisResult(
                     symbol=symbol.upper(),

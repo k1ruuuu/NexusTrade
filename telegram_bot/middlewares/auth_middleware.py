@@ -78,8 +78,13 @@ class WhitelistAuthMiddleware(BaseMiddleware):
             event_type = "EVENT"
             action_str = type(event).__name__
 
-        # 1. Maintenance Mode Guard (Non-admin users are blocked when Maintenance is ON)
-        if self.admin_store.is_maintenance_mode() and not is_admin:
+        # F15: Always allow users to stop/disable Auto-Trade (/autotrade off|stop, /unlink) even during maintenance or expiry
+        lower_act = action_str.strip().lower()
+        is_emergency_stop_cmd = (
+            lower_act in ("/autotrade off", "/autotrade stop", "/unlink", "cb:autotrade:toggle:off", "cb:setup:unlink")
+        )
+        # 1. Maintenance Mode Guard (Non-admin users are blocked when Maintenance is ON, except emergency stop)
+        if self.admin_store.is_maintenance_mode() and not is_admin and not is_emergency_stop_cmd:
             self.admin_store.log_activity(
                 user_id=user_id,
                 username=username,
@@ -106,7 +111,7 @@ class WhitelistAuthMiddleware(BaseMiddleware):
         allowed, reason, managed_rec = self.admin_store.check_user_access(
             user_id, self.allowed_ids
         )
-        if not allowed:
+        if not allowed and not (reason == "expired" and is_emergency_stop_cmd):
             status_code = "DENIED_EXPIRED" if reason == "expired" else "DENIED_UNAUTHORIZED"
             self.admin_store.log_activity(
                 user_id=user_id,

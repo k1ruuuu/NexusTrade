@@ -356,9 +356,8 @@ class EnsembleDecisionAgent:
             else self.load_market_series(clean_sym, timeframe=timeframe)
         )
         df_5y: Optional[pd.DataFrame] = None
-        if self.settings.use_live_market_data and df is None:
+        if self.settings.use_live_market_data:
             df_5y = self.live_feed.fetch_5y_daily_memory(clean_sym)
-
         sent_result: SentimentAnalysisResult = self.sentiment_analyzer.analyze_headlines(
             headlines=headlines,
             symbol=clean_sym,
@@ -530,15 +529,18 @@ class EnsembleDecisionAgent:
         tf_scores = [s_1d, s_1h, s_15m, s_5m]
         aligned_count = sum(1 for sc in tf_scores if (sc * dom_sign) >= 0.08)
 
-        if aligned_count >= 3:
+        # F12: Never invert an opposing 15m model score using abs(); only boost when 15m agrees with dom_sign
+        if (base_15m.s_tech * dom_sign) < -0.15:
+            blended_s_tech = float(0.50 * mtf_trend_score + 0.50 * base_15m.s_tech)
+        elif aligned_count >= 3:
+            aligned_15m = abs(base_15m.s_tech) if (base_15m.s_tech * dom_sign) > 0 else 0.0
             blended_s_tech = float(
-                dom_sign * max(abs(base_15m.s_tech), abs(mtf_trend_score), 0.85)
+                dom_sign * max(aligned_15m, abs(mtf_trend_score), 0.85)
             )
         elif aligned_count == 2 and abs(base_15m.s_tech) >= 0.72 and (s_15m * s_5m) > 0:
             blended_s_tech = float(base_15m.s_tech)
         else:
             blended_s_tech = float(mtf_trend_score * 0.45)
-
         # Step 3: 1m Action Open Position Trigger & Realistic 1m-5m ATR Calibration (1:2 TP1 & 1:3 TP2)
         if blended_s_tech > 0.15 and s_1m < -0.35:
             blended_s_tech *= 0.45

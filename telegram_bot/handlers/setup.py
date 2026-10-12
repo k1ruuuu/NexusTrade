@@ -236,9 +236,11 @@ async def handle_unlink(message: Message, **data: Any) -> None:
     """Handle /unlink command removing personal Binance credentials from the vault."""
     settings: Settings = data.get("settings") or get_settings()
     vault: UserVault = data.get("user_vault") or UserVault(settings)
-
+    auto_trader: Optional[SmartAutoTraderEngine] = data.get("auto_trader")
     user_id, _ = extract_user_identity(message)
     clear_pending_wizards(user_id)
+    if auto_trader is not None:
+        auto_trader.stop_user_sessions(user_id)
     deleted = vault.delete_user_credentials(user_id)
     if deleted:
         await message.answer(

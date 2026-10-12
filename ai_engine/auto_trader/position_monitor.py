@@ -141,16 +141,7 @@ class PositionMonitorMixin:
 
         if pos.side == "BUY":
             unr_pct = ((curr_price - pos.entry_price) / max(pos.entry_price, 1e-9)) * 100.0
-            if pos.take_profit_2 > 0 and bar_high >= pos.take_profit_2:
-                exit_px = max(curr_price, pos.take_profit_2)
-                return await self._close_position_on_broker(
-                    pos, exit_px, "CLOSED_TP", f"Target Profit 2 (TP2 @ {pos.take_profit_2:,.2f}) Tercapai"
-                )
-            if pos.take_profit_1 > 0 and bar_high >= pos.take_profit_1:
-                exit_px = max(curr_price, pos.take_profit_1)
-                return await self._close_position_on_broker(
-                    pos, exit_px, "CLOSED_TP", f"Target Profit 1 (TP1 @ {pos.take_profit_1:,.2f}) Tercapai"
-                )
+            # F09: Conservative intrabar ordering — check Stop-Loss BEFORE Take-Profit
             if pos.stop_loss > 0 and bar_low <= pos.stop_loss:
                 exit_px = pos.stop_loss
                 is_profit_stop = pos.stop_loss > pos.entry_price
@@ -162,7 +153,16 @@ class PositionMonitorMixin:
                 return await self._close_position_on_broker(
                     pos, exit_px, "CLOSED_TP" if is_profit_stop else "CLOSED_SL", reason
                 )
-
+            if pos.take_profit_2 > 0 and bar_high >= pos.take_profit_2:
+                exit_px = max(curr_price, pos.take_profit_2)
+                return await self._close_position_on_broker(
+                    pos, exit_px, "CLOSED_TP", f"Target Profit 2 (TP2 @ {pos.take_profit_2:,.2f}) Tercapai"
+                )
+            if pos.take_profit_1 > 0 and bar_high >= pos.take_profit_1:
+                exit_px = max(curr_price, pos.take_profit_1)
+                return await self._close_position_on_broker(
+                    pos, exit_px, "CLOSED_TP", f"Target Profit 1 (TP1 @ {pos.take_profit_1:,.2f}) Tercapai"
+                )
             if news_s_sent is not None and news_s_sent <= -0.30:
                 return await self._execute_emergency_news_exit_and_reverse(
                     pos=pos,
@@ -205,18 +205,8 @@ class PositionMonitorMixin:
                 unrealized_pnl_pct=round(unr_pct, 2),
             )
 
-        # SELL (Short) position management
+        # SELL (Short) position management — conservative intrabar ordering: SL checked BEFORE TP
         unr_pct = ((pos.entry_price - curr_price) / max(pos.entry_price, 1e-9)) * 100.0
-        if pos.take_profit_2 > 0 and bar_low <= pos.take_profit_2:
-            exit_px = min(curr_price, pos.take_profit_2)
-            return await self._close_position_on_broker(
-                pos, exit_px, "CLOSED_TP", f"Target Profit 2 (TP2 @ {pos.take_profit_2:,.2f}) Tercapai"
-            )
-        if pos.take_profit_1 > 0 and bar_low <= pos.take_profit_1:
-            exit_px = min(curr_price, pos.take_profit_1)
-            return await self._close_position_on_broker(
-                pos, exit_px, "CLOSED_TP", f"Target Profit 1 (TP1 @ {pos.take_profit_1:,.2f}) Tercapai"
-            )
         if pos.stop_loss > 0 and bar_high >= pos.stop_loss:
             exit_px = pos.stop_loss
             is_profit_stop = pos.stop_loss < pos.entry_price
@@ -228,7 +218,16 @@ class PositionMonitorMixin:
             return await self._close_position_on_broker(
                 pos, exit_px, "CLOSED_TP" if is_profit_stop else "CLOSED_SL", reason
             )
-
+        if pos.take_profit_2 > 0 and bar_low <= pos.take_profit_2:
+            exit_px = min(curr_price, pos.take_profit_2)
+            return await self._close_position_on_broker(
+                pos, exit_px, "CLOSED_TP", f"Target Profit 2 (TP2 @ {pos.take_profit_2:,.2f}) Tercapai"
+            )
+        if pos.take_profit_1 > 0 and bar_low <= pos.take_profit_1:
+            exit_px = min(curr_price, pos.take_profit_1)
+            return await self._close_position_on_broker(
+                pos, exit_px, "CLOSED_TP", f"Target Profit 1 (TP1 @ {pos.take_profit_1:,.2f}) Tercapai"
+            )
         if news_s_sent is not None and news_s_sent >= 0.30:
             return await self._execute_emergency_news_exit_and_reverse(
                 pos=pos,
@@ -318,10 +317,18 @@ class PositionMonitorMixin:
         unr_pnl: float,
         unr_pct: float,
     ) -> PositionMonitorResult:
-        """Persist ratcheted Trailing Stop in SQLite, sync to Exness MT5, and return TRAILING_UPDATED."""
+        """Sync ratcheted Trailing Stop to Exness MT5 FIRST, and only persist in SQLite if broker modify succeeded (F03)."""
+        mod_ok = await self._sync_trailing_sl_on_broker(pos, candidate_sl)
+        if not mod_ok:
+            return PositionMonitorResult(
+                action_taken="HOLDING",
+                position=pos,
+                current_price=curr_price,
+                unrealized_pnl_usdt=round(unr_pnl, 2),
+                unrealized_pnl_pct=round(unr_pct, 2),
+            )
         self.engine.vault.update_position_stop_loss(pos.position_id, candidate_sl)
         pos.stop_loss = candidate_sl
-        await self._sync_trailing_sl_on_broker(pos, candidate_sl)
         return PositionMonitorResult(
             action_taken="TRAILING_UPDATED",
             position=pos,
@@ -330,7 +337,6 @@ class PositionMonitorMixin:
             unrealized_pnl_pct=round(unr_pct, 2),
             new_stop_loss=candidate_sl,
         )
-
     def _evaluate_live_position_news_sentiment(
         self,
         symbol: str,
@@ -358,10 +364,12 @@ class PositionMonitorMixin:
         self,
         pos: UserPositionRecord,
         new_stop_loss: float,
-    ) -> None:
+    ) -> bool:
         """Push updated Trailing Stop-Loss to Exness MT5 in real time via `/OrderModifySafe`."""
         creds = self.engine.vault.resolve_credentials(pos.user_id)
-        if creds is not None:
+        if creds is None:
+            return False
+        return bool(
             await self.engine.mt5_client.modify_mt5_ticket(
                 account_id_or_login=creds.api_key,
                 token_or_password=creds.api_secret,
@@ -370,7 +378,7 @@ class PositionMonitorMixin:
                 take_profit=pos.take_profit_1,
                 server_name=creds.server_name,
             )
-
+        )
     async def _close_position_on_broker(
         self,
         pos: UserPositionRecord,
@@ -390,7 +398,7 @@ class PositionMonitorMixin:
         pnl_pct = round((net_pnl / max(pos.notional_usdt, 1e-6)) * 100.0, 2)
 
         creds = self.engine.vault.resolve_credentials(pos.user_id)
-        close_ok = True
+        close_ok = False
         if creds is not None:
             try:
                 close_ok = await self.engine.mt5_client.close_mt5_ticket(
@@ -445,9 +453,19 @@ class PositionMonitorMixin:
                 or creds.verified_usdt_balance < 10.0
             ):
                 return None
+            # F06: Enforce daily drawdown circuit breaker & anti-duplicate guard before any reversal entry
+            user_dd, start_eq, curr_eq = self.engine.vault.get_user_daily_drawdown(closed_pos.user_id)
+            eff_dd = max(user_dd, self.engine.ensemble_agent.position_sizer.current_daily_drawdown)
+            if self.engine.ensemble_agent.position_sizer.is_circuit_breaker_tripped(eff_dd):
+                return None
+            if self.engine.vault.get_open_positions(closed_pos.user_id, symbol=closed_pos.symbol):
+                return None
             eff_atr = max(est_atr, curr_price * 0.002)
+            mkt_df = self.engine.ensemble_agent.load_market_series(
+                closed_pos.symbol, timeframe="15m", limit=120
+            )
             sr_levels = self.engine.ensemble_agent.sr_detector.detect_levels(
-                None, current_price=curr_price, atr_14=eff_atr
+                mkt_df, current_price=curr_price, atr_14=eff_atr
             )
             targets = self.engine.ensemble_agent.stop_loss_manager.calculate_realistic_targets(
                 entry_price=curr_price,
