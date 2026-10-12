@@ -76,21 +76,24 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         self,
         user_id: int,
         symbol: str,
-        duration_code: str = "5H",
-        timeframe: str = "15m",
-        poll_interval_seconds: float = 30.0,
+        duration_code: str = "24/7",
+        timeframe: str = "1m",
+        poll_interval_seconds: float = 5.0,
         notify_callback: Optional[NotifyCallback] = None,
         custom_lot: Optional[float] = None,
+        live_card_callback: Optional[NotifyCallback] = None,
     ) -> tuple[AutoTradeSessionState, Any]:
         """
-        Start a timed autonomous trading session for `(user_id, symbol)` running for `duration_code` (e.g. '5H'):
+        Start a 24/7 Non-Stop autonomous trading session for `(user_id, symbol)`
+        analyzing `1D, 1H, 15M, 5M` trends and executing on `1m`:
         1. Enables `autotrade_enabled=True` for `user_id`.
-        2. Runs the initial cycle immediately (either managing an existing open position or running the 6-Gate check).
-        3. Spawns a background `asyncio.Task` that continues monitoring & trading until `ends_at_ts`.
+        2. Runs the initial cycle immediately.
+        3. Spawns a fast real-time background `asyncio.Task` that updates floating & realized profit
+           live on Telegram without delay until `/autotrade off` is called.
         """
         uid = int(user_id)
         clean_sym = normalize_symbol(symbol)
-        clean_tf = normalize_timeframe(timeframe)
+        clean_tf = normalize_timeframe(timeframe) if timeframe != "1m" else "1m"
         dur_secs, dur_label = parse_session_duration(duration_code)
 
         # Cancel any previous session on the same (user_id, symbol)
@@ -108,8 +111,13 @@ class AutoTradeSessionManager(PositionMonitorMixin):
             duration_label=dur_label,
             started_at_ts=now_dt.timestamp(),
             ends_at_ts=end_dt.timestamp(),
-            started_at_iso=now_dt.strftime("%Y-%m-%d %H:%M UTC"),
-            ends_at_iso=end_dt.strftime("%Y-%m-%d %H:%M UTC"),
+            started_at_iso=now_dt.strftime("%Y-%m-%d %H:%M:%S UTC"),
+            ends_at_iso=(
+                "24/7 Non-Stop (Hingga /autotrade off)"
+                if dur_secs >= 30_000_000
+                else end_dt.strftime("%Y-%m-%d %H:%M UTC")
+            ),
+            last_updated_iso=now_dt.strftime("%H:%M:%S UTC"),
             custom_lot=custom_lot,
         )
         self._sessions[(uid, clean_sym)] = sess
@@ -117,9 +125,9 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         # Execute immediate first cycle
         first_report = await self._run_single_session_cycle(sess, notify_callback=None)
 
-        # Spawn background loop for the remainder of the session window
+        # Spawn real-time 24/7 loop
         sess.task = asyncio.create_task(
-            self._session_loop(sess, poll_interval_seconds, notify_callback)
+            self._session_loop(sess, poll_interval_seconds, notify_callback, live_card_callback)
         )
         return sess, first_report
 
@@ -129,21 +137,30 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         notify_callback: Optional[NotifyCallback] = None,
     ) -> Any:
         sess.cycles_completed += 1
+        sess.last_updated_iso = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
         open_positions = self.engine.vault.get_open_positions(sess.user_id, symbol=sess.symbol)
 
         if open_positions:
             mon = await self.monitor_and_manage_open_position(
                 user_id=sess.user_id,
                 symbol=sess.symbol,
-                timeframe=sess.timeframe,
+                timeframe="1m",
             )
             if mon.action_taken in ("CLOSED_TP", "CLOSED_SL") and mon.position is not None:
                 sess.positions_closed += 1
+                if mon.realized_pnl_usdt >= 0:
+                    sess.winning_trades += 1
+                else:
+                    sess.losing_trades += 1
                 if mon.re_entry_position is not None:
                     sess.positions_opened += 1
                 sess.realized_pnl_usdt = round(sess.realized_pnl_usdt + mon.realized_pnl_usdt, 2)
+                sess.live_open_position = mon.re_entry_position
+                sess.live_current_price = mon.current_price
+                sess.live_floating_pnl_usdt = 0.0
+                sess.live_floating_pnl_pct = 0.0
                 sess.last_check_summary = (
-                    f"Posisi {mon.position.side} ditutup @ {mon.current_price:,.2f} "
+                    f"Posisi {mon.position.side} ditutup @ ${mon.current_price:,.2f} "
                     f"({mon.exit_reason} | PnL: ${mon.realized_pnl_usdt:+.2f})"
                 )
                 if notify_callback is not None:
@@ -151,51 +168,67 @@ class AutoTradeSessionManager(PositionMonitorMixin):
                         sess.user_id,
                         format_position_closed_notification(
                             mon,
-                            header_title=f"AUTO-TRADE MENUTUP POSISI — {sess.symbol}",
+                            header_title=f"AUTO-TRADE 24/7 MENUTUP POSISI — {sess.symbol}",
                             pnl_label="Hasil PnL Bersih",
                             remaining_human=sess.remaining_human,
                         ),
                     )
             elif mon.action_taken == "TRAILING_UPDATED" and mon.position is not None:
+                sess.live_open_position = mon.position
+                sess.live_current_price = mon.current_price
+                sess.live_floating_pnl_usdt = mon.unrealized_pnl_usdt
+                sess.live_floating_pnl_pct = mon.unrealized_pnl_pct
                 sess.last_check_summary = (
-                    f"Mengawal posisi {mon.position.side}: Trailing Stop digeser ke ${mon.new_stop_loss:,.2f} "
-                    f"(Floating PnL: ${mon.unrealized_pnl_usdt:+.2f})"
+                    f"Mengawal posisi {mon.position.side}: Trailing SL digeser ke ${mon.new_stop_loss:,.2f} "
+                    f"(Floating Profit: ${mon.unrealized_pnl_usdt:+.2f})"
                 )
             elif mon.position is not None:
+                sess.live_open_position = mon.position
+                sess.live_current_price = mon.current_price
+                sess.live_floating_pnl_usdt = mon.unrealized_pnl_usdt
+                sess.live_floating_pnl_pct = mon.unrealized_pnl_pct
                 sess.last_check_summary = (
-                    f"Menahan posisi {mon.position.side} menuju Target Profit "
-                    f"(Floating PnL: ${mon.unrealized_pnl_usdt:+.2f} / {mon.unrealized_pnl_pct:+.2f}%)"
+                    f"Menahan posisi {mon.position.side} @ ${mon.position.entry_price:,.2f} ➔ "
+                    f"Sekarang ${mon.current_price:,.2f} (Floating: ${mon.unrealized_pnl_usdt:+.2f} / {mon.unrealized_pnl_pct:+.2f}%)"
                 )
             return mon
 
-        # No open position -> run 6-Gate evaluation to see if an accurate entry exists now
+        # No open position -> run 6-Gate Multi-Timeframe (1D/1H/15M/5M -> 1m) evaluation
+        sess.live_open_position = None
+        sess.live_floating_pnl_usdt = 0.0
+        sess.live_floating_pnl_pct = 0.0
         report = await self.engine.evaluate_and_execute(
             user_id=sess.user_id,
             symbol=sess.symbol,
-            timeframe=sess.timeframe,
+            timeframe="1m",
             require_autotrade_toggle=True,
             custom_lot=sess.custom_lot,
         )
-        if report.executed and report.order_result is not None:
+        if report.decision is not None:
+            sess.live_current_price = report.decision.entry_price
+            sess.mtf_status_line = report.decision.mtf_summary
+
+        if report.executed and report.order_result is not None and report.position_record is not None:
             sess.positions_opened += 1
+            sess.live_open_position = report.position_record
+            sess.live_current_price = report.order_result.avg_price
             sess.last_check_summary = (
-                f"Membuka posisi {report.order_result.side} @ ${report.order_result.avg_price:,.2f} "
-                f"(Order ID: {report.order_result.order_id})"
+                f"Membuka posisi {report.order_result.side} (1m) @ ${report.order_result.avg_price:,.2f} "
+                f"(Ticket #{report.order_result.order_id})"
             )
             if notify_callback is not None:
                 await notify_callback(
                     sess.user_id,
-                    f"🚀 <b>SESI AUTO-TRADE MEMBUKA POSISI BARU — {sess.symbol}</b>\n"
-                    f"• <b>Aksi:</b> <b>{report.order_result.side} {report.order_result.symbol}</b>\n"
-                    f"• <b>Harga Masuk:</b> <code>${report.order_result.avg_price:,.2f}</code>\n"
+                    f"🚀 <b>AUTO-TRADE 24/7 MEMBUKA POSISI BARU (1M) — {sess.symbol}</b>\n"
+                    f"• <b>Aksi &amp; Lot:</b> <b>{report.order_result.side} {report.order_result.symbol} ({report.order_result.executed_qty} Lot)</b>\n"
+                    f"• <b>Harga Masuk (1m):</b> <code>${report.order_result.avg_price:,.2f}</code>\n"
                     f"• <b>Stop Loss:</b> <code>${report.position_record.stop_loss:,.2f}</code> | "
                     f"<b>TP1:</b> <code>${report.position_record.take_profit_1:,.2f}</code>\n"
-                    f"• <b>Sisa Waktu Sesi:</b> <code>{sess.remaining_human}</code>",
+                    f"• <b>Tren MTF:</b> <i>{sess.mtf_status_line}</i>",
                 )
         else:
-            sess.last_check_summary = report.rejection_summary or "Menunggu konfirmasi 6 Gerbang..."
+            sess.last_check_summary = report.rejection_summary or "Memantau sinyal 1D/1H/15M/5M ➔ 1M..."
         return report
-
     async def close_session_open_positions(
         self,
         sess: AutoTradeSessionState,
@@ -299,16 +332,28 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         sess: AutoTradeSessionState,
         poll_interval_seconds: float,
         notify_callback: Optional[NotifyCallback] = None,
+        live_card_callback: Optional[NotifyCallback] = None,
     ) -> None:
+        from telegram_bot.views.setup_formatters import format_timed_session_started_card
+
+        last_rendered_card = ""
         try:
             while sess.status == "RUNNING" and time.time() < sess.ends_at_ts:
                 sleep_s = min(poll_interval_seconds, max(1.0, sess.ends_at_ts - time.time()))
                 await asyncio.sleep(sleep_s)
                 if sess.status != "RUNNING" or time.time() >= sess.ends_at_ts:
                     break
-                await self._run_single_session_cycle(sess, notify_callback=notify_callback)
+                cycle_res = await self._run_single_session_cycle(sess, notify_callback=notify_callback)
+                if live_card_callback is not None:
+                    try:
+                        new_card = format_timed_session_started_card(sess, cycle_res)
+                        if new_card != last_rendered_card:
+                            last_rendered_card = new_card
+                            await live_card_callback(sess.user_id, new_card)
+                    except Exception:
+                        pass
 
-            if sess.status == "RUNNING":
+            if sess.status == "RUNNING" and not sess.is_continuous_24_7:
                 await self.close_session_open_positions(
                     sess,
                     reason=f"Batas waktu sesi {sess.duration_label} habis sebelum menyentuh TP (Auto-Close @ Market)",

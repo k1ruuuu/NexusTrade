@@ -15,12 +15,12 @@ from ai_engine.auto_trader.mt5_exness_client import MT5ExnessClient
 from ai_engine.auto_trader.engine import SmartAutoTraderEngine
 from ai_engine.auto_trader.session_manager import (
     format_position_closed_notification,
-    is_session_duration_token,
+    parse_custom_lot_token,
 )
 from ai_engine.auto_trader.user_vault import UserVault
 from ai_engine.models.ensemble_agent import EnsembleDecisionAgent
 from config.settings import Settings, get_settings
-from data_pipeline.market_symbols import normalize_symbol, normalize_timeframe
+from data_pipeline.market_symbols import normalize_symbol
 from telegram_bot.handlers.handler_utils import (
     _PENDING_ADMIN_ACTION,
     _PENDING_SETUP_MODE,
@@ -126,14 +126,13 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         updated = vault.resolve_credentials(user_id)
         positions = vault.get_open_positions(user_id)
         await message.answer(
-            "🟢 <b>Auto-Trade Diaktifkan!</b>\n"
-            "AI sekarang diizinkan mengeksekusi posisi pada akun Exness Go / MT5 Anda jika ke-6 Gerbang Akurasi terpenuhi.\n\n"
+            "🟢 <b>Auto-Trade 24/7 Non-Stop Diaktifkan!</b>\n"
+            "AI siap menganalisis tren <b>1D, 1H, 15M, 5M</b> dan mengeksekusi open/close posisi di <b>1M</b> secara 24/7 pada akun Exness Go / MT5 Anda.\n\n"
             + format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), updated, positions),
             parse_mode="HTML",
             reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=True),
         )
         return
-
     if sub in ("off", "stop"):
         stopped_sessions = auto_trader.stop_user_sessions(user_id)
         vault.set_autotrade_enabled(user_id, False)
@@ -174,46 +173,54 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         )
         return
 
-    # Parse `/autotrade <SYMBOL> [DURATION] [LOT] [TIMEFRAME]` in any order
-    from ai_engine.auto_trader.session_manager import parse_custom_lot_token
-
+    # Parse `/autotrade <SYMBOL> [LOT]` -> Always starts 24/7 Non-Stop Auto-Trade (1D/1H/15M/5M trend -> 1m action)
     raw_tokens = args[1:] if sub == "scan" else args
     symbol = normalize_symbol(raw_tokens[0]) if len(raw_tokens) >= 1 else "BTCUSDT"
-    duration_token: str | None = None
     custom_lot: float | None = None
-    timeframe = "15m"
 
     for tok in raw_tokens[1:]:
         lot_val = parse_custom_lot_token(tok)
         if lot_val is not None and custom_lot is None:
             custom_lot = lot_val
-        elif is_session_duration_token(tok) and duration_token is None:
-            duration_token = tok
-        else:
-            timeframe = normalize_timeframe(tok)
 
-    if duration_token is not None:
+    if sub != "scan":
+        live_msg_ref: list[Any] = []
+        kb_markup = build_setup_keyboard(has_creds=True, autotrade_on=True)
+
         async def _notify_user(uid: int, text_html: str) -> None:
             try:
                 await message.answer(text_html, parse_mode="HTML")
             except Exception:
                 pass
 
+        async def _update_live_card(uid: int, card_html: str) -> None:
+            if not live_msg_ref:
+                return
+            target = live_msg_ref[0]
+            edit_fn = getattr(target, "edit_text", None)
+            if callable(edit_fn):
+                try:
+                    await edit_fn(card_html, parse_mode="HTML", reply_markup=kb_markup)
+                except Exception:
+                    pass
+
         session_state, first_res = await auto_trader.start_timed_session(
             user_id=user_id,
             symbol=symbol,
-            duration_code=duration_token,
-            timeframe=timeframe,
+            duration_code="24/7",
+            timeframe="1m",
             notify_callback=_notify_user,
             custom_lot=custom_lot,
+            live_card_callback=_update_live_card,
         )
-        await message.answer(
+        sent_card = await message.answer(
             format_timed_session_started_card(session_state, first_res),
             parse_mode="HTML",
-            reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=True),
+            reply_markup=kb_markup,
         )
+        if sent_card is not None:
+            live_msg_ref.append(sent_card)
         return
-
     # If user already has an OPEN position on `symbol`, sync with Exness MT5 first then monitor & hold it
     await auto_trader.sync_live_mt5_positions(user_id)
     existing_open = vault.get_open_positions(user_id, symbol=symbol)
@@ -221,7 +228,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         mon_res = await auto_trader.monitor_and_manage_open_position(
             user_id=user_id,
             symbol=symbol,
-            timeframe=timeframe,
+            timeframe="1m",
         )
         p = mon_res.position or existing_open[0]
         if mon_res.action_taken in ("CLOSED_TP", "CLOSED_SL"):
@@ -251,7 +258,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
     report = await auto_trader.evaluate_and_execute(
         user_id=user_id,
         symbol=symbol,
-        timeframe=timeframe,
+        timeframe="1m",
         custom_lot=custom_lot,
     )
     await message.answer(

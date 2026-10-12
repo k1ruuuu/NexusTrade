@@ -63,7 +63,7 @@ class PositionMonitorMixin:
         self,
         user_id: int,
         symbol: str,
-        timeframe: str = "15m",
+        timeframe: str = "1m",
         price_override: Optional[float] = None,
         high_override: Optional[float] = None,
         low_override: Optional[float] = None,
@@ -180,14 +180,19 @@ class PositionMonitorMixin:
                     candidate_sl = max(candidate_sl, round(pos.entry_price, 4))
                 else:
                     candidate_sl = max(candidate_sl, round(curr_price - 0.40 * est_atr, 4))
-            if bar_high >= pos.entry_price + 0.60 * est_atr:
+
+            # Smart 1m Profit-Locking: lock break-even+ once >= 0.50*ATR, and lock 60% of profit near TP1 (>=70% of TP1 distance)
+            tp1_span = max(0.0, pos.take_profit_1 - pos.entry_price)
+            if tp1_span > 0 and curr_price >= pos.entry_price + 0.70 * tp1_span:
+                locked_60 = round(pos.entry_price + 0.60 * (curr_price - pos.entry_price), 4)
+                candidate_sl = max(candidate_sl, locked_60)
+            if bar_high >= pos.entry_price + 0.50 * est_atr:
                 be_plus = round(pos.entry_price + 0.20 * est_atr, 4)
                 candidate_sl = max(candidate_sl, be_plus)
                 trailed = self.engine.ensemble_agent.stop_loss_manager.update_trailing_stop(
                     "BUY", bar_high, candidate_sl, trail_dist
                 )
                 candidate_sl = max(candidate_sl, trailed)
-
             if candidate_sl > pos.stop_loss + 1e-6:
                 return await self._apply_trailing_stop_update(
                     pos, candidate_sl, curr_price, unr_pnl, unr_pct
@@ -241,14 +246,18 @@ class PositionMonitorMixin:
                 candidate_sl = min(candidate_sl, round(pos.entry_price, 4))
             else:
                 candidate_sl = min(candidate_sl, round(curr_price + 0.40 * est_atr, 4))
-        if bar_low <= pos.entry_price - 0.60 * est_atr:
+
+        tp1_span_s = max(0.0, pos.entry_price - pos.take_profit_1) if pos.take_profit_1 > 0 else 0.0
+        if tp1_span_s > 0 and curr_price <= pos.entry_price - 0.70 * tp1_span_s:
+            locked_60_s = round(pos.entry_price - 0.60 * (pos.entry_price - curr_price), 4)
+            candidate_sl = min(candidate_sl, locked_60_s)
+        if bar_low <= pos.entry_price - 0.50 * est_atr:
             be_plus = round(pos.entry_price - 0.20 * est_atr, 4)
             candidate_sl = min(candidate_sl, be_plus)
             trailed = self.engine.ensemble_agent.stop_loss_manager.update_trailing_stop(
                 "SELL", bar_low, candidate_sl, trail_dist
             )
             candidate_sl = min(candidate_sl, trailed)
-
         if candidate_sl < pos.stop_loss - 1e-6:
             return await self._apply_trailing_stop_update(
                 pos, candidate_sl, curr_price, unr_pnl, unr_pct

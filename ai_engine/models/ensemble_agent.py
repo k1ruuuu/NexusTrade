@@ -95,10 +95,11 @@ class SignalDecision:
     adx_14: float = 25.0
     is_sideways: bool = False
     market_structure_status: str = "Trending Normal (ADX 25.0)"
+    mtf_summary: str = "1D: — | 1H: — | 15M: — | 5M: — ➔ Action 1M: SIAP"
+    mtf_aligned_count: int = 4
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
-
     @property
     def meets_confidence_threshold(self) -> bool:
         return self.approved and self.action in ("BUY", "SELL") and self.confidence >= 0.72
@@ -445,6 +446,138 @@ class EnsembleDecisionAgent:
             market_df=market_df,
             annualized_volatility=vol_forecast.annualized_volatility,
         )
+
+    def _score_timeframe_trend(
+        self,
+        df: Optional[pd.DataFrame],
+    ) -> tuple[float, float, str]:
+        """
+        Compute directional trend & movement score in [-1.0, +1.0], ATR(14), and badge
+        for a single timeframe DataFrame (`1d`, `1h`, `15m`, `5m`, or `1m`).
+        """
+        if df is None or len(df) < 15:
+            return 0.0, 0.0, "🟡 FLAT"
+        try:
+            ind = self.ohlcv_preprocessor.compute_raw_indicators(df.tail(120))
+            ind = MultiFactorConfluenceAnalyzer.compute_confluence_series(ind)
+            last = ind.iloc[-1]
+            close_p = float(last["close"])
+            ema20 = float(last["ema_20"])
+            ema50 = float(last["ema_50"])
+            ema200 = float(last["ema_200"])
+            rsi14 = float(last["rsi_14"])
+            macd_h = float(last["macd_hist"])
+            atr14 = float(last["atr_14"])
+            cvd20 = float(last.get("cvd_norm_20", 0.0))
+
+            ema_score = (
+                (1.0 if close_p > ema20 else -1.0) * 0.40
+                + (1.0 if ema20 > ema50 else -1.0) * 0.35
+                + (1.0 if ema50 > ema200 else -1.0) * 0.25
+            )
+            mom_score = (
+                float(np.tanh((rsi14 - 50.0) / 14.0)) * 0.55
+                + (0.45 if macd_h > 0 else (-0.45 if macd_h < 0 else 0.0))
+            )
+            flow_score = float(np.clip(cvd20 * 2.5, -1.0, 1.0))
+            score = float(np.clip(0.50 * ema_score + 0.35 * mom_score + 0.15 * flow_score, -1.0, 1.0))
+            lbl = "🟢 BULL" if score >= 0.12 else ("🔴 BEAR" if score <= -0.12 else "🟡 FLAT")
+            return round(score, 3), max(atr14, close_p * 0.0015), lbl
+        except Exception:
+            return 0.0, 0.0, "🟡 FLAT"
+
+    def analyze_multi_timeframe_autotrade(
+        self,
+        symbol: str = "BTCUSDT",
+    ) -> SignalDecision:
+        """
+        Multi-Timeframe Auto-Trade Intelligence:
+        - Analyzes market movement & trend across `1D`, `1H`, `15M`, and `5M`.
+        - Executes open-position timing, entry price, and micro-momentum trigger on `1M` (`1m`).
+        """
+        clean_sym = normalize_symbol(symbol)
+        df_1d = self.load_market_series(clean_sym, timeframe="1d", limit=160)
+        df_1h = self.load_market_series(clean_sym, timeframe="1h", limit=160)
+        df_15m = self.load_market_series(clean_sym, timeframe="15m", limit=300)
+        df_5m = self.load_market_series(clean_sym, timeframe="5m", limit=160)
+        df_1m = self.load_market_series(clean_sym, timeframe="1m", limit=160)
+
+        s_1d, _, lbl_1d = self._score_timeframe_trend(df_1d)
+        s_1h, atr_1h, lbl_1h = self._score_timeframe_trend(df_1h)
+        s_5m, atr_5m, lbl_5m = self._score_timeframe_trend(df_5m)
+        s_1m, atr_1m, lbl_1m = self._score_timeframe_trend(df_1m)
+
+        base_15m = self.analyze_symbol(clean_sym, timeframe="15m", df=df_15m)
+        s_15m_raw, atr_15m, _ = self._score_timeframe_trend(df_15m)
+        s_15m = float(np.clip(0.65 * base_15m.s_tech + 0.35 * s_15m_raw, -1.0, 1.0))
+        lbl_15m = "🟢 BULL" if s_15m >= 0.12 else ("🔴 BEAR" if s_15m <= -0.12 else "🟡 FLAT")
+
+        mtf_trend_score = 0.20 * s_1d + 0.25 * s_1h + 0.35 * s_15m + 0.20 * s_5m
+        dom_sign = 1.0 if mtf_trend_score >= 0 else -1.0
+        tf_scores = [s_1d, s_1h, s_15m, s_5m]
+        aligned_count = sum(1 for sc in tf_scores if (sc * dom_sign) >= 0.08)
+
+        if aligned_count >= 3:
+            blended_s_tech = float(
+                dom_sign * max(abs(base_15m.s_tech), abs(mtf_trend_score), 0.85)
+            )
+        elif aligned_count == 2 and abs(base_15m.s_tech) >= 0.72 and (s_15m * s_5m) > 0:
+            blended_s_tech = float(base_15m.s_tech)
+        else:
+            blended_s_tech = float(mtf_trend_score * 0.45)
+
+        # 1m Action Open Position Trigger: ensure 1m candle is not violently opposing the entry
+        if blended_s_tech > 0.15 and s_1m < -0.35:
+            blended_s_tech *= 0.45
+            act_1m_tag = f"⏳ TUNGGU PULLBACK 1M SELESAI ({s_1m:+.2f})"
+        elif blended_s_tech < -0.15 and s_1m > 0.35:
+            blended_s_tech *= 0.45
+            act_1m_tag = f"⏳ TUNGGU LONJAKAN 1M REDA ({s_1m:+.2f})"
+        else:
+            act_1m_tag = f"⚡ TRIGGER 1M SIAP ({lbl_1m} {s_1m:+.2f})"
+
+        entry_px_1m = (
+            float(df_1m["close"].iloc[-1])
+            if (df_1m is not None and len(df_1m) > 0)
+            else base_15m.entry_price
+        )
+        blended_atr = max(
+            atr_1m * 2.4,
+            atr_5m * 1.35,
+            (atr_15m or base_15m.atr_14) * 0.85,
+            entry_px_1m * 0.002,
+        )
+        sr_levels = self.sr_detector.detect_levels(
+            df_15m if (df_15m is not None and len(df_15m) >= 20) else df_1h,
+            current_price=entry_px_1m,
+            atr_14=blended_atr,
+        )
+        decision = self.synthesize_scores(
+            s_tech=blended_s_tech,
+            s_vol=base_15m.s_vol,
+            s_sent=base_15m.s_sent,
+            symbol=clean_sym,
+            timeframe="1m",
+            entry_price=entry_px_1m,
+            atr_14=blended_atr,
+            indicators=base_15m.indicators,
+            headlines=base_15m.headlines,
+            newly_learned_headlines=base_15m.newly_learned_headlines,
+            total_corpus_size=base_15m.total_corpus_size,
+            validation_accuracy=base_15m.validation_accuracy,
+            validation_roc_auc=base_15m.validation_roc_auc,
+            memory_bars_count=base_15m.memory_bars_count,
+            five_year_percentile=base_15m.five_year_percentile,
+            macro_regime=base_15m.macro_regime,
+            sr_levels=sr_levels,
+            market_df=df_15m,
+        )
+        decision.mtf_aligned_count = aligned_count
+        decision.mtf_summary = (
+            f"1D:{lbl_1d}({s_1d:+.2f}) • 1H:{lbl_1h}({s_1h:+.2f}) • "
+            f"15M:{lbl_15m}({s_15m:+.2f}) • 5M:{lbl_5m}({s_5m:+.2f}) ➔ Action 1M: {act_1m_tag}"
+        )
+        return decision
 
     def learn_online_cycle(
         self,

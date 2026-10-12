@@ -87,13 +87,14 @@ class SmartAutoTraderEngine:
         self,
         user_id: int,
         symbol: str,
-        duration_code: str = "5H",
-        timeframe: str = "15m",
-        poll_interval_seconds: float = 30.0,
+        duration_code: str = "24/7",
+        timeframe: str = "1m",
+        poll_interval_seconds: float = 5.0,
         notify_callback: Optional[NotifyCallback] = None,
         custom_lot: Optional[float] = None,
+        live_card_callback: Optional[NotifyCallback] = None,
     ) -> tuple[AutoTradeSessionState, object]:
-        """Start a timed autonomous trading session (e.g. `/autotrade XAUUSD 5H 0.05`)."""
+        """Start a 24/7 autonomous trading session on 1m action + 1D/1H/15M/5M analysis."""
         return await self.session_manager.start_timed_session(
             user_id=user_id,
             symbol=symbol,
@@ -102,6 +103,7 @@ class SmartAutoTraderEngine:
             poll_interval_seconds=poll_interval_seconds,
             notify_callback=notify_callback,
             custom_lot=custom_lot,
+            live_card_callback=live_card_callback,
         )
 
     def get_user_sessions(self, user_id: int) -> list[AutoTradeSessionState]:
@@ -118,7 +120,7 @@ class SmartAutoTraderEngine:
         self,
         user_id: int,
         symbol: str,
-        timeframe: str = "15m",
+        timeframe: str = "1m",
         price_override: Optional[float] = None,
         high_override: Optional[float] = None,
         low_override: Optional[float] = None,
@@ -244,7 +246,7 @@ class SmartAutoTraderEngine:
         self,
         user_id: int,
         symbol: str = "BTCUSDT",
-        timeframe: str = "15m",
+        timeframe: str = "1m",
         decision_override: Optional[SignalDecision] = None,
         require_autotrade_toggle: bool = True,
         custom_lot: Optional[float] = None,
@@ -328,11 +330,10 @@ class SmartAutoTraderEngine:
             )
         )
 
-        # Run full multimodal AI analysis (Live News + 5Y/Live OHLCV + S/R + Volatility)
-        decision = decision_override or self.ensemble_agent.analyze_symbol(
-            symbol=clean_sym, timeframe=clean_tf
+        # Run Multi-Timeframe AI analysis (Trend: 1D, 1H, 15M, 5M -> Action Open Position: 1M)
+        decision = decision_override or self.ensemble_agent.analyze_multi_timeframe_autotrade(
+            symbol=clean_sym
         )
-
         # Gate 2: Breaking News & FinBERT Sentiment Alignment (Neutral band (-0.15, +0.15) is allowed)
         n_news = len(decision.headlines)
         if decision.action == "BUY":
@@ -379,24 +380,24 @@ class SmartAutoTraderEngine:
         if decision.is_sideways:
             tech_detail = (
                 f"DITOLAK (PASAR SIDEWAYS): {decision.market_structure_status} — "
-                f"Menunggu Breakout Valid (RVOL >= 1.15x & Konfluensi Kuat)"
+                f"Menunggu Breakout Valid ({decision.mtf_summary})"
             )
         elif conf_ok:
             tech_detail = (
                 f"Sinyal {decision.badge} Kuat (Keyakinan {decision.confidence * 100:.1f}%, "
-                f"Struktur: {decision.market_structure_status}, Konfluensi {decision.confluence_pillars}/6 Pilar, "
-                f"Expectancy +{decision.expectancy_r:.2f}R, Order Flow: {decision.cvd_status})"
+                f"MTF [{decision.mtf_aligned_count}/4 Selaras]: {decision.mtf_summary}, "
+                f"Struktur: {decision.market_structure_status}, Konfluensi {decision.confluence_pillars}/6 Pilar)"
             )
         else:
             tech_detail = (
                 f"DITOLAK: Keyakinan {decision.confidence * 100:.1f}% (Min {min_conf * 100:.0f}%), "
-                f"Struktur: {decision.market_structure_status}, Konfluensi {decision.confluence_pillars}/6 Pilar, "
-                f"Expectancy {decision.expectancy_r:+.2f}R"
+                f"MTF [{decision.mtf_aligned_count}/4]: {decision.mtf_summary}, "
+                f"Struktur: {decision.market_structure_status}, Konfluensi {decision.confluence_pillars}/6 Pilar"
             )
         gates.append(
             AutoTradeGateCheck(
                 gate_number=3,
-                name="Konfluensi 6 Pilar, Filter Sideways (ADX) & Expectancy",
+                name="Tren Multi-Timeframe (1D•1H•15M•5M) ➔ Eksekusi 1M & Anti-Sideways",
                 passed=conf_ok,
                 detail=tech_detail,
             )

@@ -629,19 +629,21 @@ async def test_exness_mt5_provider_all_asset_buy_and_sell_execution(tmp_path: Pa
     assert buy_report.order_result.symbol == "NVDAm"
     assert buy_report.order_result.executed_qty == 0.05
 
-    # 4. Timed session `/autotrade XAUUSD 5H 0.05` with Custom Lot + Position Holding / Trailing Stop / Auto-Close
-    sess_msg = _make_fake_message(333, "/autotrade XAUUSD 5H 0.05")
+    # 4. 24/7 Non-Stop Auto-Trade `/autotrade XAUUSD 0.05` (ignores any duration token like 30M/5H -> always 24/7 on 1m)
+    sess_msg = _make_fake_message(333, "/autotrade XAUUSD 0.05")
     await handle_autotrade(sess_msg, **ctx)
     sess_reply = sess_msg.answer.call_args[0][0]
-    assert "SESI AUTO-TRADE OTOMATIS (5 JAM) AKTIF" in sess_reply
+    assert "AUTO-TRADE 24/7 NON-STOP AKTIF" in sess_reply
+    assert "LIVE PROFIT MONITOR (REAL-TIME TANPA DELAY)" in sess_reply
+    assert "1D • 1H • 15M • 5M" in sess_reply
     assert "0.05 Lot (Custom)" in sess_reply
 
     active_sessions = auto_trader.get_user_sessions(333)
     assert len(active_sessions) == 1
     assert active_sessions[0].symbol == "XAUUSD"
-    assert active_sessions[0].duration_seconds == 5 * 3600
+    assert active_sessions[0].timeframe == "1m"
+    assert active_sessions[0].is_continuous_24_7 is True
     assert active_sessions[0].custom_lot == 0.05
-
     # Open position on XAUUSD is HELD on small move (4175 -> 4170), NOT closed prematurely
     hold_res = await auto_trader.monitor_and_manage_open_position(
         user_id=333,

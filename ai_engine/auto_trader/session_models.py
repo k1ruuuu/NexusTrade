@@ -50,20 +50,20 @@ def parse_custom_lot_token(token: str) -> Optional[float]:
     return None
 
 
-def parse_session_duration(raw: str, default_hours: float = 5.0) -> tuple[int, str]:
+def parse_session_duration(raw: str = "24/7", default_hours: float = 87600.0) -> tuple[int, str]:
     """
-    Parse a timed auto-trade duration string (e.g. '5H', '2jam', '30M', '1D')
-    into `(duration_seconds, human_label)`.
+    Parse a session mode/duration string into `(duration_seconds, human_label)`.
+    Defaults to 24/7 Non-Stop continuous mode (until manually disabled via `/autotrade off`).
     """
-    cleaned = raw.strip()
+    cleaned = (raw or "24/7").strip()
+    if cleaned.lower() in ("24/7", "24x7", "nonstop", "non-stop", "continuous", "unlimited", "auto", ""):
+        return 315_360_000, "24/7 Non-Stop"
     m = DURATION_RE.match(cleaned)
     if not m:
         if cleaned.isdigit():
             hrs = max(1, int(cleaned))
             return hrs * 3600, f"{hrs} Jam"
-        secs = int(default_hours * 3600)
-        return secs, f"{int(default_hours)} Jam"
-
+        return 315_360_000, "24/7 Non-Stop"
     val = float(m.group(1))
     unit = m.group(2).lower()
     if unit in ("s", "sec", "detik"):
@@ -115,10 +115,22 @@ class AutoTradeSessionState:
     cycles_completed: int = 0
     positions_opened: int = 0
     positions_closed: int = 0
+    winning_trades: int = 0
+    losing_trades: int = 0
     realized_pnl_usdt: float = 0.0
-    last_check_summary: str = "Memulai sesi pemantauan..."
+    live_current_price: float = 0.0
+    live_floating_pnl_usdt: float = 0.0
+    live_floating_pnl_pct: float = 0.0
+    live_open_position: Optional[UserPositionRecord] = None
+    mtf_status_line: str = "1D • 1H • 15M • 5M ➔ Action 1M: SIAP"
+    last_updated_iso: str = ""
+    last_check_summary: str = "Memulai pemantauan 24/7 Non-Stop..."
     custom_lot: Optional[float] = None
     task: Optional[asyncio.Task[Any]] = field(default=None, repr=False)
+
+    @property
+    def is_continuous_24_7(self) -> bool:
+        return self.duration_seconds >= 30_000_000 or "24/7" in self.duration_label
 
     @property
     def remaining_seconds(self) -> int:
@@ -126,8 +138,16 @@ class AutoTradeSessionState:
 
     @property
     def remaining_human(self) -> str:
+        if self.status != "RUNNING":
+            return "Dihentikan (Nonaktif)"
+        if self.is_continuous_24_7:
+            elapsed = max(0, int(time.time() - self.started_at_ts))
+            hrs = elapsed // 3600
+            mins = (elapsed % 3600) // 60
+            secs = elapsed % 60
+            return f"24/7 Non-Stop (Aktif {hrs}j {mins}m {secs}d)"
         rem = self.remaining_seconds
-        if rem <= 0 or self.status != "RUNNING":
+        if rem <= 0:
             return "Selesai (0 menit)"
         hrs = rem // 3600
         mins = (rem % 3600) // 60
@@ -137,6 +157,5 @@ class AutoTradeSessionState:
         if mins > 0:
             return f"{mins} menit {secs} detik"
         return f"{secs} detik"
-
 
 NotifyCallback = Callable[[int, str], Coroutine[Any, Any, None]]

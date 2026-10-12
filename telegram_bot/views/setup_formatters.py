@@ -107,7 +107,7 @@ def format_setup_success_card(
         f"• <b>Total Equity Akun:</b> <code>${verification.total_usdt:,.2f} USD</code>\n"
         f"• <b>Batas Risiko / Trade:</b> <code>{creds.risk_per_trade_pct * 100:.2f}%</code>\n\n"
         f"<b>📌 Langkah Selanjutnya:</b>\n"
-        f"• Ketik <code>/autotrade XAUUSD 5H 0.05</code> atau <code>/autotrade BTCUSD 2H 0.01</code> untuk memulai sesi Auto-Trade.\n"
+        f"• Ketik <code>/autotrade XAUUSD 0.05</code> atau <code>/autotrade BTCUSD 0.01</code> untuk menyalakan Auto-Trade 24/7 Non-Stop.\n"
         f"• Ketik <code>/myaccount</code> untuk memantau saldo &amp; posisi Exness Go Anda."
     )
 
@@ -159,7 +159,7 @@ def format_myaccount_card(
         f"• <b>Risiko / Transaksi:</b> <code>{creds.risk_per_trade_pct * 100:.2f}%</code>\n\n"
         f"<b>📂 Posisi Auto-Trade Aktif ({len(positions)}):</b>\n"
         f"{pos_block}\n\n"
-        f"<i>Perintah: <code>/autotrade XAUUSD 5H</code> | <code>/autotrade BTCUSDT 2H</code> | <code>/autotrade off</code> | <code>/unlink</code></i>"
+        f"<i>Perintah: <code>/autotrade XAUUSD 0.05</code> | <code>/autotrade BTCUSD</code> | <code>/autotrade off</code> | <code>/unlink</code></i>"
     )
 
 
@@ -167,62 +167,84 @@ def format_timed_session_started_card(
     session: AutoTradeSessionState,
     first_cycle_result: object,
 ) -> str:
-    """Format confirmation & initial cycle report when user starts `/autotrade <SYMBOL> <DURATION>`."""
+    """
+    Format the Real-Time 24/7 Auto-Trade Live Dashboard Card showing:
+    - Multi-Timeframe (1D, 1H, 15M, 5M) Trend Analysis + 1m Execution Action
+    - Real-Time Floating Profit, Realized Profit, Total Net Profit, & Live Exness Price (updated in-place without delay)
+    """
     sym = html.escape(session.symbol)
-    tf = html.escape(session.timeframe)
     dur = html.escape(session.duration_label)
 
-    if isinstance(first_cycle_result, AutoTradeExecutionReport):
-        if first_cycle_result.setup_required:
-            return format_autotrade_report_card(first_cycle_result)
-        if first_cycle_result.executed and first_cycle_result.order_result and first_cycle_result.position_record:
-            ord_r = first_cycle_result.order_result
-            pos_r = first_cycle_result.position_record
-            cycle_block = (
-                f"🚀 <b>Siklus #1: POSISI {ord_r.side} DIBUKA &amp; DITAHAN UNTUK PROFIT OPTIMAL!</b>\n"
-                f"• <b>Order ID:</b> <code>{html.escape(ord_r.order_id)}</code> ({html.escape(ord_r.symbol)})\n"
-                f"• <b>Volume &amp; Entry:</b> <code>{ord_r.executed_qty}</code> @ <code>{format_price(ord_r.avg_price)}</code>\n"
-                f"• <b>Stop Loss Awal (2xATR):</b> <code>{format_price(pos_r.stop_loss)}</code>\n"
-                f"• <b>Target Profit (TP1 | TP2):</b> <code>{format_price(pos_r.take_profit_1)}</code> | <code>{format_price(pos_r.take_profit_2)}</code>\n"
-                f"• <b>Strategi Hold:</b> Posisi <b>TIDAK</b> akan ditutup cepat dengan profit kecil. AI menahan posisi &amp; menggeser <i>Trailing Stop</i> sampai mencapai <b>TP1/TP2</b>!"
-            )
-        else:
-            reason = html.escape(
-                first_cycle_result.rejection_summary or "Menunggu konfirmasi 6 Gerbang Akurasi..."
-            )
-            cycle_block = (
-                f"🔍 <b>Siklus #1: MEMANTAU PASAR (BELUM BUKA POSISI)</b>\n"
-                f"• <b>Status 6 Gerbang:</b> <i>{reason}</i>\n"
-                f"• <b>Tindakan AI:</b> Bot terus memantau grafik &amp; berita secara otomatis selama <b>{dur}</b> dan akan langsung membuka posisi begitu ke-6 Gerbang terpenuhi."
-            )
-    elif isinstance(first_cycle_result, PositionMonitorResult) and first_cycle_result.position is not None:
-        p = first_cycle_result.position
+    if isinstance(first_cycle_result, AutoTradeExecutionReport) and first_cycle_result.setup_required:
+        return format_autotrade_report_card(first_cycle_result)
+
+    pos = session.live_open_position
+    if pos is None and isinstance(first_cycle_result, AutoTradeExecutionReport):
+        pos = first_cycle_result.position_record
+    elif pos is None and isinstance(first_cycle_result, PositionMonitorResult):
+        pos = first_cycle_result.position
+
+    floating_pnl = session.live_floating_pnl_usdt
+    floating_pct = session.live_floating_pnl_pct
+    if isinstance(first_cycle_result, PositionMonitorResult) and first_cycle_result.action_taken in ("HOLDING", "TRAILING_UPDATED"):
+        floating_pnl = first_cycle_result.unrealized_pnl_usdt
+        floating_pct = first_cycle_result.unrealized_pnl_pct
+
+    realized_pnl = session.realized_pnl_usdt
+    total_net_pnl = round(realized_pnl + floating_pnl, 2)
+    float_icon = "🟢" if floating_pnl > 0 else ("🔴" if floating_pnl < 0 else "⚪")
+    net_icon = "🟢" if total_net_pnl > 0 else ("🔴" if total_net_pnl < 0 else "⚪")
+
+    live_px = session.live_current_price
+    if live_px <= 0 and pos is not None:
+        live_px = pos.entry_price
+    elif live_px <= 0 and isinstance(first_cycle_result, AutoTradeExecutionReport) and first_cycle_result.decision is not None:
+        live_px = first_cycle_result.decision.entry_price
+
+    if pos is not None and pos.status == "OPEN":
         cycle_block = (
-            f"🛡️ <b>Siklus #1: MENGAWAL POSISI {p.side} YANG SEDANG BERJALAN</b>\n"
-            f"• <b>Entry:</b> <code>{format_price(p.entry_price)}</code> | <b>Harga Saat Ini:</b> <code>{format_price(first_cycle_result.current_price)}</code>\n"
-            f"• <b>Floating PnL:</b> <code>${first_cycle_result.unrealized_pnl_usdt:+.2f} ({first_cycle_result.unrealized_pnl_pct:+.2f}%)</code>\n"
-            f"• <b>Stop Loss / Trailing:</b> <code>{format_price(p.stop_loss)}</code> | <b>TP1:</b> <code>{format_price(p.take_profit_1)}</code>"
+            f"🚀 <b>STATUS POSISI AKTIF (DIKAWAL REAL-TIME 1M):</b>\n"
+            f"• <b>Posisi &amp; Ticket:</b> <b>{pos.side} {html.escape(pos.symbol)}</b> (<code>{pos.quantity} Lot</code> | Ticket <code>#{html.escape(pos.order_id)}</code>)\n"
+            f"• <b>Harga Entry vs Live (1m):</b> <code>{format_price(pos.entry_price)}</code> ➔ <b><code>{format_price(live_px)}</code></b>\n"
+            f"• <b>Stop Loss / Trailing SL:</b> <code>{format_price(pos.stop_loss)}</code>\n"
+            f"• <b>Target Profit (TP1 | TP2):</b> <code>{format_price(pos.take_profit_1)}</code> | <code>{format_price(pos.take_profit_2)}</code>"
+        )
+    elif isinstance(first_cycle_result, AutoTradeExecutionReport):
+        reason = html.escape(
+            first_cycle_result.rejection_summary or session.last_check_summary
+        )
+        cycle_block = (
+            f"🔍 <b>STATUS PEMANTAUAN 24/7 (MENUNGGU ENTRY 1M TERBAIK):</b>\n"
+            f"• <b>Filter 6 Gerbang:</b> <i>{reason}</i>\n"
+            f"• <b>Tindakan AI:</b> Memindai tren <b>1D, 1H, 15M, 5M</b> non-stop &amp; langsung membuka posisi di <b>1M</b> begitu ke-6 Gerbang selaras."
         )
     else:
-        cycle_block = "🔍 <b>Siklus #1: Memantau pergerakan harga &amp; berita secara otomatis...</b>"
+        cycle_block = (
+            f"🔍 <b>STATUS PEMANTAUAN 24/7:</b> <i>{html.escape(session.last_check_summary)}</i>"
+        )
 
     lot_lbl = (
         f"<code>{session.custom_lot:.2f} Lot (Custom)</code>"
         if session.custom_lot is not None and session.custom_lot > 0
         else "<code>Otomatis (Sesuai Risiko Modal)</code>"
     )
+    upd_str = html.escape(session.last_updated_iso or session.started_at_iso)
     return (
-        f"⏱️ <b>SESI AUTO-TRADE OTOMATIS ({dur.upper()}) AKTIF — {sym} ({tf})</b>\n"
+        f"🤖 <b>AUTO-TRADE 24/7 NON-STOP AKTIF — {sym} (ACTION 1M)</b>\n"
+        f"⏱️ <i>SESI AUTO-TRADE OTOMATIS ({dur.upper()}) AKTIF</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• <b>Simbol &amp; Timeframe:</b> <code>{sym} ({tf})</code>\n"
-        f"• <b>Durasi Sesi Trading:</b> <b>{dur}</b>\n"
+        f"• <b>Mode Sistem:</b> 🟢 <b>24/7 Non-Stop</b> (<code>{html.escape(session.remaining_human)}</code>)\n"
+        f"• <b>Analisa Tren:</b> <code>1D • 1H • 15M • 5M</code> ➔ <b>Action Open/Close:</b> <code>1M</code>\n"
         f"• <b>Ukuran Lot Order:</b> {lot_lbl}\n"
-        f"• <b>Waktu Mulai:</b> <code>{html.escape(session.started_at_iso)}</code>\n"
-        f"• <b>Berakhir Pada:</b> <code>{html.escape(session.ends_at_iso)}</code> (Sisa: <code>{html.escape(session.remaining_human)}</code>)\n\n"
+        f"• <b>Peta Tren MTF:</b> <i>{html.escape(session.mtf_status_line)}</i>\n\n"
+        f"<b>💰 LIVE PROFIT MONITOR (REAL-TIME TANPA DELAY):</b>\n"
+        f"• <b>Floating Profit (Berjalan):</b> {float_icon} <b><code>${floating_pnl:+.2f} USD ({floating_pct:+.2f}%)</code></b>\n"
+        f"• <b>Realized Profit (Terealisasi):</b> <code>${realized_pnl:+.2f} USD</code> (🟢 <code>{session.winning_trades}W</code> / 🔴 <code>{session.losing_trades}L</code>)\n"
+        f"• <b>Total Akumulasi Profit:</b> {net_icon} <b><code>${total_net_pnl:+.2f} USD</code></b>\n"
+        f"• <b>Harga Live (1m) &amp; Siklus:</b> <code>{format_price(live_px)}</code> | Siklus <code>#{session.cycles_completed}</code> (<code>{upd_str}</code>)\n\n"
         f"{cycle_block}\n\n"
-        f"<i>💡 Ketik <code>/autotrade status</code> untuk cek sisa waktu &amp; posisi, atau <code>/autotrade off</code> untuk menghentikan sesi.</i>"
+        f"<i>💡 Data profit di atas diperbarui otomatis secara real-time. Ketik <code>/autotrade off</code> untuk menonaktifkan Auto-Trade 24/7.</i>"
     )
-
 
 def format_autotrade_report_card(report: AutoTradeExecutionReport) -> str:
     """Format the 6-Gate Pre-Trade Checklist & execution result card."""
