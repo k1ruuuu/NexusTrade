@@ -792,3 +792,54 @@ async def test_exness_mt5_provider_all_asset_buy_and_sell_execution(tmp_path: Pa
     open_after_buy_rev = vault.get_open_positions(333, "XAUUSD")
     assert len(open_after_buy_rev) == 1
     assert open_after_buy_rev[0].side == "BUY"
+
+    # 8. Regression tests for N-01, N-02, N-03:
+    # N-01: When close_mt5_ticket returns False (broker close failed), position stays OPEN in SQLite and does NOT open duplicate reversal
+    orig_close = auto_trader.mt5_client.close_mt5_ticket
+    auto_trader.mt5_client.close_mt5_ticket = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    failed_close_res = await auto_trader.monitor_and_manage_open_position(
+        user_id=333,
+        symbol="XAUUSD",
+        price_override=4195.0,
+        high_override=4195.5,
+        low_override=4194.5,
+        headlines_override=[
+            "Emergency crash panic selloff as central bank liquidates gold reserves and hikes rates sharply",
+        ],
+    )
+    assert failed_close_res.action_taken == "HOLDING"
+    assert failed_close_res.re_entry_position is None
+    assert len(vault.get_open_positions(333, "XAUUSD")) == 1
+    auto_trader.mt5_client.close_mt5_ticket = orig_close  # type: ignore[method-assign]
+
+    # N-02: When autotrade_enabled is False, _open_news_reversal_position refuses to open a reversal order
+    vault.set_autotrade_enabled(333, False)
+    no_rev_res = await auto_trader.monitor_and_manage_open_position(
+        user_id=333,
+        symbol="XAUUSD",
+        price_override=4195.0,
+        high_override=4195.5,
+        low_override=4194.5,
+        headlines_override=[
+            "Emergency crash panic selloff as central bank liquidates gold reserves and hikes rates sharply",
+        ],
+    )
+    assert no_rev_res.action_taken in ("CLOSED_SL", "CLOSED_TP")
+    assert no_rev_res.re_entry_position is None
+    assert len(vault.get_open_positions(333, "XAUUSD")) == 0
+
+    # N-03: Wilder ADX(14) on a steady trending series is >= 25.0 (no row-0 zero drag)
+    import pandas as pd
+    from ai_engine.models.confluence_analyzer import MultiFactorConfluenceAnalyzer
+
+    trend_df = pd.DataFrame(
+        {
+            "open": [100.0 + i * 2.0 for i in range(25)],
+            "high": [102.5 + i * 2.0 for i in range(25)],
+            "low": [99.5 + i * 2.0 for i in range(25)],
+            "close": [102.0 + i * 2.0 for i in range(25)],
+            "volume": [1000.0 for _ in range(25)],
+        }
+    )
+    adx_series = MultiFactorConfluenceAnalyzer.compute_confluence_series(trend_df)["adx_14"]
+    assert float(adx_series.iloc[-1]) >= 25.0

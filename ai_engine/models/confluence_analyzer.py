@@ -138,11 +138,12 @@ class MultiFactorConfluenceAnalyzer:
             / atr_14_w
         ).fillna(0.0)
         di_sum = (plus_di + minus_di).replace(0.0, np.nan)
-        dx = (100.0 * (plus_di - minus_di).abs() / di_sum).fillna(0.0)
+        dx = 100.0 * (plus_di - minus_di).abs() / di_sum
+        if len(dx) > 1:
+            dx.iloc[0] = np.nan
         out["adx_14"] = (
             dx.ewm(alpha=1.0 / 14.0, min_periods=1, adjust=False).mean().fillna(22.0).clip(0.0, 100.0)
         )
-
         return out
 
     @classmethod

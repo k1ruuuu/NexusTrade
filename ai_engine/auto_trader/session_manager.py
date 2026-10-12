@@ -178,26 +178,27 @@ class AutoTradeSessionManager:
                     f"Proteksi Darurat Berita Buruk (Sentimen {news_s_sent:+.2f}) — Posisi BUY Ditutup Dini",
                     broker_pnl_override=unr_pnl,
                 )
-                rev_pos = await self._open_news_reversal_position(
-                    closed_pos=pos,
-                    new_side="SELL",
-                    curr_price=curr_price,
-                    est_atr=est_atr,
-                    news_s_sent=news_s_sent,
-                )
-                if rev_pos is not None:
-                    close_res.re_entry_position = rev_pos
-                    close_res.exit_reason = (
-                        f"Proteksi Darurat Berita Buruk (Sentimen {news_s_sent:+.2f}) — "
-                        f"Posisi BUY Ditutup Dini & Otomatis Balik Arah SELL @ ${rev_pos.entry_price:,.2f} "
-                        f"(SL: ${rev_pos.stop_loss:,.2f} | TP1: ${rev_pos.take_profit_1:,.2f})"
+                if close_res.action_taken in ("CLOSED_TP", "CLOSED_SL"):
+                    rev_pos = await self._open_news_reversal_position(
+                        closed_pos=pos,
+                        new_side="SELL",
+                        curr_price=curr_price,
+                        est_atr=est_atr,
+                        news_s_sent=news_s_sent,
                     )
+                    if rev_pos is not None:
+                        close_res.re_entry_position = rev_pos
+                        close_res.exit_reason = (
+                            f"Proteksi Darurat Berita Buruk (Sentimen {news_s_sent:+.2f}) — "
+                            f"Posisi BUY Ditutup Dini & Otomatis Balik Arah SELL @ ${rev_pos.entry_price:,.2f} "
+                            f"(SL: ${rev_pos.stop_loss:,.2f} | TP1: ${rev_pos.take_profit_1:,.2f})"
+                        )
                 return close_res
 
             # 3. Hold position & ratchet Trailing Stop once move >= +0.60 * ATR in favor (or on moderate bad news)
             candidate_sl = pos.stop_loss
             if news_s_sent is not None and -0.30 < news_s_sent <= -0.18:
-                if curr_price > pos.entry_price:
+                if curr_price >= pos.entry_price + 0.30 * est_atr:
                     candidate_sl = max(candidate_sl, round(pos.entry_price, 4))
                 else:
                     candidate_sl = max(candidate_sl, round(curr_price - 0.40 * est_atr, 4))
@@ -265,25 +266,26 @@ class AutoTradeSessionManager:
                 f"Proteksi Darurat Berita Positif Kuat (Sentimen {news_s_sent:+.2f}) — Posisi SELL Ditutup Dini",
                 broker_pnl_override=unr_pnl,
             )
-            rev_pos = await self._open_news_reversal_position(
-                closed_pos=pos,
-                new_side="BUY",
-                curr_price=curr_price,
-                est_atr=est_atr,
-                news_s_sent=news_s_sent,
-            )
-            if rev_pos is not None:
-                close_res.re_entry_position = rev_pos
-                close_res.exit_reason = (
-                    f"Proteksi Darurat Berita Positif Kuat (Sentimen {news_s_sent:+.2f}) — "
-                    f"Posisi SELL Ditutup Dini & Otomatis Balik Arah BUY @ ${rev_pos.entry_price:,.2f} "
-                    f"(SL: ${rev_pos.stop_loss:,.2f} | TP1: ${rev_pos.take_profit_1:,.2f})"
+            if close_res.action_taken in ("CLOSED_TP", "CLOSED_SL"):
+                rev_pos = await self._open_news_reversal_position(
+                    closed_pos=pos,
+                    new_side="BUY",
+                    curr_price=curr_price,
+                    est_atr=est_atr,
+                    news_s_sent=news_s_sent,
                 )
+                if rev_pos is not None:
+                    close_res.re_entry_position = rev_pos
+                    close_res.exit_reason = (
+                        f"Proteksi Darurat Berita Positif Kuat (Sentimen {news_s_sent:+.2f}) — "
+                        f"Posisi SELL Ditutup Dini & Otomatis Balik Arah BUY @ ${rev_pos.entry_price:,.2f} "
+                        f"(SL: ${rev_pos.stop_loss:,.2f} | TP1: ${rev_pos.take_profit_1:,.2f})"
+                    )
             return close_res
 
         candidate_sl = pos.stop_loss
         if news_s_sent is not None and 0.18 <= news_s_sent < 0.30:
-            if curr_price < pos.entry_price:
+            if curr_price <= pos.entry_price - 0.30 * est_atr:
                 candidate_sl = min(candidate_sl, round(pos.entry_price, 4))
             else:
                 candidate_sl = min(candidate_sl, round(curr_price + 0.40 * est_atr, 4))
@@ -374,9 +376,10 @@ class AutoTradeSessionManager:
         pnl_pct = round((net_pnl / max(pos.notional_usdt, 1e-6)) * 100.0, 2)
 
         creds = self.engine.vault.resolve_credentials(pos.user_id)
+        close_ok = True
         if creds is not None:
             try:
-                await self.engine.mt5_client.close_mt5_ticket(
+                close_ok = await self.engine.mt5_client.close_mt5_ticket(
                     account_id_or_login=creds.api_key,
                     token_or_password=creds.api_secret,
                     ticket=pos.order_id,
@@ -385,6 +388,17 @@ class AutoTradeSessionManager:
                 )
             except Exception as exc:
                 logger.warning("Closing order on broker encountered error", error=str(exc))
+                close_ok = False
+
+        if not close_ok:
+            return PositionMonitorResult(
+                action_taken="HOLDING",
+                position=pos,
+                current_price=exit_price,
+                unrealized_pnl_usdt=net_pnl,
+                unrealized_pnl_pct=pnl_pct,
+                exit_reason="Gagal menutup posisi di server Exness MT5 (akan dicoba ulang)",
+            )
 
         closed_rec = self.engine.vault.close_position(pos.position_id, exit_price, net_pnl)
         return PositionMonitorResult(
@@ -396,6 +410,7 @@ class AutoTradeSessionManager:
             exit_reason=exit_reason,
             realized_pnl_usdt=net_pnl,
         )
+
     async def _open_news_reversal_position(
         self,
         closed_pos: UserPositionRecord,
@@ -410,12 +425,24 @@ class AutoTradeSessionManager:
         """
         try:
             creds = self.engine.vault.resolve_credentials(closed_pos.user_id)
-            if creds is None:
+            if (
+                creds is None
+                or not creds.autotrade_enabled
+                or creds.verified_usdt_balance < 10.0
+            ):
                 return None
+            eff_atr = max(est_atr, curr_price * 0.002)
+            sr_levels = self.engine.ensemble_agent.sr_detector.detect_levels(
+                None, current_price=curr_price, atr_14=eff_atr
+            )
             targets = self.engine.ensemble_agent.stop_loss_manager.calculate_realistic_targets(
                 entry_price=curr_price,
-                atr_14=max(est_atr, curr_price * 0.002),
+                atr_14=eff_atr,
                 action=new_side,
+                support_1=sr_levels.support_1,
+                support_2=sr_levels.support_2,
+                resistance_1=sr_levels.resistance_1,
+                resistance_2=sr_levels.resistance_2,
             )
             order_res = await self.engine.mt5_client.place_market_order(
                 account_id_or_login=creds.api_key,
@@ -604,7 +631,10 @@ class AutoTradeSessionManager:
         at the current market price when the session timer expires before TP is reached.
         """
         creds = self.engine.vault.resolve_credentials(sess.user_id)
+        open_positions = self.engine.vault.get_open_positions(sess.user_id, symbol=sess.symbol)
+        tracked_tickets = {p.order_id for p in open_positions}
         live_px_map: dict[str, float] = {}
+        live_pnl_map: dict[str, float] = {}
 
         if (
             creds is not None
@@ -629,7 +659,10 @@ class AutoTradeSessionManager:
                     close_px = float(ord_item.get("closePrice") or ord_item.get("openPrice") or 0.0)
                     if close_px > 0:
                         live_px_map[ticket_str] = close_px
-                    if ord_sym in target_syms and ticket_str:
+                    if ord_item.get("profit") is not None:
+                        live_pnl_map[ticket_str] = float(ord_item.get("profit") or 0.0)
+                    # Only close untracked orphan tickets directly here; tracked positions are closed once below
+                    if ord_sym in target_syms and ticket_str and ticket_str not in tracked_tickets:
                         await self.engine.mt5_client.close_mt5_ticket(
                             account_id_or_login=creds.api_key,
                             token_or_password=creds.api_secret,
@@ -638,7 +671,6 @@ class AutoTradeSessionManager:
                             server_name=creds.server_name,
                         )
 
-        open_positions = self.engine.vault.get_open_positions(sess.user_id, symbol=sess.symbol)
         results: list[PositionMonitorResult] = []
         if not open_positions:
             return results
@@ -664,7 +696,10 @@ class AutoTradeSessionManager:
                 exit_price=curr_price,
                 action_type="CLOSED_TP" if is_profit else "CLOSED_SL",
                 exit_reason=reason,
+                broker_pnl_override=live_pnl_map.get(pos.order_id),
             )
+            if mon.action_taken not in ("CLOSED_TP", "CLOSED_SL"):
+                continue
             sess.positions_closed += 1
             sess.realized_pnl_usdt = round(sess.realized_pnl_usdt + mon.realized_pnl_usdt, 2)
             sess.last_check_summary = (
