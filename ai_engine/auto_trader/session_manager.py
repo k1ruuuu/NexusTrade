@@ -6,6 +6,7 @@ import time
 from typing import Any, Literal, Optional
 
 from ai_engine.auto_trader.mt5_exness_client import (
+    anchor_targets_to_fill_price,
     estimate_mt5_pnl_usdt,
     resolve_mt5_symbol,
 )
@@ -165,26 +166,41 @@ class AutoTradeSessionManager:
                     pos, exit_px, "CLOSED_TP" if is_profit_stop else "CLOSED_SL", reason
                 )
 
-            # 2b. In-Position Breaking News Protection for BUY position
+            # 2b. In-Position Breaking News Protection for BUY position:
+            # If strong negative news breaks (s_sent <= -0.30), immediately close BUY and reverse into SELL
             news_s_sent = self._evaluate_live_position_news_sentiment(clean_sym, headlines_override)
-            if news_s_sent is not None and news_s_sent <= -0.35:
+            if news_s_sent is not None and news_s_sent <= -0.30:
                 is_prof = curr_price >= pos.entry_price
-                return await self._close_position_on_broker(
+                close_res = await self._close_position_on_broker(
                     pos,
                     curr_price,
                     "CLOSED_TP" if is_prof else "CLOSED_SL",
-                    f"Proteksi Darurat Berita Buruk (Sentimen Anjlok {news_s_sent:+.2f}) — Posisi BUY Ditutup Dini",
+                    f"Proteksi Darurat Berita Buruk (Sentimen {news_s_sent:+.2f}) — Posisi BUY Ditutup Dini",
                     broker_pnl_override=unr_pnl,
                 )
+                rev_pos = await self._open_news_reversal_position(
+                    closed_pos=pos,
+                    new_side="SELL",
+                    curr_price=curr_price,
+                    est_atr=est_atr,
+                    news_s_sent=news_s_sent,
+                )
+                if rev_pos is not None:
+                    close_res.re_entry_position = rev_pos
+                    close_res.exit_reason = (
+                        f"Proteksi Darurat Berita Buruk (Sentimen {news_s_sent:+.2f}) — "
+                        f"Posisi BUY Ditutup Dini & Otomatis Balik Arah SELL @ ${rev_pos.entry_price:,.2f} "
+                        f"(SL: ${rev_pos.stop_loss:,.2f} | TP1: ${rev_pos.take_profit_1:,.2f})"
+                    )
+                return close_res
 
             # 3. Hold position & ratchet Trailing Stop once move >= +0.60 * ATR in favor (or on moderate bad news)
             candidate_sl = pos.stop_loss
-            if news_s_sent is not None and -0.35 < news_s_sent <= -0.18:
+            if news_s_sent is not None and -0.30 < news_s_sent <= -0.18:
                 if curr_price > pos.entry_price:
                     candidate_sl = max(candidate_sl, round(pos.entry_price, 4))
                 else:
                     candidate_sl = max(candidate_sl, round(curr_price - 0.40 * est_atr, 4))
-
             if bar_high >= pos.entry_price + 0.60 * est_atr:
                 be_plus = round(pos.entry_price + 0.20 * est_atr, 4)
                 candidate_sl = max(candidate_sl, be_plus)
@@ -237,25 +253,40 @@ class AutoTradeSessionManager:
                 pos, exit_px, "CLOSED_TP" if is_profit_stop else "CLOSED_SL", reason
             )
 
-        # 2b. In-Position Breaking News Protection for SELL position
+        # 2b. In-Position Breaking News Protection for SELL position:
+        # If strong positive news breaks (s_sent >= +0.30), immediately close SELL and reverse into BUY
         news_s_sent = self._evaluate_live_position_news_sentiment(clean_sym, headlines_override)
-        if news_s_sent is not None and news_s_sent >= 0.35:
+        if news_s_sent is not None and news_s_sent >= 0.30:
             is_prof = curr_price <= pos.entry_price
-            return await self._close_position_on_broker(
+            close_res = await self._close_position_on_broker(
                 pos,
                 curr_price,
                 "CLOSED_TP" if is_prof else "CLOSED_SL",
-                f"Proteksi Darurat Berita Positif Kuat (Sentimen Melonjak {news_s_sent:+.2f}) — Posisi SELL Ditutup Dini",
+                f"Proteksi Darurat Berita Positif Kuat (Sentimen {news_s_sent:+.2f}) — Posisi SELL Ditutup Dini",
                 broker_pnl_override=unr_pnl,
             )
+            rev_pos = await self._open_news_reversal_position(
+                closed_pos=pos,
+                new_side="BUY",
+                curr_price=curr_price,
+                est_atr=est_atr,
+                news_s_sent=news_s_sent,
+            )
+            if rev_pos is not None:
+                close_res.re_entry_position = rev_pos
+                close_res.exit_reason = (
+                    f"Proteksi Darurat Berita Positif Kuat (Sentimen {news_s_sent:+.2f}) — "
+                    f"Posisi SELL Ditutup Dini & Otomatis Balik Arah BUY @ ${rev_pos.entry_price:,.2f} "
+                    f"(SL: ${rev_pos.stop_loss:,.2f} | TP1: ${rev_pos.take_profit_1:,.2f})"
+                )
+            return close_res
 
         candidate_sl = pos.stop_loss
-        if news_s_sent is not None and 0.18 <= news_s_sent < 0.35:
+        if news_s_sent is not None and 0.18 <= news_s_sent < 0.30:
             if curr_price < pos.entry_price:
                 candidate_sl = min(candidate_sl, round(pos.entry_price, 4))
             else:
                 candidate_sl = min(candidate_sl, round(curr_price + 0.40 * est_atr, 4))
-
         if bar_low <= pos.entry_price - 0.60 * est_atr:
             be_plus = round(pos.entry_price - 0.20 * est_atr, 4)
             candidate_sl = min(candidate_sl, be_plus)
@@ -365,6 +396,68 @@ class AutoTradeSessionManager:
             exit_reason=exit_reason,
             realized_pnl_usdt=net_pnl,
         )
+    async def _open_news_reversal_position(
+        self,
+        closed_pos: UserPositionRecord,
+        new_side: Literal["BUY", "SELL"],
+        curr_price: float,
+        est_atr: float,
+        news_s_sent: float,
+    ) -> Optional[UserPositionRecord]:
+        """
+        Immediately open a counter-position (`new_side`) aligned with strong breaking news
+        (`s_sent <= -0.30` -> `SELL`, `s_sent >= +0.30` -> `BUY`) right after an Emergency News Exit.
+        """
+        try:
+            creds = self.engine.vault.resolve_credentials(closed_pos.user_id)
+            if creds is None:
+                return None
+            targets = self.engine.ensemble_agent.stop_loss_manager.calculate_realistic_targets(
+                entry_price=curr_price,
+                atr_14=max(est_atr, curr_price * 0.002),
+                action=new_side,
+            )
+            order_res = await self.engine.mt5_client.place_market_order(
+                account_id_or_login=creds.api_key,
+                token_or_password=creds.api_secret,
+                symbol=closed_pos.symbol,
+                side=new_side,
+                quantity=closed_pos.quantity,
+                reference_price=curr_price,
+                stop_loss=targets.stop_loss,
+                take_profit=targets.take_profit_1,
+                server_name=creds.server_name,
+                testnet=creds.testnet,
+                custom_lot=closed_pos.quantity,
+            )
+            if not order_res.executed:
+                return None
+            anchored_sl, anchored_tp1, anchored_tp2 = anchor_targets_to_fill_price(
+                side=new_side,
+                fill_price=order_res.avg_price,
+                ref_entry=curr_price,
+                ref_sl=targets.stop_loss,
+                ref_tp1=targets.take_profit_1,
+                ref_tp2=targets.take_profit_2,
+            )
+            conf = round(min(0.95, max(0.75, abs(news_s_sent))), 4)
+            return self.engine.vault.record_open_position(
+                user_id=closed_pos.user_id,
+                symbol=closed_pos.symbol,
+                side=new_side,
+                entry_price=order_res.avg_price,
+                quantity=order_res.executed_qty,
+                notional_usdt=order_res.notional_usdt,
+                stop_loss=anchored_sl,
+                take_profit_1=anchored_tp1,
+                take_profit_2=anchored_tp2,
+                confidence=conf,
+                order_id=order_res.order_id,
+                testnet=creds.testnet,
+            )
+        except Exception as exc:
+            logger.warning("Failed to open news reversal position", symbol=closed_pos.symbol, error=str(exc))
+            return None
 
     async def start_timed_session(
         self,
@@ -435,19 +528,29 @@ class AutoTradeSessionManager:
             )
             if mon.action_taken in ("CLOSED_TP", "CLOSED_SL") and mon.position is not None:
                 sess.positions_closed += 1
+                if mon.re_entry_position is not None:
+                    sess.positions_opened += 1
                 sess.realized_pnl_usdt = round(sess.realized_pnl_usdt + mon.realized_pnl_usdt, 2)
                 sess.last_check_summary = (
                     f"Posisi {mon.position.side} ditutup @ {mon.current_price:,.2f} "
                     f"({mon.exit_reason} | PnL: ${mon.realized_pnl_usdt:+.2f})"
                 )
                 if notify_callback is not None:
-                    icon = "🎯" if mon.action_taken == "CLOSED_TP" else "🛡️"
+                    icon = "🔄" if mon.re_entry_position is not None else ("🎯" if mon.action_taken == "CLOSED_TP" else "🛡️")
+                    re_line = (
+                        f"• <b>Posisi Baru (Sesuai Berita):</b> <b>{mon.re_entry_position.side} {mon.re_entry_position.symbol}</b> "
+                        f"@ <code>${mon.re_entry_position.entry_price:,.2f}</code> "
+                        f"(SL: <code>${mon.re_entry_position.stop_loss:,.2f}</code> | TP1: <code>${mon.re_entry_position.take_profit_1:,.2f}</code>)\n"
+                        if mon.re_entry_position is not None
+                        else ""
+                    )
                     await notify_callback(
                         sess.user_id,
                         f"{icon} <b>AUTO-TRADE MENUTUP POSISI — {sess.symbol}</b>\n"
                         f"• <b>Alasan:</b> {mon.exit_reason}\n"
                         f"• <b>Harga Keluar:</b> <code>${mon.current_price:,.2f}</code>\n"
                         f"• <b>Hasil PnL Bersih:</b> <code>${mon.realized_pnl_usdt:+.2f} USDT</code>\n"
+                        f"{re_line}"
                         f"• <b>Sisa Waktu Sesi:</b> <code>{sess.remaining_human}</code>",
                     )
             elif mon.action_taken == "TRAILING_UPDATED" and mon.position is not None:

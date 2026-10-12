@@ -764,4 +764,31 @@ async def test_exness_mt5_provider_all_asset_buy_and_sell_execution(tmp_path: Pa
     )
     assert emerg_exit_res.action_taken in ("CLOSED_SL", "CLOSED_TP")
     assert "Proteksi Darurat Berita Buruk" in (emerg_exit_res.exit_reason or "")
-    assert len(vault.get_open_positions(333, "XAUUSD")) == 0
+    assert "Otomatis Balik Arah SELL" in (emerg_exit_res.exit_reason or "")
+    assert emerg_exit_res.re_entry_position is not None
+    assert emerg_exit_res.re_entry_position.side == "SELL"
+    open_after_rev = vault.get_open_positions(333, "XAUUSD")
+    assert len(open_after_rev) == 1
+    assert open_after_rev[0].side == "SELL"
+    assert open_after_rev[0].stop_loss > open_after_rev[0].entry_price
+    assert open_after_rev[0].take_profit_1 < open_after_rev[0].entry_price
+
+    # Symmetrically: while holding the new SELL position, strong positive news (s_sent >= +0.30) closes SELL & reverses into BUY
+    emerg_rev_buy = await auto_trader.monitor_and_manage_open_position(
+        user_id=333,
+        symbol="XAUUSD",
+        price_override=4196.0,
+        high_override=4197.0,
+        low_override=4195.5,
+        headlines_override=[
+            "Gold surges to record high as sovereign wealth funds announce massive institutional gold accumulation",
+            "Strong bullish rally in gold as Fed signals aggressive rate cuts",
+        ],
+    )
+    assert emerg_rev_buy.action_taken in ("CLOSED_SL", "CLOSED_TP")
+    assert "Otomatis Balik Arah BUY" in (emerg_rev_buy.exit_reason or "")
+    assert emerg_rev_buy.re_entry_position is not None
+    assert emerg_rev_buy.re_entry_position.side == "BUY"
+    open_after_buy_rev = vault.get_open_positions(333, "XAUUSD")
+    assert len(open_after_buy_rev) == 1
+    assert open_after_buy_rev[0].side == "BUY"

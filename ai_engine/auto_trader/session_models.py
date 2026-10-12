@@ -95,7 +95,7 @@ class PositionMonitorResult:
     new_stop_loss: Optional[float] = None
     exit_reason: Optional[str] = None
     realized_pnl_usdt: float = 0.0
-
+    re_entry_position: Optional[UserPositionRecord] = None
 
 @dataclass
 class AutoTradeSessionState:
