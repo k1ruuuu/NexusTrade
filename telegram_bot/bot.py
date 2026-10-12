@@ -10,7 +10,6 @@ from aiogram.types import FSInputFile
 
 from ai_engine.backtester.engine import EventDrivenBacktester
 from ai_engine.auto_trader.admin_store import AdminStore
-from ai_engine.auto_trader.binance_client import BinanceSpotClient
 from ai_engine.auto_trader.engine import SmartAutoTraderEngine
 from ai_engine.auto_trader.user_vault import UserVault
 from ai_engine.models.ensemble_agent import EnsembleDecisionAgent, SignalDecision
@@ -48,7 +47,6 @@ class NexusTradeBotService:
         backtester: Optional[EventDrivenBacktester] = None,
         user_vault: Optional[UserVault] = None,
         admin_store: Optional[AdminStore] = None,
-        binance_client: Optional[BinanceSpotClient] = None,
         auto_trader: Optional[SmartAutoTraderEngine] = None,
         bot: Optional[Bot] = None,
     ) -> None:
@@ -58,12 +56,10 @@ class NexusTradeBotService:
         self.backtester = backtester or EventDrivenBacktester(self.settings)
         self.user_vault = user_vault or UserVault(self.settings)
         self.admin_store = admin_store or AdminStore(self.settings, db_path=self.user_vault.db_path)
-        self.binance_client = binance_client or BinanceSpotClient()
         self.auto_trader = auto_trader or SmartAutoTraderEngine(
             settings=self.settings,
             ensemble_agent=self.ensemble_agent,
             user_vault=self.user_vault,
-            binance_client=self.binance_client,
         )
         self.bot = bot or Bot(
             token=self.settings.telegram_bot_token,
@@ -80,7 +76,6 @@ class NexusTradeBotService:
             backtester=self.backtester,
             user_vault=self.user_vault,
             admin_store=self.admin_store,
-            binance_client=self.binance_client,
             auto_trader=self.auto_trader,
         )
 

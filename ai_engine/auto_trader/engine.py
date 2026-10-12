@@ -3,8 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from ai_engine.auto_trader.binance_client import BinanceOrderResult, BinanceSpotClient
-from ai_engine.auto_trader.mt5_exness_client import MT5ExnessClient
+from typing import Any
+
+from ai_engine.auto_trader.mt5_exness_client import (
+    BinanceOrderResult,
+    MT5ExnessClient,
+    anchor_targets_to_fill_price,
+    estimate_mt5_pnl_usdt,
+)
 from ai_engine.auto_trader.session_manager import (
     AutoTradeSessionManager,
     AutoTradeSessionState,
@@ -20,8 +26,7 @@ from ai_engine.auto_trader.user_vault import (
 from ai_engine.models.ensemble_agent import EnsembleDecisionAgent, SignalDecision
 from config.logging_config import get_logger
 from config.settings import Settings, get_settings
-from data_pipeline.market_symbols import is_crypto_symbol, normalize_symbol, normalize_timeframe
-
+from data_pipeline.market_symbols import normalize_symbol, normalize_timeframe
 logger = get_logger("nexustrade.auto_trader.engine")
 
 
@@ -69,16 +74,13 @@ class SmartAutoTraderEngine:
         settings: Optional[Settings] = None,
         ensemble_agent: Optional[EnsembleDecisionAgent] = None,
         user_vault: Optional[UserVault] = None,
-        binance_client: Optional[BinanceSpotClient] = None,
         mt5_client: Optional[MT5ExnessClient] = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.ensemble_agent = ensemble_agent or EnsembleDecisionAgent(self.settings)
         self.vault = user_vault or UserVault(self.settings)
-        self.binance_client = binance_client or BinanceSpotClient()
         self.mt5_client = mt5_client or MT5ExnessClient()
         self.session_manager = AutoTradeSessionManager(self)
-
     async def start_timed_session(
         self,
         user_id: int,
@@ -128,29 +130,33 @@ class SmartAutoTraderEngine:
             low_override=low_override,
         )
 
-    async def sync_live_mt5_positions(self, user_id: int) -> None:
-        """Reconcile SQLite OPEN positions against real-time Exness MT5 OpenedOrders."""
+    async def sync_live_mt5_positions(self, user_id: int) -> dict[str, dict[str, Any]]:
+        """
+        Reconcile SQLite OPEN positions against real-time Exness MT5 OpenedOrders.
+        Returns a mapping of `ticket_str -> live_order_dict` (`closePrice`, `profit`, `stopLoss`, etc.).
+        """
         creds = self.vault.resolve_credentials(user_id)
         if (
             creds is None
-            or creds.provider != "exness_mt5"
             or self.mt5_client._is_exness_trial_demo(creds.api_key, creds.testnet)
         ):
-            return
+            return {}
         live_orders = await self.mt5_client.get_live_open_orders(
             creds.api_key, creds.api_secret, creds.server_name
         )
         if live_orders is None:
-            return
-        live_tickets = {
-            str(o.get("ticket") or o.get("order") or "")
-            for o in live_orders
-            if isinstance(o, dict)
-        }
+            return {}
+        live_ticket_map: dict[str, dict[str, Any]] = {}
+        for o in live_orders:
+            if isinstance(o, dict):
+                t_id = str(o.get("ticket") or o.get("order") or "")
+                if t_id:
+                    live_ticket_map[t_id] = o
         for pos in self.vault.get_open_positions(user_id):
-            if pos.order_id not in live_tickets:
+            if pos.order_id not in live_ticket_map:
+                # Position was closed on Exness server (hit TP/SL or closed manually in Exness Go)
                 self.vault.close_position(pos.position_id, pos.entry_price, 0.0)
-
+        return live_ticket_map
     async def evaluate_and_execute(
         self,
         user_id: int,
@@ -174,9 +180,9 @@ class SmartAutoTraderEngine:
             gates.append(
                 AutoTradeGateCheck(
                     gate_number=1,
-                    name="Verifikasi Akun Binance (/setup)",
+                    name="Verifikasi Akun Exness Go / MT5 (/setup)",
                     passed=False,
-                    detail="Akun Binance pribadi belum diatur. Wajib jalankan /setup terlebih dahulu.",
+                    detail="Akun Exness Go / MT5 pribadi belum diatur. Wajib jalankan /setup terlebih dahulu.",
                 )
             )
             return AutoTradeExecutionReport(
@@ -186,9 +192,8 @@ class SmartAutoTraderEngine:
                 setup_required=True,
                 executed=False,
                 gates=gates,
-                rejection_summary="Wajib mengatur akun Binance pribadi melalui /setup sebelum memakai fitur Auto-Trade.",
+                rejection_summary="Wajib mengatur akun Exness Go / MT5 pribadi melalui /setup sebelum memakai fitur Auto-Trade.",
             )
-
         if require_autotrade_toggle and not creds.autotrade_enabled:
             gates.append(
                 AutoTradeGateCheck(
@@ -210,39 +215,13 @@ class SmartAutoTraderEngine:
             )
 
         await refresh_live_exness_balance(self.vault, self.mt5_client, user_id, creds)
-        is_mt5_provider = creds.provider == "exness_mt5"
-        is_crypto, _ = is_crypto_symbol(clean_sym)
-        if not is_mt5_provider and not is_crypto:
-            gates.append(
-                AutoTradeGateCheck(
-                    gate_number=1,
-                    name="Kompatibilitas Simbol Broker",
-                    passed=False,
-                    detail=(
-                        f"DITOLAK: {clean_sym} bukan aset Crypto Binance. "
-                        f"Gunakan provider Exness Go / MT5 (/setup exness) untuk trading Emas, Forex, Saham AS & Indeks."
-                    ),
-                )
-            )
-            return AutoTradeExecutionReport(
-                user_id=int(user_id),
-                symbol=clean_sym,
-                timeframe=clean_tf,
-                setup_required=False,
-                executed=False,
-                credentials=creds,
-                gates=gates,
-                rejection_summary=(
-                    f"Simbol {clean_sym} membutuhkan provider Exness Go / MT5 (/setup exness)."
-                ),
-            )
         if creds.verified_usdt_balance < 10.0:
             gates.append(
                 AutoTradeGateCheck(
                     gate_number=1,
-                    name="Kecukupan Saldo USDT",
+                    name="Kecukupan Saldo USD/USDT",
                     passed=False,
-                    detail=f"DITOLAK: Saldo USDT (${creds.verified_usdt_balance:,.2f}) kurang dari batas minimum $10.00 USDT.",
+                    detail=f"DITOLAK: Saldo Akun (${creds.verified_usdt_balance:,.2f}) kurang dari batas minimum $10.00 USD.",
                 )
             )
             return AutoTradeExecutionReport(
@@ -253,16 +232,16 @@ class SmartAutoTraderEngine:
                 executed=False,
                 credentials=creds,
                 gates=gates,
-                rejection_summary=f"Saldo USDT (${creds.verified_usdt_balance:,.2f}) di bawah batas minimum $10.00 USDT.",
+                rejection_summary=f"Saldo Akun (${creds.verified_usdt_balance:,.2f}) di bawah batas minimum $10.00 USD.",
             )
-        mode_str = "TESTNET" if creds.testnet else "LIVE"
+        mode_str = f"EXNESS MT5 ({creds.server_name})"
         src_str = "Setup Pribadi" if creds.source == "user_setup" else "Admin (.env)"
         gates.append(
             AutoTradeGateCheck(
                 gate_number=1,
-                name="Verifikasi Akun Binance (/setup)",
+                name="Verifikasi Akun Exness Go / MT5 (/setup)",
                 passed=True,
-                detail=f"Terhubung ({mode_str} • {src_str} • Key {creds.masked_api_key} • Saldo ${creds.verified_usdt_balance:,.2f})",
+                detail=f"Terhubung ({mode_str} • {src_str} • Login {creds.masked_api_key} • Saldo ${creds.verified_usdt_balance:,.2f})",
             )
         )
 
@@ -417,45 +396,29 @@ class SmartAutoTraderEngine:
         target_notional = min(user_sizing.position_notional, user_equity * 0.95, max_notional_by_user_risk)
         if target_notional < 10.0:
             target_notional = min(user_equity * 0.95, 10.0)
-        qty = (
-            float(custom_lot)
-            if (custom_lot is not None and custom_lot > 0 and not is_mt5_provider)
-            else (target_notional / max(decision.entry_price, 1e-9))
-        )
-
+        qty = target_notional / max(decision.entry_price, 1e-9)
         order_side = "BUY" if decision.action == "BUY" else "SELL"
-        if is_mt5_provider:
-            order_res = await self.mt5_client.place_market_order(
-                account_id_or_login=creds.api_key,
-                token_or_password=creds.api_secret,
-                symbol=clean_sym,
-                side=order_side,
-                quantity=qty,
-                reference_price=decision.entry_price,
-                stop_loss=decision.stop_loss,
-                take_profit=decision.take_profit_1,
-                server_name=creds.server_name,
-                testnet=creds.testnet,
-                custom_lot=custom_lot,
-            )
-        else:
-            order_res = await self.binance_client.place_market_order(
-                api_key=creds.api_key,
-                api_secret=creds.api_secret,
-                symbol=clean_sym,
-                side=order_side,
-                quantity=qty,
-                reference_price=decision.entry_price,
-                testnet=creds.testnet,
-            )
+        order_res = await self.mt5_client.place_market_order(
+            account_id_or_login=creds.api_key,
+            token_or_password=creds.api_secret,
+            symbol=clean_sym,
+            side=order_side,
+            quantity=qty,
+            reference_price=decision.entry_price,
+            stop_loss=decision.stop_loss,
+            take_profit=decision.take_profit_1,
+            server_name=creds.server_name,
+            testnet=creds.testnet,
+            custom_lot=custom_lot,
+        )
 
         if not order_res.executed:
             gates.append(
                 AutoTradeGateCheck(
                     gate_number=6,
-                    name="Eksekusi Order ke Broker",
+                    name="Eksekusi Order ke Exness Go / MT5",
                     passed=False,
-                    detail=order_res.error_message or "Order gagal dieksekusi oleh broker.",
+                    detail=order_res.error_message or "Order gagal dieksekusi oleh Exness MT5.",
                 )
             )
             return AutoTradeExecutionReport(
@@ -468,8 +431,17 @@ class SmartAutoTraderEngine:
                 credentials=creds,
                 gates=gates,
                 order_result=order_res,
-                rejection_summary=order_res.error_message or "Eksekusi order ditolak oleh broker.",
+                rejection_summary=order_res.error_message or "Eksekusi order ditolak oleh Exness MT5.",
             )
+
+        anchored_sl, anchored_tp1, anchored_tp2 = anchor_targets_to_fill_price(
+            side=order_side,
+            fill_price=order_res.avg_price,
+            ref_entry=decision.entry_price,
+            ref_sl=decision.stop_loss,
+            ref_tp1=decision.take_profit_1,
+            ref_tp2=decision.take_profit_2,
+        )
 
         pos_record = self.vault.record_open_position(
             user_id=int(user_id),
@@ -478,9 +450,9 @@ class SmartAutoTraderEngine:
             entry_price=order_res.avg_price,
             quantity=order_res.executed_qty,
             notional_usdt=order_res.notional_usdt,
-            stop_loss=decision.stop_loss,
-            take_profit_1=decision.take_profit_1,
-            take_profit_2=decision.take_profit_2,
+            stop_loss=anchored_sl,
+            take_profit_1=anchored_tp1,
+            take_profit_2=anchored_tp2,
             confidence=decision.confidence,
             order_id=order_res.order_id,
             testnet=creds.testnet,

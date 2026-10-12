@@ -10,8 +10,12 @@ import pytest
 from ai_engine.backtester.engine import EventDrivenBacktester
 from datetime import datetime, timedelta, timezone
 from ai_engine.auto_trader.admin_store import AdminStore
-from ai_engine.auto_trader.binance_client import BinanceSpotClient
 from ai_engine.auto_trader.engine import SmartAutoTraderEngine
+from ai_engine.auto_trader.mt5_exness_client import (
+    MT5ExnessClient,
+    anchor_targets_to_fill_price,
+    estimate_mt5_pnl_usdt,
+)
 from ai_engine.auto_trader.user_vault import UserVault
 from ai_engine.models.ensemble_agent import EnsembleDecisionAgent
 from config.settings import Settings
@@ -235,22 +239,18 @@ async def test_multi_user_setup_role_isolation_and_6gate_autotrade(tmp_path: Pat
         use_live_news_feed=False,
     )
     vault = UserVault(settings=settings)
-    binance_client = BinanceSpotClient()
     agent = EnsembleDecisionAgent(settings=settings)
     auto_trader = SmartAutoTraderEngine(
         settings=settings,
         ensemble_agent=agent,
         user_vault=vault,
-        binance_client=binance_client,
     )
     ctx = {
         "settings": settings,
         "ensemble_agent": agent,
         "user_vault": vault,
-        "binance_client": binance_client,
         "auto_trader": auto_trader,
     }
-
     # 1. Admin (user 111) can access .env fallback; Regular user (user 222) CANNOT
     admin_creds = vault.resolve_credentials(111)
     assert admin_creds is not None
@@ -273,8 +273,7 @@ async def test_multi_user_setup_role_isolation_and_6gate_autotrade(tmp_path: Pat
     setup_msg.delete.assert_awaited_once()
     setup_msg.answer.assert_awaited_once()
     setup_reply = setup_msg.answer.call_args[0][0]
-    assert "SETUP AKUN BINANCE BERHASIL" in setup_reply
-
+    assert "SETUP AKUN EXNESS GO / MT5 BERHASIL" in setup_reply
     # Verify cross-user cryptographic isolation (User 111 cannot decrypt User 222's token)
     enc_token = vault.encrypt_for_user(222, "TOP_SECRET_222")
     with pytest.raises(ValueError, match="integrity check failed"):
@@ -442,7 +441,6 @@ async def test_logic_flow_audit_regressions_lf01_to_lf11(tmp_path: Path) -> None
     )
     vault = UserVault(settings=settings)
     admin_store = AdminStore(settings=settings, db_path=vault.db_path)
-    binance_client = BinanceSpotClient()
     agent = EnsembleDecisionAgent(settings=settings)
     charts = ChartSnapshotGenerator(settings=settings)
     backtester = EventDrivenBacktester(settings=settings)
@@ -450,25 +448,18 @@ async def test_logic_flow_audit_regressions_lf01_to_lf11(tmp_path: Path) -> None
         settings=settings,
         ensemble_agent=agent,
         user_vault=vault,
-        binance_client=binance_client,
     )
 
-    # Setup User 222
+    # Setup User 222 on Exness Go / MT5
     vault.save_user_credentials(
         user_id=222,
-        api_key="TESTNET_USER222_KEY",
+        api_key="EXNESS_DEMO_222_KEY",
         api_secret="SECRET_USER222_PASS",
         username="User222",
         testnet=True,
         verified_usdt_balance=1000.0,
         autotrade_enabled=True,
     )
-
-    # LF-01: Non-crypto symbol (NVDA / XAUUSD) is rejected for Binance Spot Auto-Trade
-    non_crypto_rep = await auto_trader.evaluate_and_execute(user_id=222, symbol="NVDA")
-    assert non_crypto_rep.executed is False
-    assert "bukan aset Crypto" in (non_crypto_rep.gates[0].detail or "")
-
     # LF-02: When user turns /autotrade off, evaluate_and_execute rejects execution at Gate 1
     vault.set_autotrade_enabled(222, False)
     off_rep = await auto_trader.evaluate_and_execute(user_id=222, symbol="BTCUSDT")
@@ -510,7 +501,6 @@ async def test_logic_flow_audit_regressions_lf01_to_lf11(tmp_path: Path) -> None
         backtester=backtester,
         user_vault=vault,
         admin_store=admin_store,
-        binance_client=binance_client,
         auto_trader=auto_trader,
         bot=fake_bot,  # type: ignore[arg-type]
     )
@@ -682,3 +672,35 @@ async def test_exness_mt5_provider_all_asset_buy_and_sell_execution(tmp_path: Pa
     stop_msg = _make_fake_message(333, "/autotrade off")
     await handle_autotrade(stop_msg, **ctx)
     assert len(auto_trader.get_user_sessions(333)) == 0
+
+    # 5. Regression tests for F-01, F-02, F-03, F-04, F-06:
+    # F-01: Anchoring SL/TP1/TP2 to actual broker fill price (Spot 4210 vs Futures 4235)
+    anc_sl, anc_tp1, anc_tp2 = anchor_targets_to_fill_price(
+        side="BUY",
+        fill_price=4210.0,
+        ref_entry=4235.0,
+        ref_sl=4229.0,
+        ref_tp1=4244.0,
+        ref_tp2=4250.0,
+    )
+    assert anc_sl == 4204.0 and anc_sl < 4210.0
+    assert anc_tp1 == 4219.0 and anc_tp1 > 4210.0
+    assert anc_tp2 == 4225.0 and anc_tp2 > anc_tp1
+
+    # F-03: Contract-size-aware MT5 PnL calculation (XAUUSD 1 lot = 100 oz -> 0.05 lot * $10 move = +$50.00 USD)
+    assert estimate_mt5_pnl_usdt("XAUUSDm", "BUY", 4210.0, 4220.0, 0.05) == 50.0
+    assert estimate_mt5_pnl_usdt("XAUUSDm", "SELL", 4220.0, 4210.0, 0.05) == 50.0
+
+    # F-04: Non-digit fallback ticket on real account returns False (never false-positive True)
+    mt5_cli = MT5ExnessClient()
+    assert await mt5_cli.close_mt5_ticket("434355782", "Pass123", "MT5-FALLBACK", 0.01) is False
+    assert await mt5_cli.modify_mt5_ticket("434355782", "Pass123", "MT5-FALLBACK", 4200.0, 4230.0) is False
+
+    # F-06: Direct `/setup exness LOGIN SECRET` command is redacted in Admin Audit Logs
+    admin_store = AdminStore(settings=settings, db_path=vault.db_path)
+    mw = WhitelistAuthMiddleware(settings=settings, admin_store=admin_store)
+    secret_cmd_msg = _make_fake_message(333, "/setup exness 434355782 SuperSecretPass999 Exness-MT5Trial7")
+    await mw(AsyncMock(return_value="ok"), secret_cmd_msg, {})
+    logs = admin_store.get_audit_logs(limit=5)
+    assert any("[REDACTED_CREDENTIALS]" in l.action for l in logs)
+    assert all("SuperSecretPass999" not in l.action for l in logs)

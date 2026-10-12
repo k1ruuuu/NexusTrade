@@ -62,12 +62,15 @@ class WhitelistAuthMiddleware(BaseMiddleware):
         if is_msg:
             event_type = "COMMAND" if (getattr(event, "text", "") or "").startswith("/") else "MESSAGE"
             action_str = str(getattr(event, "text", None) or "[non-text message]")
+            stripped_act = action_str.strip()
             if (
                 user_id is not None
                 and int(user_id) in _PENDING_SETUP_MODE
-                and not action_str.strip().startswith("/")
+                and not stripped_act.startswith("/")
             ):
                 action_str = "[REDACTED_INTERACTIVE_SETUP_CREDENTIALS]"
+            elif stripped_act.lower().startswith("/setup") and len(stripped_act.split()) > 1:
+                action_str = "/setup [REDACTED_CREDENTIALS]"
         elif is_cb:
             event_type = "CALLBACK"
             action_str = f"cb:{getattr(event, 'data', '')}"

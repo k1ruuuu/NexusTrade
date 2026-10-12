@@ -78,14 +78,14 @@ class UserVault:
                     risk_per_trade_pct REAL NOT NULL DEFAULT 0.01,
                     verified_usdt_balance REAL NOT NULL DEFAULT 0.0,
                     updated_at TEXT NOT NULL,
-                    provider TEXT NOT NULL DEFAULT 'binance_spot',
-                    server_name TEXT NOT NULL DEFAULT 'Binance-Spot'
+                    provider TEXT NOT NULL DEFAULT 'exness_mt5',
+                    server_name TEXT NOT NULL DEFAULT 'Exness-MT5Trial7'
                 )
                 """
             )
             for col_sql in (
-                "ALTER TABLE user_accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'binance_spot'",
-                "ALTER TABLE user_accounts ADD COLUMN server_name TEXT NOT NULL DEFAULT 'Binance-Spot'",
+                "ALTER TABLE user_accounts ADD COLUMN provider TEXT NOT NULL DEFAULT 'exness_mt5'",
+                "ALTER TABLE user_accounts ADD COLUMN server_name TEXT NOT NULL DEFAULT 'Exness-MT5Trial7'",
             ):
                 try:
                     conn.execute(col_sql)
@@ -143,17 +143,17 @@ class UserVault:
         risk_per_trade_pct: Optional[float] = None,
         verified_usdt_balance: float = 0.0,
         autotrade_enabled: bool = False,
-        provider: BrokerProvider = "binance_spot",
+        provider: BrokerProvider = "exness_mt5",
         server_name: Optional[str] = None,
     ) -> UserBinanceCredentials:
-        """Encrypt and persist a user's personal Broker/Exchange credentials."""
+        """Encrypt and persist a user's personal Exness Go / MT5 credentials."""
         clean_key = api_key.strip()
         clean_secret = api_secret.strip()
-        min_key_len = 5 if provider == "exness_mt5" else 8
-        min_sec_len = 6 if provider == "exness_mt5" else 8
+        min_key_len = 5
+        min_sec_len = 6
         if len(clean_key) < min_key_len or len(clean_secret) < min_sec_len:
             raise ValueError(
-                f"Kredensial tidak valid (Key min {min_key_len} karakter, Secret/Password min {min_sec_len} karakter)."
+                f"Kredensial tidak valid (Login MT5 min {min_key_len} karakter, Password min {min_sec_len} karakter)."
             )
 
         eff_risk = (
@@ -163,11 +163,8 @@ class UserVault:
         )
         eff_risk = max(0.001, min(eff_risk, self.settings.max_account_risk_per_trade))
         resolved_server = server_name or (
-            ("Exness-MT5Trial" if testnet else "Exness-MT5Real")
-            if provider == "exness_mt5"
-            else ("Binance-Futures" if provider == "binance_futures" else "Binance-Spot")
+            "Exness-MT5Trial7" if testnet else "Exness-MT5Real"
         )
-
         enc_key = self.encrypt_for_user(user_id, clean_key)
         enc_secret = self.encrypt_for_user(user_id, clean_secret)
         masked = mask_api_key(clean_key)
@@ -257,13 +254,12 @@ class UserVault:
             api_key = self.decrypt_for_user(uid, str(row["encrypted_api_key"]))
             api_secret = self.decrypt_for_user(uid, str(row["encrypted_api_secret"]))
             row_keys = row.keys()
-            prov_raw = str(row["provider"]) if "provider" in row_keys else "binance_spot"
-            prov: BrokerProvider = (
-                prov_raw  # type: ignore[assignment]
-                if prov_raw in ("binance_spot", "binance_futures", "exness_mt5")
-                else "binance_spot"
+            prov: BrokerProvider = "exness_mt5"
+            srv_name = (
+                str(row["server_name"])
+                if ("server_name" in row_keys and str(row["server_name"]).strip())
+                else ("Exness-MT5Trial7" if bool(row["testnet"]) else "Exness-MT5Real")
             )
-            srv_name = str(row["server_name"]) if "server_name" in row_keys else "Binance-Spot"
             return UserBinanceCredentials(
                 user_id=uid,
                 username=str(row["username"]),
@@ -284,7 +280,7 @@ class UserVault:
         if role == "admin":
             env_key = self.settings.binance_api_key.strip()
             env_secret = self.settings.binance_api_secret.strip()
-            if len(env_key) >= 8 and len(env_secret) >= 8:
+            if len(env_key) >= 5 and len(env_secret) >= 6:
                 return UserBinanceCredentials(
                     user_id=uid,
                     username="Admin (.env)",
@@ -297,6 +293,8 @@ class UserVault:
                     autotrade_enabled=self._admin_env_autotrade.get(uid, False),
                     risk_per_trade_pct=min(0.01, self.settings.max_account_risk_per_trade),
                     verified_usdt_balance=self.settings.portfolio_initial_capital,
+                    provider="exness_mt5",
+                    server_name="Exness-MT5Trial7" if self.settings.binance_testnet else "Exness-MT5Real",
                     updated_at="env-configured",
                 )
 

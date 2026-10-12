@@ -7,7 +7,7 @@ from typing import Any, Literal, Optional
 
 UserRole = Literal["admin", "user"]
 CredentialSource = Literal["user_setup", "admin_env"]
-BrokerProvider = Literal["binance_spot", "binance_futures", "exness_mt5"]
+BrokerProvider = Literal["exness_mt5"]
 
 
 @dataclass
@@ -25,8 +25,8 @@ class UserBinanceCredentials:
     autotrade_enabled: bool = False
     risk_per_trade_pct: float = 0.01
     verified_usdt_balance: float = 0.0
-    provider: BrokerProvider = "binance_spot"
-    server_name: str = "Binance-Spot"
+    provider: BrokerProvider = "exness_mt5"
+    server_name: str = "Exness-MT5Trial7"
     updated_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )

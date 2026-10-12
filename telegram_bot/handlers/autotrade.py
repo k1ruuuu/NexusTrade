@@ -11,7 +11,6 @@ from aiogram.types import (
     Message,
 )
 
-from ai_engine.auto_trader.binance_client import BinanceSpotClient
 from ai_engine.auto_trader.mt5_exness_client import MT5ExnessClient
 from ai_engine.auto_trader.engine import SmartAutoTraderEngine
 from ai_engine.auto_trader.session_manager import is_session_duration_token
@@ -53,22 +52,8 @@ def build_setup_keyboard(has_creds: bool = False, autotrade_on: bool = False) ->
         ],
         [
             InlineKeyboardButton(
-                text="🧪 Pilih Binance Testnet",
-                callback_data="setup:mode:testnet",
-            ),
-            InlineKeyboardButton(
-                text="🏦 Pilih Binance Live",
-                callback_data="setup:mode:live",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
                 text="⚡ Demo Exness Go Instan",
                 callback_data="setup:demo:exness",
-            ),
-            InlineKeyboardButton(
-                text="⚡ Demo Binance Instan",
-                callback_data="setup:demo",
             ),
         ],
     ]
@@ -111,12 +96,10 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
     settings: Settings = data.get("settings") or get_settings()
     vault: UserVault = data.get("user_vault") or UserVault(settings)
     agent: EnsembleDecisionAgent = data.get("ensemble_agent") or EnsembleDecisionAgent(settings)
-    binance_client: BinanceSpotClient = data.get("binance_client") or BinanceSpotClient()
     auto_trader: SmartAutoTraderEngine = data.get("auto_trader") or SmartAutoTraderEngine(
         settings=settings,
         ensemble_agent=agent,
         user_vault=vault,
-        binance_client=binance_client,
     )
 
     user_id, user_name = extract_user_identity(message, default_name="Trader")
@@ -136,11 +119,12 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
 
     if sub == "on":
         vault.set_autotrade_enabled(user_id, True)
+        await auto_trader.sync_live_mt5_positions(user_id)
         updated = vault.resolve_credentials(user_id)
         positions = vault.get_open_positions(user_id)
         await message.answer(
             "🟢 <b>Auto-Trade Diaktifkan!</b>\n"
-            "AI sekarang diizinkan mengeksekusi posisi pada akun Binance Anda jika ke-6 Gerbang Akurasi terpenuhi.\n\n"
+            "AI sekarang diizinkan mengeksekusi posisi pada akun Exness Go / MT5 Anda jika ke-6 Gerbang Akurasi terpenuhi.\n\n"
             + format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), updated, positions),
             parse_mode="HTML",
             reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=True),
@@ -150,6 +134,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
     if sub in ("off", "stop"):
         stopped_sessions = auto_trader.stop_user_sessions(user_id)
         vault.set_autotrade_enabled(user_id, False)
+        await auto_trader.sync_live_mt5_positions(user_id)
         updated = vault.resolve_credentials(user_id)
         positions = vault.get_open_positions(user_id)
         stop_note = (
@@ -167,6 +152,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         return
 
     if sub == "status":
+        await auto_trader.sync_live_mt5_positions(user_id)
         positions = vault.get_open_positions(user_id)
         active_sessions = auto_trader.get_user_sessions(user_id)
         sess_lines = ""
@@ -225,7 +211,8 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         )
         return
 
-    # If user already has an OPEN position on `symbol`, monitor & hold it (ratchet Trailing Stop / check TP/SL)
+    # If user already has an OPEN position on `symbol`, sync with Exness MT5 first then monitor & hold it
+    await auto_trader.sync_live_mt5_positions(user_id)
     existing_open = vault.get_open_positions(user_id, symbol=symbol)
     if existing_open:
         mon_res = await auto_trader.monitor_and_manage_open_position(
@@ -279,12 +266,10 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
     settings: Settings = data.get("settings") or get_settings()
     vault: UserVault = data.get("user_vault") or UserVault(settings)
     agent: EnsembleDecisionAgent = data.get("ensemble_agent") or EnsembleDecisionAgent(settings)
-    binance_client: BinanceSpotClient = data.get("binance_client") or BinanceSpotClient()
     auto_trader: SmartAutoTraderEngine = data.get("auto_trader") or SmartAutoTraderEngine(
         settings=settings,
         ensemble_agent=agent,
         user_vault=vault,
-        binance_client=binance_client,
     )
 
     msg = callback.message
@@ -295,15 +280,15 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
     user_id, user_name = extract_user_identity(callback, default_name="Trader")
     cb_data = callback.data or ""
 
-    if cb_data == "setup:mode:exness_trial":
+    if cb_data in ("setup:mode:exness_trial", "setup:mode:testnet"):
         _PENDING_ADMIN_ACTION.pop(user_id, None)
         _PENDING_SETUP_MODE[user_id] = True
-        _PENDING_SETUP_PROVIDER[user_id] = ("exness_mt5", "Exness-MT5Trial")
+        _PENDING_SETUP_PROVIDER[user_id] = ("exness_mt5", "Exness-MT5Trial7")
         await msg.answer(format_setup_prompt_key_card(testnet=True, provider="exness_mt5"), parse_mode="HTML")
         await callback.answer("Mode Exness Go / MT5 Trial dipilih")
         return
 
-    if cb_data == "setup:mode:exness_live":
+    if cb_data in ("setup:mode:exness_live", "setup:mode:live"):
         _PENDING_ADMIN_ACTION.pop(user_id, None)
         _PENDING_SETUP_MODE[user_id] = False
         _PENDING_SETUP_PROVIDER[user_id] = ("exness_mt5", "Exness-MT5Real")
@@ -311,28 +296,12 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
         await callback.answer("Mode Exness Go / MT5 Real dipilih")
         return
 
-    if cb_data == "setup:mode:testnet":
-        _PENDING_ADMIN_ACTION.pop(user_id, None)
-        _PENDING_SETUP_MODE[user_id] = True
-        _PENDING_SETUP_PROVIDER[user_id] = ("binance_spot", "Binance-Spot")
-        await msg.answer(format_setup_prompt_key_card(testnet=True, provider="binance_spot"), parse_mode="HTML")
-        await callback.answer("Mode Binance Testnet dipilih")
-        return
-
-    if cb_data == "setup:mode:live":
-        _PENDING_ADMIN_ACTION.pop(user_id, None)
-        _PENDING_SETUP_MODE[user_id] = False
-        _PENDING_SETUP_PROVIDER[user_id] = ("binance_spot", "Binance-Spot")
-        await msg.answer(format_setup_prompt_key_card(testnet=False, provider="binance_spot"), parse_mode="HTML")
-        await callback.answer("Mode Binance Live dipilih")
-        return
-
-    if cb_data == "setup:demo:exness":
+    if cb_data in ("setup:demo:exness", "setup:demo"):
         mt5_client: MT5ExnessClient = data.get("mt5_client") or MT5ExnessClient()
         demo_login = f"EXNESS_DEMO_{user_id}"
         demo_pass = f"ExnessGo_{user_id}_Trial"
         verification = await mt5_client.verify_credentials(
-            demo_login, demo_pass, server_name="Exness-MT5Trial", testnet=True
+            demo_login, demo_pass, server_name="Exness-MT5Trial7", testnet=True
         )
         creds = vault.save_user_credentials(
             user_id=user_id,
@@ -343,7 +312,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
             verified_usdt_balance=verification.total_usdt,
             autotrade_enabled=True,
             provider="exness_mt5",
-            server_name="Exness-MT5Trial",
+            server_name="Exness-MT5Trial7",
         )
         clear_pending_wizards(user_id)
         await msg.answer(
@@ -354,30 +323,8 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
         await callback.answer("Akun Demo Exness Go / MT5 aktif!")
         return
 
-    if cb_data == "setup:demo":
-        demo_key = f"TESTNET_DEMO_{user_id}"
-        demo_secret = f"DEMO_SECRET_KEY_{user_id}_NEXUS"
-        verification = await binance_client.verify_credentials(demo_key, demo_secret, testnet=True)
-        creds = vault.save_user_credentials(
-            user_id=user_id,
-            api_key=demo_key,
-            api_secret=demo_secret,
-            username=user_name,
-            testnet=True,
-            verified_usdt_balance=verification.total_usdt,
-            autotrade_enabled=True,
-            provider="binance_spot",
-            server_name="Binance-Spot",
-        )
-        clear_pending_wizards(user_id)
-        await msg.answer(
-            format_setup_success_card(creds, verification, secret_deleted=False),
-            parse_mode="HTML",
-            reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=True),
-        )
-        await callback.answer("Akun Demo Binance Testnet aktif!")
-        return
     if cb_data == "setup:myaccount":
+        await auto_trader.sync_live_mt5_positions(user_id)
         creds = vault.resolve_credentials(user_id)
         positions = vault.get_open_positions(user_id)
         await msg.answer(
@@ -395,7 +342,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
         clear_pending_wizards(user_id)
         vault.delete_user_credentials(user_id)
         await msg.answer(
-            "🗑️ Kredensial Binance pribadi Anda telah dihapus dari brankas dan Auto-Trade dimatikan.",
+            "🗑️ Kredensial Exness Go / MT5 pribadi Anda telah dihapus dari brankas dan Auto-Trade dimatikan.",
             parse_mode="HTML",
             reply_markup=build_setup_keyboard(has_creds=False),
         )

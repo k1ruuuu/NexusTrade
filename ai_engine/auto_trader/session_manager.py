@@ -5,7 +5,10 @@ from datetime import datetime, timedelta, timezone
 import time
 from typing import Any, Literal, Optional
 
-from ai_engine.auto_trader.mt5_exness_client import resolve_mt5_symbol
+from ai_engine.auto_trader.mt5_exness_client import (
+    estimate_mt5_pnl_usdt,
+    resolve_mt5_symbol,
+)
 from ai_engine.auto_trader.session_models import (
     AutoTradeSessionState,
     NotifyCallback,
@@ -83,33 +86,57 @@ class AutoTradeSessionManager:
         - Ratchets Trailing Stop into profit once price moves >= +1.0 * ATR in favor.
         - Closes position on broker & vault ONLY when TP1/TP2 or Stop-Loss/Trailing-Stop is hit.
         """
+        live_ticket_map: dict[str, dict[str, Any]] = {}
         if hasattr(self.engine, "sync_live_mt5_positions"):
-            await self.engine.sync_live_mt5_positions(user_id)
+            sync_res = await self.engine.sync_live_mt5_positions(user_id)
+            if isinstance(sync_res, dict):
+                live_ticket_map = sync_res
         clean_sym = normalize_symbol(symbol)
         open_positions = self.engine.vault.get_open_positions(user_id, symbol=clean_sym)
         if not open_positions:
             return PositionMonitorResult(action_taken="NONE")
 
         pos = open_positions[0]
-        df = self.engine.ensemble_agent.load_market_series(clean_sym, timeframe=timeframe, limit=30)
-        if df is not None and len(df) > 0:
-            last_row = df.iloc[-1]
-            curr_price = float(price_override if price_override is not None else last_row["close"])
-            bar_high = float(high_override if high_override is not None else max(curr_price, float(last_row["high"])))
-            bar_low = float(low_override if low_override is not None else min(curr_price, float(last_row["low"])))
+        live_ord = live_ticket_map.get(pos.order_id)
+        live_close_px = float(live_ord.get("closePrice") or 0.0) if isinstance(live_ord, dict) else 0.0
+
+        if price_override is None and live_close_px > 0:
+            curr_price = live_close_px
+            bar_high = float(high_override if high_override is not None else curr_price)
+            bar_low = float(low_override if low_override is not None else curr_price)
         else:
-            curr_price = float(price_override or pos.entry_price)
-            bar_high = float(high_override or curr_price)
-            bar_low = float(low_override or curr_price)
+            df = self.engine.ensemble_agent.load_market_series(clean_sym, timeframe=timeframe, limit=30)
+            if df is not None and len(df) > 0:
+                last_row = df.iloc[-1]
+                curr_price = float(price_override if price_override is not None else last_row["close"])
+                bar_high = float(
+                    high_override if high_override is not None else max(curr_price, float(last_row["high"]))
+                )
+                bar_low = float(
+                    low_override if low_override is not None else min(curr_price, float(last_row["low"]))
+                )
+            else:
+                curr_price = float(price_override or pos.entry_price)
+                bar_high = float(high_override or curr_price)
+                bar_low = float(low_override or curr_price)
 
         initial_stop_dist = max(abs(pos.entry_price - pos.stop_loss), pos.entry_price * 0.002)
         est_atr = initial_stop_dist / 0.85
         trail_dist = max(0.65 * est_atr, initial_stop_dist * 0.75)
 
-        if pos.side == "BUY":
-            unr_pnl = (curr_price - pos.entry_price) * pos.quantity
-            unr_pct = ((curr_price - pos.entry_price) / max(pos.entry_price, 1e-9)) * 100.0
+        if (
+            price_override is None
+            and isinstance(live_ord, dict)
+            and live_ord.get("profit") is not None
+        ):
+            unr_pnl = float(live_ord.get("profit") or 0.0)
+        else:
+            unr_pnl = estimate_mt5_pnl_usdt(
+                pos.symbol, pos.side, pos.entry_price, curr_price, pos.quantity
+            )
 
+        if pos.side == "BUY":
+            unr_pct = ((curr_price - pos.entry_price) / max(pos.entry_price, 1e-9)) * 100.0
             # 1. Check Take-Profit 2 (1:3) or Take-Profit 1 (1:2)
             if pos.take_profit_2 > 0 and bar_high >= pos.take_profit_2:
                 exit_px = max(curr_price, pos.take_profit_2)
@@ -167,9 +194,7 @@ class AutoTradeSessionManager:
             )
 
         # SELL (Short) position management
-        unr_pnl = (pos.entry_price - curr_price) * pos.quantity
         unr_pct = ((pos.entry_price - curr_price) / max(pos.entry_price, 1e-9)) * 100.0
-
         if pos.take_profit_2 > 0 and bar_low <= pos.take_profit_2:
             exit_px = min(curr_price, pos.take_profit_2)
             return await self._close_position_on_broker(
@@ -229,7 +254,7 @@ class AutoTradeSessionManager:
     ) -> None:
         """Push updated Trailing Stop-Loss to Exness MT5 in real time via `/OrderModifySafe`."""
         creds = self.engine.vault.resolve_credentials(pos.user_id)
-        if creds is not None and creds.provider == "exness_mt5":
+        if creds is not None:
             await self.engine.mt5_client.modify_mt5_ticket(
                 account_id_or_login=creds.api_key,
                 token_or_password=creds.api_secret,
@@ -245,39 +270,28 @@ class AutoTradeSessionManager:
         exit_price: float,
         action_type: Literal["CLOSED_TP", "CLOSED_SL"],
         exit_reason: str,
+        broker_pnl_override: Optional[float] = None,
     ) -> PositionMonitorResult:
-        """Execute closing counter-order on broker and mark position CLOSED in UserVault."""
-        raw_pnl = (
-            (exit_price - pos.entry_price) * pos.quantity
-            if pos.side == "BUY"
-            else (pos.entry_price - exit_price) * pos.quantity
+        """Execute closing order on Exness MT5 (`/OrderCloseSafe`) and mark position CLOSED in UserVault."""
+        net_pnl = (
+            round(float(broker_pnl_override), 2)
+            if broker_pnl_override is not None
+            else estimate_mt5_pnl_usdt(
+                pos.symbol, pos.side, pos.entry_price, exit_price, pos.quantity
+            )
         )
-        fee = (pos.entry_price + exit_price) * pos.quantity * 0.0005
-        net_pnl = round(raw_pnl - fee, 2)
         pnl_pct = round((net_pnl / max(pos.notional_usdt, 1e-6)) * 100.0, 2)
 
         creds = self.engine.vault.resolve_credentials(pos.user_id)
-        close_side: Literal["BUY", "SELL"] = "SELL" if pos.side == "BUY" else "BUY"
         if creds is not None:
             try:
-                if creds.provider == "exness_mt5":
-                    await self.engine.mt5_client.close_mt5_ticket(
-                        account_id_or_login=creds.api_key,
-                        token_or_password=creds.api_secret,
-                        ticket=pos.order_id,
-                        lots=pos.quantity,
-                        server_name=creds.server_name,
-                    )
-                else:
-                    await self.engine.binance_client.place_market_order(
-                        api_key=creds.api_key,
-                        api_secret=creds.api_secret,
-                        symbol=pos.symbol,
-                        side=close_side,
-                        quantity=pos.quantity,
-                        reference_price=exit_price,
-                        testnet=creds.testnet,
-                    )
+                await self.engine.mt5_client.close_mt5_ticket(
+                    account_id_or_login=creds.api_key,
+                    token_or_password=creds.api_secret,
+                    ticket=pos.order_id,
+                    lots=pos.quantity,
+                    server_name=creds.server_name,
+                )
             except Exception as exc:
                 logger.warning("Closing order on broker encountered error", error=str(exc))
 
@@ -349,6 +363,8 @@ class AutoTradeSessionManager:
         notify_callback: Optional[NotifyCallback] = None,
     ) -> Any:
         sess.cycles_completed += 1
+        if hasattr(self.engine, "sync_live_mt5_positions"):
+            await self.engine.sync_live_mt5_positions(sess.user_id)
         open_positions = self.engine.vault.get_open_positions(sess.user_id, symbol=sess.symbol)
 
         if open_positions:

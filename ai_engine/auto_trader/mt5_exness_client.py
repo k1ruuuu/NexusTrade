@@ -5,15 +5,16 @@ from typing import Any, Literal, Optional
 
 import httpx
 
-from ai_engine.auto_trader.binance_client import (
-    BinanceAccountVerification,
-    BinanceOrderResult,
-)
 from ai_engine.auto_trader.mt5_symbols import (
     EXNESS_SERVER_HOSTS_CACHE,
     MT5_INDEX_COMMODITY_MAP,
+    BinanceAccountVerification,
+    BinanceOrderResult,
+    anchor_targets_to_fill_price,
     calculate_mt5_lots,
     compute_anchored_sl_tp,
+    estimate_mt5_pnl_usdt,
+    get_mt5_contract_size,
     resolve_mt5_symbol,
 )
 from config.logging_config import get_logger
@@ -27,11 +28,16 @@ MT5_REST_DIRECT_URL = "https://mt5.mtapi.io"
 _MT5_SESSION_TOKENS: dict[tuple[str, str], tuple[str, float]] = {}
 
 __all__ = [
+    "BinanceAccountVerification",
+    "BinanceOrderResult",
     "EXNESS_SERVER_HOSTS_CACHE",
     "MT5ExnessClient",
     "MT5_INDEX_COMMODITY_MAP",
+    "anchor_targets_to_fill_price",
     "calculate_mt5_lots",
     "compute_anchored_sl_tp",
+    "estimate_mt5_pnl_usdt",
+    "get_mt5_contract_size",
     "resolve_mt5_symbol",
 ]
 
@@ -65,7 +71,8 @@ class MT5ExnessClient:
         return (
             cleaned.startswith("EXNESS_DEMO_")
             or cleaned.startswith("MT5_DEMO_")
-            or cleaned.startswith("TESTNET_DEMO_")
+            or cleaned.startswith("TESTNET_")
+            or cleaned.startswith("DEMO_")
         )
 
     async def _resolve_server_hosts(
@@ -325,8 +332,10 @@ class MT5ExnessClient:
         server_name: str = "Exness-MT5Trial7",
     ) -> bool:
         """Close an open MT5 ticket by ticket number via `/OrderCloseSafe`."""
-        if not ticket.isdigit() or self._is_exness_trial_demo(account_id_or_login, True):
+        if self._is_exness_trial_demo(account_id_or_login, True):
             return True
+        if not ticket.isdigit():
+            return False
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                 tok, _ = await self._get_or_connect_session_token(
@@ -357,8 +366,10 @@ class MT5ExnessClient:
         server_name: str = "Exness-MT5Trial7",
     ) -> bool:
         """Update Stop-Loss (Trailing Stop) and Take-Profit on an open MT5 ticket via `/OrderModifySafe`."""
-        if not ticket.isdigit() or self._is_exness_trial_demo(account_id_or_login, True):
+        if self._is_exness_trial_demo(account_id_or_login, True):
             return True
+        if not ticket.isdigit():
+            return False
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                 tok, _ = await self._get_or_connect_session_token(
@@ -486,6 +497,23 @@ class MT5ExnessClient:
                         ticket = str(data.get("ticket") or data.get("order") or f"MT5-{int(time.time())}")
                         open_px = float(data.get("openPrice") or broker_px)
                         exec_lots = float(data.get("lots") or lots)
+                        if (
+                            ticket.isdigit()
+                            and abs(open_px - broker_px) > 1e-6
+                            and (sl_dist > 0 or tp_dist > 0)
+                        ):
+                            mod_sl, mod_tp, decimals = compute_anchored_sl_tp(
+                                side, open_px, sl_dist, tp_dist
+                            )
+                            await client.get(
+                                f"{MT5_REST_DIRECT_URL}/OrderModifySafe",
+                                params={
+                                    "id": tok,
+                                    "ticket": int(ticket),
+                                    "stoploss": mod_sl,
+                                    "takeprofit": mod_tp,
+                                },
+                            )
                         return BinanceOrderResult(
                             executed=True,
                             order_id=ticket,
@@ -493,11 +521,12 @@ class MT5ExnessClient:
                             side=side,
                             executed_qty=exec_lots,
                             avg_price=round(open_px, decimals),
-                            notional_usdt=round(quantity * open_px, 2),
+                            notional_usdt=round(
+                                exec_lots * get_mt5_contract_size(candidate_sym) * open_px, 2
+                            ),
                             testnet=testnet,
                             status=f"FILLED ({server_name} • Ticket #{ticket} • {exec_lots} Lot)",
                         )
-
                     try:
                         err_json = resp.json()
                         last_err = str(

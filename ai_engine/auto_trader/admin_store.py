@@ -341,12 +341,15 @@ class AdminStore:
         uname = (username or f"user_{uid}").strip()
         clean_action = action.strip()
         # SEC-201: Redact raw secrets from /setup logs (with or without testnet/live prefix)
-        if clean_action.lower().startswith("/setup"):
+        if clean_action.lower().startswith("/setup") and "[REDACTED" not in clean_action:
             parts = clean_action.split()
             if len(parts) >= 2:
-                mode_tok = parts[1].lower() if parts[1].lower() in ("testnet", "live", "spot") else "default"
+                mode_tok = (
+                    parts[1].lower()
+                    if parts[1].lower() in ("exness", "mt5", "trial", "real", "testnet", "live")
+                    else "exness"
+                )
                 clean_action = f"/setup {mode_tok} [REDACTED_CREDENTIALS]"
-
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         with self._connect() as conn:
             conn.execute(
