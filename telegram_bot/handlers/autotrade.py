@@ -13,7 +13,10 @@ from aiogram.types import (
 
 from ai_engine.auto_trader.mt5_exness_client import MT5ExnessClient
 from ai_engine.auto_trader.engine import SmartAutoTraderEngine
-from ai_engine.auto_trader.session_manager import is_session_duration_token
+from ai_engine.auto_trader.session_manager import (
+    format_position_closed_notification,
+    is_session_duration_token,
+)
 from ai_engine.auto_trader.user_vault import UserVault
 from ai_engine.models.ensemble_agent import EnsembleDecisionAgent
 from config.settings import Settings, get_settings
@@ -222,20 +225,12 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         )
         p = mon_res.position or existing_open[0]
         if mon_res.action_taken in ("CLOSED_TP", "CLOSED_SL"):
-            icon = "🔄" if mon_res.re_entry_position is not None else ("🎯" if mon_res.action_taken == "CLOSED_TP" else "🛡️")
-            re_line = (
-                f"\n• <b>Posisi Baru (Sesuai Berita):</b> <b>{mon_res.re_entry_position.side} {mon_res.re_entry_position.symbol}</b> "
-                f"@ <code>${mon_res.re_entry_position.entry_price:,.2f}</code> "
-                f"(SL: <code>${mon_res.re_entry_position.stop_loss:,.2f}</code> | TP1: <code>${mon_res.re_entry_position.take_profit_1:,.2f}</code>)"
-                if mon_res.re_entry_position is not None
-                else ""
-            )
             await message.answer(
-                f"{icon} <b>POSISI {p.symbol} ({p.side}) DITUTUP OTOMATIS</b>\n"
-                f"• <b>Alasan:</b> {mon_res.exit_reason}\n"
-                f"• <b>Harga Keluar:</b> <code>${mon_res.current_price:,.2f}</code>\n"
-                f"• <b>Realized PnL:</b> <code>${mon_res.realized_pnl_usdt:+.2f} USDT</code>"
-                f"{re_line}",
+                format_position_closed_notification(
+                    mon_res,
+                    header_title=f"POSISI {p.symbol} ({p.side}) DITUTUP OTOMATIS",
+                    pnl_label="Realized PnL",
+                ),
                 parse_mode="HTML",
                 reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=creds.autotrade_enabled),
             )

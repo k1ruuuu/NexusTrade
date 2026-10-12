@@ -101,7 +101,8 @@ NexusTrade/
 │   │   ├── mt5_symbols.py                        # MT5 symbol mapper, contract-size PnL & SL/TP anchor helper
 │   │   ├── mt5_exness_client.py                  # MetaTrader 5 / Exness Go all-asset 2-way BUY/SELL client
 │   │   ├── session_models.py                     # Duration/lot token parsers & session state dataclasses
-│   │   ├── session_manager.py                    # Timed autonomous trading session & trailing-stop position holder
+│   │   ├── position_monitor.py                   # Open position monitor, Trailing Stop, & Emergency News Reversal
+│   │   ├── session_manager.py                    # Timed autonomous trading session lifecycle manager
 │   │   └── engine.py                             # 6-Gate Smart Auto-Trader execution engine
 │   ├── risk_management/
 │   │   ├── stop_loss_manager.py              # 2x ATR(14) Stop-Loss, TP1/TP2, & trailing stop engine

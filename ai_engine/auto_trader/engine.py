@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
-
-from typing import Any
+from typing import Any, Optional
 
 from ai_engine.auto_trader.mt5_exness_client import (
     BinanceOrderResult,
     MT5ExnessClient,
     anchor_targets_to_fill_price,
-    estimate_mt5_pnl_usdt,
 )
 from ai_engine.auto_trader.session_manager import (
     AutoTradeSessionManager,

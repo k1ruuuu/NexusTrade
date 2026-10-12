@@ -104,8 +104,6 @@ class Settings(BaseSettings):
     vault_encryption_secret: str = Field(
         default="nexustrade_vault_master_secret_key_2026", min_length=16
     )
-    # Redis Cache Configuration
-    redis_url: str = Field(default="redis://localhost:6379/0")
 
     @field_validator("telegram_allowed_user_ids", "telegram_admin_user_ids", mode="before")
     @classmethod

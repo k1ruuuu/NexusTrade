@@ -473,69 +473,39 @@ class EnsembleDecisionAgent:
             symbol=clean_sym,
             market_df=market_df,
         )
-        newly_learned = sent_result.newly_learned_count
-
         roc_auc = 0.0
         if len(market_df) >= 60:
             roc_auc = self.ohlcv_predictor.train(
                 market_df, symbol=clean_sym, timeframe=timeframe, df_5y=df_5y
             )
             self.volatility_estimator.fit(market_df)
-            latest_bar_ts = str(market_df.index[-1])
-            latest_bar_close = float(market_df["close"].iloc[-1])
             self._last_trained_signature[f"{clean_sym}_{timeframe}"] = (
-                latest_bar_ts,
-                round(latest_bar_close, 4),
+                str(market_df.index[-1]),
+                round(float(market_df["close"].iloc[-1]), 4),
             )
-        tech_pred = self.ohlcv_predictor.predict(
-            market_df, symbol=clean_sym, timeframe=timeframe, df_5y=df_5y
-        )
-        vol_forecast = self.volatility_estimator.estimate(
-            market_df, symbol=clean_sym
-        )
-        macro_ctx = self.live_feed.compute_5y_macro_context(df_5y, tech_pred.latest_price)
-        sr_levels = self.sr_detector.detect_levels(
-            market_df, current_price=tech_pred.latest_price, atr_14=tech_pred.atr_14
-        )
-        adjusted_s_tech = float(np.clip(tech_pred.s_tech + sr_levels.sr_bias, -1.0, 1.0))
-        decision = self.synthesize_scores(
-            s_tech=adjusted_s_tech,
-            s_vol=vol_forecast.s_vol,
-            s_sent=sent_result.s_sent,
+
+        decision = self.analyze_symbol(
             symbol=clean_sym,
             timeframe=timeframe,
-            entry_price=tech_pred.latest_price,
-            atr_14=tech_pred.atr_14,
-            indicators=tech_pred.indicators,
-            headlines=[h.headline for h in sent_result.headline_scores],
-            newly_learned_headlines=newly_learned,
-            total_corpus_size=sent_result.total_corpus_size,
-            validation_accuracy=tech_pred.validation_accuracy,
-            validation_roc_auc=tech_pred.validation_roc_auc,
-            memory_bars_count=tech_pred.memory_bars_trained or len(market_df),
-            five_year_percentile=float(macro_ctx["five_year_percentile"]),
-            macro_regime=str(macro_ctx["macro_regime"]),
-            sr_levels=sr_levels,
-            market_df=market_df,
-            annualized_volatility=vol_forecast.annualized_volatility,
+            df=market_df,
+            headlines=[h.headline for h in sent_result.headline_scores] or None,
         )
-
         return {
             "symbol": clean_sym,
             "timeframe": timeframe,
-            "latest_price": tech_pred.latest_price,
+            "latest_price": decision.entry_price,
             "live_headlines_fetched": len(sent_result.headline_scores),
-            "newly_learned_headlines": newly_learned,
+            "newly_learned_headlines": sent_result.newly_learned_count,
             "total_corpus_size": sent_result.total_corpus_size,
             "online_updates_count": self.sentiment_analyzer.online_updates_count,
-            "validation_roc_auc": roc_auc or tech_pred.validation_roc_auc,
-            "validation_accuracy": tech_pred.validation_accuracy,
-            "memory_bars_count": tech_pred.memory_bars_trained or len(market_df),
-            "five_year_percentile": macro_ctx["five_year_percentile"],
-            "macro_regime": macro_ctx["macro_regime"],
-            "s_tech": tech_pred.s_tech,
+            "validation_roc_auc": roc_auc or decision.validation_roc_auc,
+            "validation_accuracy": decision.validation_accuracy,
+            "memory_bars_count": decision.memory_bars_count,
+            "five_year_percentile": decision.five_year_percentile,
+            "macro_regime": decision.macro_regime,
+            "s_tech": decision.s_tech,
             "s_sent": sent_result.s_sent,
-            "s_vol": vol_forecast.s_vol,
+            "s_vol": decision.s_vol,
             "action": decision.action,
             "confidence": decision.confidence,
             "sample_headlines": [
