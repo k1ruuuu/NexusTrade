@@ -704,3 +704,64 @@ async def test_exness_mt5_provider_all_asset_buy_and_sell_execution(tmp_path: Pa
     logs = admin_store.get_audit_logs(limit=5)
     assert any("[REDACTED_CREDENTIALS]" in l.action for l in logs)
     assert all("SuperSecretPass999" not in l.action for l in logs)
+
+    # 6. Sideways ADX(14) Regime Guard: blocks entry when market is sideways (`is_sideways=True`)
+    vault.set_autotrade_enabled(333, True)
+    sideways_dec = agent.synthesize_scores(
+        s_tech=0.88,
+        s_vol=0.20,
+        s_sent=0.60,
+        symbol="XAUUSD",
+        entry_price=4200.0,
+        atr_14=10.0,
+        headlines=["Gold steady in narrow range"],
+    )
+    sideways_dec.adx_14 = 14.2
+    sideways_dec.is_sideways = True
+    sideways_dec.market_structure_status = "Sideways / Ranging (ADX 14.2 < 20 • Rawan Fakeout)"
+    sideways_rep = await auto_trader.evaluate_and_execute(
+        user_id=333,
+        symbol="XAUUSD",
+        decision_override=sideways_dec,
+    )
+    assert sideways_rep.executed is False
+    assert any(
+        g.gate_number == 3 and not g.passed and "PASAR SIDEWAYS" in g.detail
+        for g in sideways_rep.gates
+    )
+
+    # 7. In-Position Emergency Breaking News Protection:
+    # Open a BUY position on XAUUSD, then simulate sudden severe negative breaking news -> Emergency Early Exit
+    vault.set_autotrade_enabled(333, True)
+    open_buy_dec = agent.synthesize_scores(
+        s_tech=0.92,
+        s_vol=0.20,
+        s_sent=0.65,
+        symbol="XAUUSD",
+        entry_price=4200.0,
+        atr_14=10.0,
+        headlines=["Strong central bank gold buying"],
+    )
+    open_buy_rep = await auto_trader.evaluate_and_execute(
+        user_id=333,
+        symbol="XAUUSD",
+        decision_override=open_buy_dec,
+        custom_lot=0.05,
+    )
+    assert open_buy_rep.executed is True
+    assert len(vault.get_open_positions(333, "XAUUSD")) == 1
+
+    emerg_exit_res = await auto_trader.monitor_and_manage_open_position(
+        user_id=333,
+        symbol="XAUUSD",
+        price_override=4198.5,
+        high_override=4199.0,
+        low_override=4198.0,
+        headlines_override=[
+            "Emergency crash panic selloff as central bank liquidates gold reserves and hikes rates sharply",
+            "Gold plunges on severe liquidity crisis and regulatory ban",
+        ],
+    )
+    assert emerg_exit_res.action_taken in ("CLOSED_SL", "CLOSED_TP")
+    assert "Proteksi Darurat Berita Buruk" in (emerg_exit_res.exit_reason or "")
+    assert len(vault.get_open_positions(333, "XAUUSD")) == 0

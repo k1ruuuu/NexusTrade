@@ -92,6 +92,9 @@ class SignalDecision:
     relative_volume: float = 1.0
     expected_move_1d: float = 0.0
     expectancy_r: float = 0.50
+    adx_14: float = 25.0
+    is_sideways: bool = False
+    market_structure_status: str = "Trending Normal (ADX 25.0)"
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
@@ -306,8 +309,10 @@ class EnsembleDecisionAgent:
             relative_volume=conf_report.relative_volume,
             expected_move_1d=conf_report.expected_move_1d,
             expectancy_r=conf_report.expectancy_r,
+            adx_14=conf_report.adx_14,
+            is_sideways=conf_report.is_sideways,
+            market_structure_status=conf_report.market_structure_status,
         )
-
     def load_market_series(
         self,
         symbol: str = "BTCUSDT",

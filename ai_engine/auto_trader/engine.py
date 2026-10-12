@@ -120,6 +120,7 @@ class SmartAutoTraderEngine:
         price_override: Optional[float] = None,
         high_override: Optional[float] = None,
         low_override: Optional[float] = None,
+        headlines_override: Optional[list[str]] = None,
     ) -> PositionMonitorResult:
         return await self.session_manager.monitor_and_manage_open_position(
             user_id=user_id,
@@ -128,6 +129,7 @@ class SmartAutoTraderEngine:
             price_override=price_override,
             high_override=high_override,
             low_override=low_override,
+            headlines_override=headlines_override,
         )
 
     async def sync_live_mt5_positions(self, user_id: int) -> dict[str, dict[str, Any]]:
@@ -279,7 +281,7 @@ class SmartAutoTraderEngine:
             )
         )
 
-        # Gate 3: 5-Year + Live Technical Conviction
+        # Gate 3: 5-Year + Live Technical Conviction & Anti-Sideways Chop Guard
         min_conf = self.settings.signal_confidence_threshold
         tech_aligned = (
             (decision.action == "BUY" and decision.s_tech > 0.15)
@@ -287,26 +289,33 @@ class SmartAutoTraderEngine:
         )
         conf_ok = (
             decision.action in ("BUY", "SELL")
+            and not decision.is_sideways
             and decision.confidence >= min_conf
             and tech_aligned
             and decision.expectancy_r > 0.0
             and decision.confluence_pillars >= 4
         )
-        if conf_ok:
+        if decision.is_sideways:
+            tech_detail = (
+                f"DITOLAK (PASAR SIDEWAYS): {decision.market_structure_status} — "
+                f"Menunggu Breakout Valid (RVOL >= 1.15x & Konfluensi Kuat)"
+            )
+        elif conf_ok:
             tech_detail = (
                 f"Sinyal {decision.badge} Kuat (Keyakinan {decision.confidence * 100:.1f}%, "
-                f"Konfluensi {decision.confluence_pillars}/6 Pilar, Expectancy +{decision.expectancy_r:.2f}R, "
-                f"Order Flow: {decision.cvd_status})"
+                f"Struktur: {decision.market_structure_status}, Konfluensi {decision.confluence_pillars}/6 Pilar, "
+                f"Expectancy +{decision.expectancy_r:.2f}R, Order Flow: {decision.cvd_status})"
             )
         else:
             tech_detail = (
                 f"DITOLAK: Keyakinan {decision.confidence * 100:.1f}% (Min {min_conf * 100:.0f}%), "
-                f"Konfluensi {decision.confluence_pillars}/6 Pilar, Expectancy {decision.expectancy_r:+.2f}R"
+                f"Struktur: {decision.market_structure_status}, Konfluensi {decision.confluence_pillars}/6 Pilar, "
+                f"Expectancy {decision.expectancy_r:+.2f}R"
             )
         gates.append(
             AutoTradeGateCheck(
                 gate_number=3,
-                name="Konfluensi 6 Pilar, Order Flow (CVD) & Expectancy",
+                name="Konfluensi 6 Pilar, Filter Sideways (ADX) & Expectancy",
                 passed=conf_ok,
                 detail=tech_detail,
             )

@@ -33,7 +33,9 @@ class ConfluenceReport:
     expectancy_usd: float
     confluence_adjustment: float
     invalidation_note: str
-
+    adx_14: float = 25.0
+    is_sideways: bool = False
+    market_structure_status: str = "Trending Normal (ADX 25.0)"
 
 class MultiFactorConfluenceAnalyzer:
     """
@@ -114,6 +116,33 @@ class MultiFactorConfluenceAnalyzer:
             (close - close.shift(5)).abs() / (close * bar_std_20 * np.sqrt(5.0)).replace(0.0, np.nan)
         ).fillna(0.5).clip(0.0, 5.0)
 
+        # 6. Wilder's ADX(14) (Average Directional Index) for Sideways vs Trending Regime Detection
+        up_move = high.diff()
+        down_move = -low.diff()
+        plus_dm = np.where((up_move > down_move) & (up_move > 0.0), up_move, 0.0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0.0), down_move, 0.0)
+        prev_close = close.shift(1).fillna(close)
+        tr = pd.concat(
+            [(high - low).abs(), (high - prev_close).abs(), (low - prev_close).abs()],
+            axis=1,
+        ).max(axis=1)
+        atr_14_w = tr.ewm(alpha=1.0 / 14.0, min_periods=1, adjust=False).mean().replace(0.0, np.nan)
+        plus_di = (
+            100.0
+            * pd.Series(plus_dm, index=out.index).ewm(alpha=1.0 / 14.0, min_periods=1, adjust=False).mean()
+            / atr_14_w
+        ).fillna(0.0)
+        minus_di = (
+            100.0
+            * pd.Series(minus_dm, index=out.index).ewm(alpha=1.0 / 14.0, min_periods=1, adjust=False).mean()
+            / atr_14_w
+        ).fillna(0.0)
+        di_sum = (plus_di + minus_di).replace(0.0, np.nan)
+        dx = (100.0 * (plus_di - minus_di).abs() / di_sum).fillna(0.0)
+        out["adx_14"] = (
+            dx.ewm(alpha=1.0 / 14.0, min_periods=1, adjust=False).mean().fillna(22.0).clip(0.0, 100.0)
+        )
+
         return out
 
     @classmethod
@@ -156,6 +185,7 @@ class MultiFactorConfluenceAnalyzer:
             dd_pct = float(last["drawdown_50"]) * 100.0
             mdd_pct = float(last["mdd_50"]) * 100.0
             adl_norm = float(last["adl_norm_20"])
+            adx_14 = float(last.get("adx_14", 25.0))
         else:
             cvd_delta_20 = 0.25 if s_tech > 0.15 else (-0.25 if s_tech < -0.15 else 0.0)
             div_val = 0.0
@@ -164,7 +194,18 @@ class MultiFactorConfluenceAnalyzer:
             dd_pct = -1.2
             mdd_pct = -4.5
             adl_norm = 0.20 if s_tech > 0 else (-0.20 if s_tech < 0 else 0.0)
+            adx_14 = 28.0 if abs(s_tech) >= 0.35 else 15.5
 
+        # Sideways Regime Detection: ADX < 20 without high-volume breakout conviction
+        is_sideways = bool(adx_14 < 20.0 and abs(s_tech) < 0.78 and rvol < 1.15)
+        if is_sideways:
+            market_structure_status = f"Sideways / Ranging (ADX {adx_14:.1f} < 20 • Rawan Fakeout)"
+        elif adx_14 < 20.0:
+            market_structure_status = f"Breakout Awal dari Sideways (ADX {adx_14:.1f} • RVOL {rvol:.2f}x)"
+        elif adx_14 >= 25.0:
+            market_structure_status = f"Trending Kuat (ADX {adx_14:.1f})"
+        else:
+            market_structure_status = f"Transisi Tren (ADX {adx_14:.1f})"
         if div_val > 0.5:
             cvd_div: Literal["NONE", "BULLISH_DIV", "BEARISH_DIV"] = "BULLISH_DIV"
         elif div_val < -0.5:
@@ -186,11 +227,12 @@ class MultiFactorConfluenceAnalyzer:
         # Evaluate the 6 Independent Pillars (Section 5 Table)
         pillars_passed = 0
 
-        # Pillar 1: Trend & Momentum Structure (Technical Analysis)
-        p1_ok = (action == "BUY" and s_tech >= 0.20) or (action == "SELL" and s_tech <= -0.20)
+        # Pillar 1: Trend & Momentum Structure (Technical Analysis + Not Trapped in Low-Volume Sideways Chop)
+        p1_ok = (not is_sideways) and (
+            (action == "BUY" and s_tech >= 0.20) or (action == "SELL" and s_tech <= -0.20)
+        )
         if p1_ok:
             pillars_passed += 1
-
         # Pillar 2: Order Flow (CVD) & Relative Volume (RVOL) Confirmation (No adverse divergence)
         if action == "BUY":
             p2_ok = cvd_div != "BEARISH_DIV" and (cvd_delta_20 >= -0.08 or rvol >= 0.85)
@@ -287,4 +329,7 @@ class MultiFactorConfluenceAnalyzer:
             expectancy_usd=expectancy_usd,
             confluence_adjustment=round(adj, 4),
             invalidation_note=invalidation_note,
+            adx_14=round(adx_14, 2),
+            is_sideways=is_sideways,
+            market_structure_status=market_structure_status,
         )

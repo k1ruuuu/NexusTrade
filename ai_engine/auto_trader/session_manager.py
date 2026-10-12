@@ -79,12 +79,15 @@ class AutoTradeSessionManager:
         price_override: Optional[float] = None,
         high_override: Optional[float] = None,
         low_override: Optional[float] = None,
+        headlines_override: Optional[list[str]] = None,
     ) -> PositionMonitorResult:
         """
         Inspect active OPEN position for `(user_id, symbol)`:
         - Does NOT close prematurely on small fluctuations.
-        - Ratchets Trailing Stop into profit once price moves >= +1.0 * ATR in favor.
-        - Closes position on broker & vault ONLY when TP1/TP2 or Stop-Loss/Trailing-Stop is hit.
+        - Checks for sudden adverse Breaking News while holding position (Emergency Exit on severe crash news,
+          or automatic Stop-Loss tightening on moderate adverse news).
+        - Ratchets Trailing Stop into profit once price moves >= +0.60 * ATR in favor.
+        - Closes position on broker & vault when TP1/TP2, Stop-Loss/Trailing-Stop, or Emergency News Exit triggers.
         """
         live_ticket_map: dict[str, dict[str, Any]] = {}
         if hasattr(self.engine, "sync_live_mt5_positions"):
@@ -162,8 +165,26 @@ class AutoTradeSessionManager:
                     pos, exit_px, "CLOSED_TP" if is_profit_stop else "CLOSED_SL", reason
                 )
 
-            # 3. Hold position & ratchet Trailing Stop once move >= +0.60 * ATR in favor
+            # 2b. In-Position Breaking News Protection for BUY position
+            news_s_sent = self._evaluate_live_position_news_sentiment(clean_sym, headlines_override)
+            if news_s_sent is not None and news_s_sent <= -0.35:
+                is_prof = curr_price >= pos.entry_price
+                return await self._close_position_on_broker(
+                    pos,
+                    curr_price,
+                    "CLOSED_TP" if is_prof else "CLOSED_SL",
+                    f"Proteksi Darurat Berita Buruk (Sentimen Anjlok {news_s_sent:+.2f}) — Posisi BUY Ditutup Dini",
+                    broker_pnl_override=unr_pnl,
+                )
+
+            # 3. Hold position & ratchet Trailing Stop once move >= +0.60 * ATR in favor (or on moderate bad news)
             candidate_sl = pos.stop_loss
+            if news_s_sent is not None and -0.35 < news_s_sent <= -0.18:
+                if curr_price > pos.entry_price:
+                    candidate_sl = max(candidate_sl, round(pos.entry_price, 4))
+                else:
+                    candidate_sl = max(candidate_sl, round(curr_price - 0.40 * est_atr, 4))
+
             if bar_high >= pos.entry_price + 0.60 * est_atr:
                 be_plus = round(pos.entry_price + 0.20 * est_atr, 4)
                 candidate_sl = max(candidate_sl, be_plus)
@@ -192,7 +213,6 @@ class AutoTradeSessionManager:
                 unrealized_pnl_usdt=round(unr_pnl, 2),
                 unrealized_pnl_pct=round(unr_pct, 2),
             )
-
         # SELL (Short) position management
         unr_pct = ((pos.entry_price - curr_price) / max(pos.entry_price, 1e-9)) * 100.0
         if pos.take_profit_2 > 0 and bar_low <= pos.take_profit_2:
@@ -217,7 +237,25 @@ class AutoTradeSessionManager:
                 pos, exit_px, "CLOSED_TP" if is_profit_stop else "CLOSED_SL", reason
             )
 
+        # 2b. In-Position Breaking News Protection for SELL position
+        news_s_sent = self._evaluate_live_position_news_sentiment(clean_sym, headlines_override)
+        if news_s_sent is not None and news_s_sent >= 0.35:
+            is_prof = curr_price <= pos.entry_price
+            return await self._close_position_on_broker(
+                pos,
+                curr_price,
+                "CLOSED_TP" if is_prof else "CLOSED_SL",
+                f"Proteksi Darurat Berita Positif Kuat (Sentimen Melonjak {news_s_sent:+.2f}) — Posisi SELL Ditutup Dini",
+                broker_pnl_override=unr_pnl,
+            )
+
         candidate_sl = pos.stop_loss
+        if news_s_sent is not None and 0.18 <= news_s_sent < 0.35:
+            if curr_price < pos.entry_price:
+                candidate_sl = min(candidate_sl, round(pos.entry_price, 4))
+            else:
+                candidate_sl = min(candidate_sl, round(curr_price + 0.40 * est_atr, 4))
+
         if bar_low <= pos.entry_price - 0.60 * est_atr:
             be_plus = round(pos.entry_price - 0.20 * est_atr, 4)
             candidate_sl = min(candidate_sl, be_plus)
@@ -247,6 +285,28 @@ class AutoTradeSessionManager:
             unrealized_pnl_pct=round(unr_pct, 2),
         )
 
+    def _evaluate_live_position_news_sentiment(
+        self,
+        symbol: str,
+        headlines_override: Optional[list[str]] = None,
+    ) -> Optional[float]:
+        """
+        Evaluate live breaking news sentiment while holding an open position.
+        Returns `s_sent` in [-1.0, +1.0], or `None` if news evaluation is disabled and no override is given.
+        """
+        try:
+            if headlines_override is None and not getattr(self.engine.settings, "use_live_news_feed", False):
+                return None
+            sent_res = self.engine.ensemble_agent.sentiment_analyzer.analyze_headlines(
+                headlines=headlines_override,
+                symbol=symbol,
+            )
+            if not sent_res.headline_scores:
+                return None
+            return float(sent_res.s_sent)
+        except Exception as exc:
+            logger.debug("In-position news sentiment check skipped", symbol=symbol, error=str(exc))
+            return None
     async def _sync_trailing_sl_on_broker(
         self,
         pos: UserPositionRecord,
