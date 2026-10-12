@@ -202,12 +202,15 @@ def format_timed_session_started_card(
         live_px = first_cycle_result.decision.entry_price
 
     if pos is not None and pos.status == "OPEN":
+        sl_dist = abs(pos.entry_price - pos.stop_loss)
+        tp1_dist = abs(pos.take_profit_1 - pos.entry_price)
+        tp2_dist = abs(pos.take_profit_2 - pos.entry_price)
         cycle_block = (
             f"🚀 <b>STATUS POSISI AKTIF (DIKAWAL REAL-TIME 1M):</b>\n"
             f"• <b>Posisi &amp; Ticket:</b> <b>{pos.side} {html.escape(pos.symbol)}</b> (<code>{pos.quantity} Lot</code> | Ticket <code>#{html.escape(pos.order_id)}</code>)\n"
             f"• <b>Harga Entry vs Live (1m):</b> <code>{format_price(pos.entry_price)}</code> ➔ <b><code>{format_price(live_px)}</code></b>\n"
-            f"• <b>Stop Loss / Trailing SL:</b> <code>{format_price(pos.stop_loss)}</code>\n"
-            f"• <b>Target Profit (TP1 | TP2):</b> <code>{format_price(pos.take_profit_1)}</code> | <code>{format_price(pos.take_profit_2)}</code>"
+            f"• <b>Stop Loss (1R):</b> <code>{format_price(pos.stop_loss)}</code> (Jarak <code>{format_price(sl_dist)}</code>)\n"
+            f"• <b>Take Profit (1:2 | 1:3):</b> <code>{format_price(pos.take_profit_1)}</code> (<code>{format_price(tp1_dist)}</code>) | <code>{format_price(pos.take_profit_2)}</code> (<code>{format_price(tp2_dist)}</code>)"
         )
     elif isinstance(first_cycle_result, AutoTradeExecutionReport):
         reason = html.escape(

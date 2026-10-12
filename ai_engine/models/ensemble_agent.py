@@ -491,9 +491,10 @@ class EnsembleDecisionAgent:
         symbol: str = "BTCUSDT",
     ) -> SignalDecision:
         """
-        Multi-Timeframe Auto-Trade Intelligence:
-        - Analyzes market movement & trend across `1D`, `1H`, `15M`, and `5M`.
-        - Executes open-position timing, entry price, and micro-momentum trigger on `1M` (`1m`).
+        Multi-Timeframe + 3-Month Deep News Auto-Trade Intelligence:
+        1. Reads latest breaking news + 3 months (90 days) historical news in detail.
+        2. Analyzes market movement & trend across `1D`, `1H`, `15M`, and `5M`.
+        3. Executes open-position timing, entry price, and realistic 1:2 / 1:3 SL/TP on `1M` (`1m`).
         """
         clean_sym = normalize_symbol(symbol)
         df_1d = self.load_market_series(clean_sym, timeframe="1d", limit=160)
@@ -502,12 +503,24 @@ class EnsembleDecisionAgent:
         df_5m = self.load_market_series(clean_sym, timeframe="5m", limit=160)
         df_1m = self.load_market_series(clean_sym, timeframe="1m", limit=160)
 
+        # Step 1: Mandatory Deep News Analysis (Latest Breaking + 3 Months / 90 Days Back)
+        sent_90d = self.sentiment_analyzer.analyze_headlines(
+            symbol=clean_sym,
+            market_df=df_1d if (df_1d is not None and len(df_1d) > 0) else df_15m,
+        )
+
+        # Step 2: Multi-Timeframe (1D, 1H, 15M, 5M) Market & Trend Analysis
         s_1d, _, lbl_1d = self._score_timeframe_trend(df_1d)
         s_1h, atr_1h, lbl_1h = self._score_timeframe_trend(df_1h)
         s_5m, atr_5m, lbl_5m = self._score_timeframe_trend(df_5m)
         s_1m, atr_1m, lbl_1m = self._score_timeframe_trend(df_1m)
 
-        base_15m = self.analyze_symbol(clean_sym, timeframe="15m", df=df_15m)
+        base_15m = self.analyze_symbol(
+            clean_sym,
+            timeframe="15m",
+            df=df_15m,
+            headlines=[h.headline for h in sent_90d.headline_scores] or None,
+        )
         s_15m_raw, atr_15m, _ = self._score_timeframe_trend(df_15m)
         s_15m = float(np.clip(0.65 * base_15m.s_tech + 0.35 * s_15m_raw, -1.0, 1.0))
         lbl_15m = "🟢 BULL" if s_15m >= 0.12 else ("🔴 BEAR" if s_15m <= -0.12 else "🟡 FLAT")
@@ -526,7 +539,7 @@ class EnsembleDecisionAgent:
         else:
             blended_s_tech = float(mtf_trend_score * 0.45)
 
-        # 1m Action Open Position Trigger: ensure 1m candle is not violently opposing the entry
+        # Step 3: 1m Action Open Position Trigger & Realistic 1m-5m ATR Calibration (1:2 TP1 & 1:3 TP2)
         if blended_s_tech > 0.15 and s_1m < -0.35:
             blended_s_tech *= 0.45
             act_1m_tag = f"⏳ TUNGGU PULLBACK 1M SELESAI ({s_1m:+.2f})"
@@ -541,12 +554,12 @@ class EnsembleDecisionAgent:
             if (df_1m is not None and len(df_1m) > 0)
             else base_15m.entry_price
         )
-        blended_atr = max(
-            atr_1m * 2.4,
-            atr_5m * 1.35,
-            (atr_15m or base_15m.atr_14) * 0.85,
-            entry_px_1m * 0.002,
+        raw_micro_atr = max(
+            atr_1m * 1.35,
+            atr_5m * 0.65,
+            entry_px_1m * 0.00045,
         )
+        blended_atr = min(raw_micro_atr, entry_px_1m * 0.0012)
         sr_levels = self.sr_detector.detect_levels(
             df_15m if (df_15m is not None and len(df_15m) >= 20) else df_1h,
             current_price=entry_px_1m,
@@ -555,15 +568,15 @@ class EnsembleDecisionAgent:
         decision = self.synthesize_scores(
             s_tech=blended_s_tech,
             s_vol=base_15m.s_vol,
-            s_sent=base_15m.s_sent,
+            s_sent=sent_90d.s_sent,
             symbol=clean_sym,
             timeframe="1m",
             entry_price=entry_px_1m,
             atr_14=blended_atr,
             indicators=base_15m.indicators,
-            headlines=base_15m.headlines,
-            newly_learned_headlines=base_15m.newly_learned_headlines,
-            total_corpus_size=base_15m.total_corpus_size,
+            headlines=[h.headline for h in sent_90d.headline_scores],
+            newly_learned_headlines=sent_90d.newly_learned_count,
+            total_corpus_size=sent_90d.total_corpus_size,
             validation_accuracy=base_15m.validation_accuracy,
             validation_roc_auc=base_15m.validation_roc_auc,
             memory_bars_count=base_15m.memory_bars_count,
@@ -574,6 +587,7 @@ class EnsembleDecisionAgent:
         )
         decision.mtf_aligned_count = aligned_count
         decision.mtf_summary = (
+            f"News 3Bln({len(sent_90d.headline_scores)} berita: {sent_90d.s_sent:+.2f}) • "
             f"1D:{lbl_1d}({s_1d:+.2f}) • 1H:{lbl_1h}({s_1h:+.2f}) • "
             f"15M:{lbl_15m}({s_15m:+.2f}) • 5M:{lbl_5m}({s_5m:+.2f}) ➔ Action 1M: {act_1m_tag}"
         )

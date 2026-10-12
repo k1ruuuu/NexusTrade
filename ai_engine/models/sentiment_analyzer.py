@@ -285,7 +285,7 @@ class FinancialSentimentAnalyzer:
         update the online SGDClassifier with partial_fit, and persist to Parquet.
         """
         live_items = self.live_news_feed.fetch_live_news(
-            symbol=symbol, max_items=10, force_refresh=force_refresh
+            symbol=symbol, max_items=30, force_refresh=force_refresh, lookback_days=90
         )
         if not live_items or not self.settings.online_learning_enabled:
             return live_items, 0
@@ -393,7 +393,10 @@ class FinancialSentimentAnalyzer:
                 live_used = True
 
         if live_used and live_items:
-            eff_weights = [float(np.exp(-0.18 * idx)) for idx in range(len(live_items))]
+            # Weight recent breaking news higher while preserving 3-month (90-day) macro news tail
+            eff_weights = [
+                float(max(0.18, np.exp(-0.10 * idx))) for idx in range(len(live_items))
+            ]
             scored_items = [
                 self.score_headline(
                     item.headline,

@@ -334,30 +334,30 @@ class SmartAutoTraderEngine:
         decision = decision_override or self.ensemble_agent.analyze_multi_timeframe_autotrade(
             symbol=clean_sym
         )
-        # Gate 2: Breaking News & FinBERT Sentiment Alignment (Neutral band (-0.15, +0.15) is allowed)
+        # Gate 2: Mandatory Breaking + 3-Month (90-Day) Deep News Sentiment Alignment
         n_news = len(decision.headlines)
         if decision.action == "BUY":
             news_ok = decision.s_sent > -0.15
             news_detail = (
-                f"Sentimen Berita Selaras ({decision.s_sent:+.2f} dari {n_news} berita mendukung/netral untuk BELI)"
+                f"Berita Terbaru s/d 3 Bulan Selaras ({decision.s_sent:+.2f} dari {n_news} berita 90 hari mendukung/netral untuk BELI)"
                 if news_ok
-                else f"DITOLAK: Berita sedang negatif ({decision.s_sent:+.2f}), berbahaya untuk membuka posisi BELI"
+                else f"DITOLAK: Berita Terbaru s/d 3 Bulan negatif ({decision.s_sent:+.2f} dari {n_news} berita), berbahaya untuk BELI"
             )
         elif decision.action == "SELL":
             news_ok = decision.s_sent < 0.15
             news_detail = (
-                f"Sentimen Berita Selaras ({decision.s_sent:+.2f} dari {n_news} berita mendukung/netral untuk JUAL)"
+                f"Berita Terbaru s/d 3 Bulan Selaras ({decision.s_sent:+.2f} dari {n_news} berita 90 hari mendukung/netral untuk JUAL)"
                 if news_ok
-                else f"DITOLAK: Berita sedang positif ({decision.s_sent:+.2f}), berbahaya untuk membuka posisi JUAL"
+                else f"DITOLAK: Berita Terbaru s/d 3 Bulan positif ({decision.s_sent:+.2f} dari {n_news} berita), berbahaya untuk JUAL"
             )
         else:
             news_ok = False
-            news_detail = f"Sentimen berita {decision.s_sent:+.2f} ({n_news} berita), namun belum ada pemicu arah kuat"
+            news_detail = f"Sentimen berita 3 bulan {decision.s_sent:+.2f} ({n_news} berita), menunggu pemicu arah kuat"
 
         gates.append(
             AutoTradeGateCheck(
                 gate_number=2,
-                name="Baca Berita & Sentimen Pasar",
+                name="Analisis Berita Terbaru s/d 3 Bulan (90 Hari) Kebelakang",
                 passed=news_ok,
                 detail=news_detail,
             )
