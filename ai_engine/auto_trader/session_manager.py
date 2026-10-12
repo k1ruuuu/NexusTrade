@@ -102,8 +102,9 @@ class AutoTradeSessionManager:
             bar_high = float(high_override or curr_price)
             bar_low = float(low_override or curr_price)
 
-        initial_stop_dist = max(abs(pos.entry_price - pos.stop_loss), pos.entry_price * 0.005)
-        est_atr = initial_stop_dist / max(self.engine.settings.atr_stop_loss_multiplier, 1.0)
+        initial_stop_dist = max(abs(pos.entry_price - pos.stop_loss), pos.entry_price * 0.002)
+        est_atr = initial_stop_dist / 0.85
+        trail_dist = max(0.65 * est_atr, initial_stop_dist * 0.75)
 
         if pos.side == "BUY":
             unr_pnl = (curr_price - pos.entry_price) * pos.quantity
@@ -134,19 +135,20 @@ class AutoTradeSessionManager:
                     pos, exit_px, "CLOSED_TP" if is_profit_stop else "CLOSED_SL", reason
                 )
 
-            # 3. Hold position & ratchet Trailing Stop once move >= +1.0 * ATR in favor
+            # 3. Hold position & ratchet Trailing Stop once move >= +0.60 * ATR in favor
             candidate_sl = pos.stop_loss
-            if bar_high >= pos.entry_price + 1.0 * est_atr:
-                be_plus = round(pos.entry_price + 0.35 * est_atr, 4)
+            if bar_high >= pos.entry_price + 0.60 * est_atr:
+                be_plus = round(pos.entry_price + 0.20 * est_atr, 4)
                 candidate_sl = max(candidate_sl, be_plus)
                 trailed = self.engine.ensemble_agent.stop_loss_manager.update_trailing_stop(
-                    "BUY", bar_high, candidate_sl, initial_stop_dist
+                    "BUY", bar_high, candidate_sl, trail_dist
                 )
                 candidate_sl = max(candidate_sl, trailed)
 
             if candidate_sl > pos.stop_loss + 1e-6:
                 self.engine.vault.update_position_stop_loss(pos.position_id, candidate_sl)
                 pos.stop_loss = candidate_sl
+                await self._sync_trailing_sl_on_broker(pos, candidate_sl)
                 return PositionMonitorResult(
                     action_taken="TRAILING_UPDATED",
                     position=pos,
@@ -191,17 +193,18 @@ class AutoTradeSessionManager:
             )
 
         candidate_sl = pos.stop_loss
-        if bar_low <= pos.entry_price - 1.0 * est_atr:
-            be_plus = round(pos.entry_price - 0.35 * est_atr, 4)
+        if bar_low <= pos.entry_price - 0.60 * est_atr:
+            be_plus = round(pos.entry_price - 0.20 * est_atr, 4)
             candidate_sl = min(candidate_sl, be_plus)
             trailed = self.engine.ensemble_agent.stop_loss_manager.update_trailing_stop(
-                "SELL", bar_low, candidate_sl, initial_stop_dist
+                "SELL", bar_low, candidate_sl, trail_dist
             )
             candidate_sl = min(candidate_sl, trailed)
 
         if candidate_sl < pos.stop_loss - 1e-6:
             self.engine.vault.update_position_stop_loss(pos.position_id, candidate_sl)
             pos.stop_loss = candidate_sl
+            await self._sync_trailing_sl_on_broker(pos, candidate_sl)
             return PositionMonitorResult(
                 action_taken="TRAILING_UPDATED",
                 position=pos,
@@ -218,6 +221,23 @@ class AutoTradeSessionManager:
             unrealized_pnl_usdt=round(unr_pnl, 2),
             unrealized_pnl_pct=round(unr_pct, 2),
         )
+
+    async def _sync_trailing_sl_on_broker(
+        self,
+        pos: UserPositionRecord,
+        new_stop_loss: float,
+    ) -> None:
+        """Push updated Trailing Stop-Loss to Exness MT5 in real time via `/OrderModifySafe`."""
+        creds = self.engine.vault.resolve_credentials(pos.user_id)
+        if creds is not None and creds.provider == "exness_mt5":
+            await self.engine.mt5_client.modify_mt5_ticket(
+                account_id_or_login=creds.api_key,
+                token_or_password=creds.api_secret,
+                ticket=pos.order_id,
+                stop_loss=new_stop_loss,
+                take_profit=pos.take_profit_1,
+                server_name=creds.server_name,
+            )
 
     async def _close_position_on_broker(
         self,

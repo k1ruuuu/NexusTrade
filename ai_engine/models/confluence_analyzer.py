@@ -232,8 +232,8 @@ class MultiFactorConfluenceAnalyzer:
         if p5_ok:
             pillars_passed += 1
 
-        # Pillar 6: Volatility Regime & Reward-to-Risk Ratio >= 2.0
-        p6_ok = rrr >= 1.95 and s_vol < 0.85
+        # Pillar 6: Volatility Regime & Realistic Reward-to-Risk Ratio >= 1.15
+        p6_ok = rrr >= 1.15 and s_vol < 0.85
         if p6_ok:
             pillars_passed += 1
 

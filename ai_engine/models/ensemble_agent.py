@@ -211,11 +211,22 @@ class EnsembleDecisionAgent:
         resolved_sr = sr_levels or self.sr_detector.detect_levels(
             None, current_price=entry_price, atr_14=effective_atr
         )
-        targets: StopLossTargets = self.stop_loss_manager.calculate_targets(
-            entry_price=entry_price,
-            atr_14=effective_atr,
-            action=raw_action,
-        )
+        if sr_levels is not None:
+            targets: StopLossTargets = self.stop_loss_manager.calculate_realistic_targets(
+                entry_price=entry_price,
+                atr_14=effective_atr,
+                action=raw_action,
+                support_1=resolved_sr.support_1,
+                support_2=resolved_sr.support_2,
+                resistance_1=resolved_sr.resistance_1,
+                resistance_2=resolved_sr.resistance_2,
+            )
+        else:
+            targets = self.stop_loss_manager.calculate_targets(
+                entry_price=entry_price,
+                atr_14=effective_atr,
+                action=raw_action,
+            )
 
         sizing: PositionSizeResult = self.position_sizer.calculate_position(
             entry_price=entry_price,

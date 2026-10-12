@@ -347,6 +347,38 @@ class MT5ExnessClient:
         except Exception:
             return False
 
+    async def modify_mt5_ticket(
+        self,
+        account_id_or_login: str,
+        token_or_password: str,
+        ticket: str,
+        stop_loss: float,
+        take_profit: float,
+        server_name: str = "Exness-MT5Trial7",
+    ) -> bool:
+        """Update Stop-Loss (Trailing Stop) and Take-Profit on an open MT5 ticket via `/OrderModifySafe`."""
+        if not ticket.isdigit() or self._is_exness_trial_demo(account_id_or_login, True):
+            return True
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                tok, _ = await self._get_or_connect_session_token(
+                    client, account_id_or_login, token_or_password, server_name
+                )
+                if not tok:
+                    return False
+                resp = await client.get(
+                    f"{MT5_REST_DIRECT_URL}/OrderModifySafe",
+                    params={
+                        "id": tok,
+                        "ticket": int(ticket),
+                        "stoploss": round(stop_loss, 4),
+                        "takeprofit": round(take_profit, 4),
+                    },
+                )
+                return resp.status_code == 200
+        except Exception:
+            return False
+
     async def place_market_order(
         self,
         account_id_or_login: str,
