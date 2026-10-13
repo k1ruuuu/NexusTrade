@@ -1,6 +1,8 @@
 from src.features.structure_extractor import (
     CandleStructuralExtractor,
     FairValueGapZone,
+    OrderBlockZone,
+    SupplyDemandZone,
     SupportResistanceCluster,
     VolumeProfileSnapshot,
 )

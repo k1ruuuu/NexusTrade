@@ -206,9 +206,9 @@ def format_timed_session_started_card(
         tp1_dist = abs(pos.take_profit_1 - pos.entry_price)
         tp2_dist = abs(pos.take_profit_2 - pos.entry_price)
         cycle_block = (
-            f"🚀 <b>STATUS POSISI AKTIF (DIKAWAL REAL-TIME 1M):</b>\n"
+            f"🚀 <b>STATUS POSISI AKTIF (DIKAWAL REAL-TIME 5M):</b>\n"
             f"• <b>Posisi &amp; Ticket:</b> <b>{pos.side} {html.escape(pos.symbol)}</b> (<code>{pos.quantity} Lot</code> | Ticket <code>#{html.escape(pos.order_id)}</code>)\n"
-            f"• <b>Harga Entry vs Live (1m):</b> <code>{format_price(pos.entry_price)}</code> ➔ <b><code>{format_price(live_px)}</code></b>\n"
+            f"• <b>Harga Entry vs Live (5m):</b> <code>{format_price(pos.entry_price)}</code> ➔ <b><code>{format_price(live_px)}</code></b>\n"
             f"• <b>Stop Loss (1R):</b> <code>{format_price(pos.stop_loss)}</code> (Jarak <code>{format_price(sl_dist)}</code>)\n"
             f"• <b>Take Profit (1:2 | 1:3):</b> <code>{format_price(pos.take_profit_1)}</code> (<code>{format_price(tp1_dist)}</code>) | <code>{format_price(pos.take_profit_2)}</code> (<code>{format_price(tp2_dist)}</code>)"
         )
@@ -217,9 +217,9 @@ def format_timed_session_started_card(
             first_cycle_result.rejection_summary or session.last_check_summary
         )
         cycle_block = (
-            f"🔍 <b>STATUS PEMANTAUAN 24/7 (MENUNGGU ENTRY 1M TERBAIK):</b>\n"
+            f"🔍 <b>STATUS PEMANTAUAN 24/7 (MENUNGGU ENTRY 5M TERBAIK):</b>\n"
             f"• <b>Filter 6 Gerbang:</b> <i>{reason}</i>\n"
-            f"• <b>Tindakan AI:</b> Memindai tren <b>1D, 1H, 15M, 5M</b> non-stop &amp; langsung membuka posisi di <b>1M</b> begitu ke-6 Gerbang selaras."
+            f"• <b>Tindakan AI:</b> Memindai tren <b>1D, 1H, 15M, 5M</b> non-stop &amp; langsung membuka posisi di <b>5M</b> begitu ke-6 Gerbang selaras."
         )
     else:
         cycle_block = (
@@ -233,19 +233,18 @@ def format_timed_session_started_card(
     )
     upd_str = html.escape(session.last_updated_iso or session.started_at_iso)
     return (
-        f"🤖 <b>AUTO-TRADE 24/7 NON-STOP AKTIF — {sym} (ACTION 1M)</b>\n"
+        f"🤖 <b>AUTO-TRADE 24/7 NON-STOP AKTIF — {sym} (ACTION 5M)</b>\n"
         f"⏱️ <i>SESI AUTO-TRADE OTOMATIS ({dur.upper()}) AKTIF</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• <b>Mode Sistem:</b> 🟢 <b>24/7 Non-Stop</b> (<code>{html.escape(session.remaining_human)}</code>)\n"
-        f"• <b>Analisa Tren:</b> <code>1D • 1H • 15M • 5M</code> ➔ <b>Action Open/Close:</b> <code>1M</code>\n"
+        f"• <b>Analisa Tren:</b> <code>1D • 1H • 15M • 5M</code> ➔ <b>Action Open/Close:</b> <code>5M</code>\n"
         f"• <b>Ukuran Lot Order:</b> {lot_lbl}\n"
         f"• <b>Peta Tren MTF:</b> <i>{html.escape(session.mtf_status_line)}</i>\n\n"
         f"<b>💰 LIVE PROFIT MONITOR (REAL-TIME TANPA DELAY):</b>\n"
         f"• <b>Floating Profit (Berjalan):</b> {float_icon} <b><code>${floating_pnl:+.2f} USD ({floating_pct:+.2f}%)</code></b>\n"
         f"• <b>Realized Profit (Terealisasi):</b> <code>${realized_pnl:+.2f} USD</code> (🟢 <code>{session.winning_trades}W</code> / 🔴 <code>{session.losing_trades}L</code>)\n"
         f"• <b>Total Akumulasi Profit:</b> {net_icon} <b><code>${total_net_pnl:+.2f} USD</code></b>\n"
-        f"• <b>Harga Live (1m) &amp; Siklus:</b> <code>{format_price(live_px)}</code> | Siklus <code>#{session.cycles_completed}</code> (<code>{upd_str}</code>)\n\n"
-        f"{cycle_block}\n\n"
+        f"• <b>Harga Live (5m) &amp; Siklus:</b> <code>{format_price(live_px)}</code> | Siklus <code>#{session.cycles_completed}</code> (<code>{upd_str}</code>)\n\n"
         f"<i>💡 Data profit di atas diperbarui otomatis secara real-time. Ketik <code>/autotrade off</code> untuk menonaktifkan Auto-Trade 24/7.</i>"
     )
 

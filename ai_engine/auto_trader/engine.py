@@ -541,26 +541,27 @@ class SmartAutoTraderEngine:
                 )
 
             order_side = "BUY" if decision.action == "BUY" else "SELL"
-            eff_risk_rate = min(
-                float(creds.risk_per_trade_pct),
-                float(self.settings.max_account_risk_per_trade),
-            )
-            trade_budget = user_equity * eff_risk_rate
-            if is_micro_account:
-                # Slight relaxation for micro accounts (<$100): allow up to 12% per trade (max $1.20)
-                trade_budget = max(trade_budget, min(user_equity * 0.12, 1.20))
-            daily_headroom = (
-                max(0.0, start_eq * eff_dd_limit - max(0.0, start_eq - curr_eq))
-                if start_eq > 0
-                else trade_budget
-            )
-            max_risk_budget = min(trade_budget, daily_headroom)
             qty = user_sizing.position_units
             candidate_lots = (
                 round(max(0.01, min(float(custom_lot), 50.0)), 2)
                 if (custom_lot is not None and custom_lot > 0)
                 else calculate_mt5_lots(clean_sym, qty, decision.entry_price)
             )
+            eff_risk_rate = min(
+                float(creds.risk_per_trade_pct),
+                float(self.settings.max_account_risk_per_trade),
+            )
+            trade_budget = user_equity * eff_risk_rate
+            if is_micro_account:
+                # Rekomendasi 1 & Saldo Mikro: Dukung jarak Stop Loss 5M yang sehat pada lot minimum broker (0.01)
+                micro_min_lot_budget = min(user_equity * 0.45, 4.50) if candidate_lots <= 0.01 else min(user_equity * 0.12, 1.20)
+                trade_budget = max(trade_budget, micro_min_lot_budget)
+            daily_headroom = (
+                max(0.0, start_eq * eff_dd_limit - max(0.0, start_eq - curr_eq))
+                if start_eq > 0
+                else trade_budget
+            )
+            max_risk_budget = min(trade_budget, daily_headroom)
             eff_stop_loss = decision.stop_loss
             loss_at_stop = abs(
                 estimate_mt5_pnl_usdt(

@@ -503,11 +503,12 @@ class EnsembleDecisionAgent:
         """
         Multi-Timeframe + 3-Month Deep News Auto-Trade Intelligence:
         1. Reads latest breaking news + 3 months (90 days) historical news in detail.
-        2. Analyzes market movement & trend across `1D`, `1H`, `15M`, and `5M`.
+        2. Analyzes market movement & trend across `1D`, `4H`, `1H`, `15M`, and `5M`.
         3. Executes open-position timing, entry price, and realistic 1:2 / 1:3 SL/TP on `1M` (`1m`).
         """
         clean_sym = normalize_symbol(symbol)
         df_1d = self.load_market_series(clean_sym, timeframe="1d", limit=160)
+        df_4h = self.load_market_series(clean_sym, timeframe="4h", limit=160)
         df_1h = self.load_market_series(clean_sym, timeframe="1h", limit=160)
         df_15m = self.load_market_series(clean_sym, timeframe="15m", limit=300)
         df_5m = self.load_market_series(clean_sym, timeframe="5m", limit=160)
@@ -519,8 +520,9 @@ class EnsembleDecisionAgent:
             market_df=df_1d if (df_1d is not None and len(df_1d) > 0) else df_15m,
         )
 
-        # Step 2: Multi-Timeframe (1D, 1H, 15M, 5M) Market & Trend Analysis
+        # Step 2: Multi-Timeframe (1D, 4H, 1H, 15M, 5M) Market & Trend Analysis
         s_1d, _, lbl_1d = self._score_timeframe_trend(df_1d)
+        s_4h, atr_4h, lbl_4h = self._score_timeframe_trend(df_4h)
         s_1h, atr_1h, lbl_1h = self._score_timeframe_trend(df_1h)
         s_5m, atr_5m, lbl_5m = self._score_timeframe_trend(df_5m)
         s_1m, atr_1m, lbl_1m = self._score_timeframe_trend(df_1m)
@@ -535,9 +537,9 @@ class EnsembleDecisionAgent:
         s_15m = float(np.clip(0.65 * base_15m.s_tech + 0.35 * s_15m_raw, -1.0, 1.0))
         lbl_15m = "🟢 BULL" if s_15m >= 0.12 else ("🔴 BEAR" if s_15m <= -0.12 else "🟡 FLAT")
 
-        mtf_trend_score = 0.20 * s_1d + 0.25 * s_1h + 0.35 * s_15m + 0.20 * s_5m
+        mtf_trend_score = 0.15 * s_1d + 0.20 * s_4h + 0.25 * s_1h + 0.25 * s_15m + 0.15 * s_5m
         dom_sign = 1.0 if mtf_trend_score >= 0 else -1.0
-        tf_scores = [s_1d, s_1h, s_15m, s_5m]
+        tf_scores = [s_1d, s_4h, s_1h, s_15m, s_5m]
         aligned_count = sum(1 for sc in tf_scores if (sc * dom_sign) >= 0.08)
 
         # F12: Never invert an opposing 15m model score using abs(); only boost when 15m agrees with dom_sign
@@ -552,39 +554,46 @@ class EnsembleDecisionAgent:
             blended_s_tech = float(base_15m.s_tech)
         else:
             blended_s_tech = float(mtf_trend_score * 0.45)
-        # Step 3: 1m Action Open Position Trigger & Realistic 1m-5m ATR Calibration (1:2 TP1 & 1:3 TP2)
-        if blended_s_tech > 0.15 and s_1m < -0.35:
-            blended_s_tech *= 0.45
-            act_1m_tag = f"⏳ TUNGGU PULLBACK 1M SELESAI ({s_1m:+.2f})"
-        elif blended_s_tech < -0.15 and s_1m > 0.35:
-            blended_s_tech *= 0.45
-            act_1m_tag = f"⏳ TUNGGU LONJAKAN 1M REDA ({s_1m:+.2f})"
-        else:
-            act_1m_tag = f"⚡ TRIGGER 1M SIAP ({lbl_1m} {s_1m:+.2f})"
+        # Step 3: Rekomendasi 1 & 3 — Eksekusi Aksi di 5M, ATR Robust (bebas noise spread), & Filter Sideways/Chop
+        entry_px_5m = (
+            float(df_5m["close"].iloc[-1])
+            if (df_5m is not None and len(df_5m) > 0)
+            else (float(df_1m["close"].iloc[-1]) if (df_1m is not None and len(df_1m) > 0) else base_15m.entry_price)
+        )
+        # ATR Robust: Bebas dari batas 0.12% yang mencekik SL, memberikan ruang napas wajar di 5M/15M
+        raw_robust_atr = max(
+            atr_5m * 1.20,
+            atr_15m * 0.70,
+            entry_px_5m * 0.0030,
+        )
+        blended_atr = raw_robust_atr
 
-        entry_px_1m = (
-            float(df_1m["close"].iloc[-1])
-            if (df_1m is not None and len(df_1m) > 0)
-            else base_15m.entry_price
-        )
-        raw_micro_atr = max(
-            atr_1m * 1.35,
-            atr_5m * 0.65,
-            entry_px_1m * 0.00045,
-        )
-        blended_atr = min(raw_micro_atr, entry_px_1m * 0.0012)
+        # Rekomendasi 3: Filter Pasar Sideways / Chop (ADX < 20 atau konsolidasi tanpa momentum)
+        is_market_chop = bool(base_15m.is_sideways or (abs(s_1h) < 0.08 and abs(s_15m) < 0.08 and abs(s_5m) < 0.08))
+        if is_market_chop:
+            blended_s_tech *= 0.35
+            act_5m_tag = "⏳ PASAR SIDEWAYS / CHOP (Rawan Fakeout • Tahan Entri)"
+        elif blended_s_tech > 0.15 and s_5m < -0.25:
+            blended_s_tech *= 0.45
+            act_5m_tag = f"⏳ TUNGGU PULLBACK 5M SELESAI ({s_5m:+.2f})"
+        elif blended_s_tech < -0.15 and s_5m > 0.25:
+            blended_s_tech *= 0.45
+            act_5m_tag = f"⏳ TUNGGU LONJAKAN 5M REDA ({s_5m:+.2f})"
+        else:
+            act_5m_tag = f"⚡ TRIGGER 5M SIAP ({lbl_5m} {s_5m:+.2f})"
+
         sr_levels = self.sr_detector.detect_levels(
             df_15m if (df_15m is not None and len(df_15m) >= 20) else df_1h,
-            current_price=entry_px_1m,
+            current_price=entry_px_5m,
             atr_14=blended_atr,
         )
         decision = self.synthesize_scores(
-            s_tech=blended_s_tech,
+            blended_s_tech,
             s_vol=base_15m.s_vol,
             s_sent=sent_90d.s_sent,
             symbol=clean_sym,
-            timeframe="1m",
-            entry_price=entry_px_1m,
+            timeframe="5m",
+            entry_price=entry_px_5m,
             atr_14=blended_atr,
             indicators=base_15m.indicators,
             headlines=[h.headline for h in sent_90d.headline_scores],
@@ -598,11 +607,14 @@ class EnsembleDecisionAgent:
             sr_levels=sr_levels,
             market_df=df_15m,
         )
+        if is_market_chop:
+            decision.is_sideways = True
+            decision.market_structure_status = "Sideways / Chop (ADX Rendah • Rawan Fakeout)"
         decision.mtf_aligned_count = aligned_count
         decision.mtf_summary = (
             f"News 3Bln({len(sent_90d.headline_scores)} berita: {sent_90d.s_sent:+.2f}) • "
-            f"1D:{lbl_1d}({s_1d:+.2f}) • 1H:{lbl_1h}({s_1h:+.2f}) • "
-            f"15M:{lbl_15m}({s_15m:+.2f}) • 5M:{lbl_5m}({s_5m:+.2f}) ➔ Action 1M: {act_1m_tag}"
+            f"1D:{lbl_1d}({s_1d:+.2f}) • 4H:{lbl_4h}({s_4h:+.2f}) • 1H:{lbl_1h}({s_1h:+.2f}) • "
+            f"15M:{lbl_15m}({s_15m:+.2f}) • 5M:{lbl_5m}({s_5m:+.2f}) ➔ Action 5M: {act_5m_tag}"
         )
         return decision
 

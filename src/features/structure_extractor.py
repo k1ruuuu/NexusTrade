@@ -29,6 +29,26 @@ class FairValueGapZone:
     upper_bound: float
     active: bool = True
 
+@dataclass(frozen=True)
+class OrderBlockZone:
+    """Last opposing candle before a displacement move (institutional order block)."""
+
+    direction: str  # "BULL" (last bearish candle before bullish displacement) or "BEAR"
+    created_idx: int
+    lower_bound: float
+    upper_bound: float
+    active: bool = True
+
+@dataclass(frozen=True)
+class SupplyDemandZone:
+    """Supply (swing high pivot origin) / Demand (swing low pivot origin) zone."""
+
+    kind: str  # "SUPPLY" or "DEMAND"
+    created_idx: int
+    lower_bound: float
+    upper_bound: float
+    active: bool = True
+
 
 @dataclass(frozen=True)
 class VolumeProfileSnapshot:
@@ -65,6 +85,10 @@ class CandleStructuralExtractor:
         "delta_val",
         "dist_fvg_bull",
         "dist_fvg_bear",
+        "dist_ob_bull",
+        "dist_ob_bear",
+        "dist_demand",
+        "dist_supply",
     )
 
     def __init__(
@@ -367,6 +391,101 @@ class CandleStructuralExtractor:
             active_bear = bear_zones[-1]
         return active_bull, active_bear
 
+    @staticmethod
+    def detect_active_order_blocks(
+        opens: np.ndarray,
+        highs: np.ndarray,
+        lows: np.ndarray,
+        closes: np.ndarray,
+        displacement_atr_mult: float = 1.5,
+        atr_series: Optional[np.ndarray] = None,
+    ) -> Tuple[Optional[OrderBlockZone], Optional[OrderBlockZone]]:
+        """
+        Scan causal history and return the most recent unmitigated BULL order block
+        (last bearish candle before a bullish displacement >= displacement_atr_mult * ATR
+        that closes above the bearish candle's high) and the BEAR counterpart
+        (last bullish candle before a bearish displacement closing below its low).
+        A block is mitigated once a later bar trades back through its full range.
+        """
+        n = len(closes)
+        if n < 3:
+            return None, None
+        if atr_series is None:
+            tr = np.maximum(highs - lows, np.maximum(np.abs(highs - np.roll(closes, 1)), np.abs(lows - np.roll(closes, 1))))
+            atr_series = pd.Series(tr).rolling(14, min_periods=1).mean().to_numpy()
+        atr_series = np.asarray(atr_series, dtype=np.float64)
+
+        bull_blocks: List[OrderBlockZone] = []
+        bear_blocks: List[OrderBlockZone] = []
+        for tau in range(1, n):
+            # Mitigate prior blocks with bar tau's price action (price traded back into block)
+            if bull_blocks:
+                bull_blocks = [z for z in bull_blocks if lows[tau] > z.lower_bound]
+            if bear_blocks:
+                bear_blocks = [z for z in bear_blocks if highs[tau] < z.upper_bound]
+
+            atr_t = max(float(atr_series[tau]), abs(float(closes[tau])) * 1e-8, 1e-12)
+            body = float(closes[tau] - opens[tau])
+            if tau >= 1 and body > displacement_atr_mult * atr_t:
+                # Bullish displacement: find last bearish candle scanning back (max 5 bars)
+                for j in range(tau - 1, max(-1, tau - 6), -1):
+                    if closes[j] < opens[j]:
+                        bull_blocks.append(OrderBlockZone("BULL", j, float(lows[j]), float(highs[j])))
+                        break
+            elif tau >= 1 and -body > displacement_atr_mult * atr_t:
+                for j in range(tau - 1, max(-1, tau - 6), -1):
+                    if closes[j] > opens[j]:
+                        bear_blocks.append(OrderBlockZone("BEAR", j, float(lows[j]), float(highs[j])))
+                        break
+
+        active_bull = bull_blocks[-1] if bull_blocks else None
+        active_bear = bear_blocks[-1] if bear_blocks else None
+        return active_bull, active_bear
+
+    @staticmethod
+    def detect_supply_demand_zones(
+        highs: np.ndarray,
+        lows: np.ndarray,
+        pivot_order: int = 3,
+    ) -> Tuple[Optional[SupplyDemandZone], Optional[SupplyDemandZone]]:
+        """
+        Causal swing-pivot zones: DEMAND = zone around the most recent confirmed swing-low
+        pivot (bar with low <= lows of `pivot_order` bars on each side, confirmed only after
+        `pivot_order` later bars, i.e. strictly known at current bar); SUPPLY = counterpart
+        at swing-high pivots. A zone is mitigated once price closes through it.
+        """
+        n = len(highs)
+        if n < 2 * pivot_order + 1:
+            return None, None
+
+        demand_zones: List[SupplyDemandZone] = []
+        supply_zones: List[SupplyDemandZone] = []
+        for t in range(n):
+            # Mitigate with bar t
+            if demand_zones:
+                demand_zones = [z for z in demand_zones if lows[t] > z.lower_bound]
+            if supply_zones:
+                supply_zones = [z for z in supply_zones if highs[t] < z.upper_bound]
+
+            pivot_idx = t - pivot_order
+            if pivot_idx < pivot_order:
+                continue
+            lo = lows[pivot_idx - pivot_order : pivot_idx + pivot_order + 1]
+            hi = highs[pivot_idx - pivot_order : pivot_idx + pivot_order + 1]
+            if lows[pivot_idx] <= float(np.min(lo)):
+                demand_zones.append(
+                    SupplyDemandZone("DEMAND", pivot_idx, float(lows[pivot_idx]), float(highs[pivot_idx]))
+                )
+            if highs[pivot_idx] >= float(np.max(hi)):
+                supply_zones.append(
+                    SupplyDemandZone("SUPPLY", pivot_idx, float(lows[pivot_idx]), float(highs[pivot_idx]))
+                )
+
+        return (
+            demand_zones[-1] if demand_zones else None,
+            supply_zones[-1] if supply_zones else None,
+        )
+
     def compute_volume_profile_snapshot(
         self,
         highs: np.ndarray,
@@ -447,6 +566,8 @@ class CandleStructuralExtractor:
           - S/R Proximity (5-7): delta_r, delta_s, pos_sr
           - Volume Profile (8-10): delta_poc, delta_vah, delta_val
           - FVG Imbalance (11-12): dist_fvg_bull, dist_fvg_bear
+          - Order Block (13-14): dist_ob_bull, dist_ob_bear
+          - Supply/Demand (15-16): dist_demand, dist_supply
 
         Guardrail 1: When `enforce_lag=True`, all extracted feature columns are shifted by 1 bar
         so decisions at bar t strictly use features known at bar t-1.
@@ -480,9 +601,21 @@ class CandleStructuralExtractor:
         dist_fvg_bull_arr = np.zeros(n, dtype=np.float64)
         dist_fvg_bear_arr = np.zeros(n, dtype=np.float64)
 
+        dist_ob_bull_arr = np.zeros(n, dtype=np.float64)
+        dist_ob_bear_arr = np.zeros(n, dtype=np.float64)
+        dist_demand_arr = np.zeros(n, dtype=np.float64)
+        dist_supply_arr = np.zeros(n, dtype=np.float64)
+
         # Causal single-pass FVG state tracker
         bull_zones: List[FairValueGapZone] = []
         bear_zones: List[FairValueGapZone] = []
+
+        # Causal single-pass Order Block & Supply/Demand state trackers
+        bull_ob_zones: List[OrderBlockZone] = []
+        bear_ob_zones: List[OrderBlockZone] = []
+        demand_zones: List[SupplyDemandZone] = []
+        supply_zones: List[SupplyDemandZone] = []
+        opens_arr = pd.to_numeric(out["open"], errors="coerce").to_numpy(dtype=np.float64)
 
         k = self.swing_window
         sr_lookback = self.lookback_bars
@@ -518,6 +651,47 @@ class CandleStructuralExtractor:
             if bear_zones:
                 bot_bear = bear_zones[-1].lower_bound
                 dist_fvg_bear_arr[t] = (c_t - bot_bear) / atr_t
+
+            # 1b. Update causal Order Block zones up to bar t (mitigated when traded into)
+            if bull_ob_zones:
+                bull_ob_zones = [z for z in bull_ob_zones if l_t > z.lower_bound]
+            if bear_ob_zones:
+                bear_ob_zones = [z for z in bear_ob_zones if h_t < z.upper_bound]
+            if t >= 1:
+                body_t = c_t - float(opens_arr[t])
+                if body_t > 1.5 * atr_t:
+                    for j in range(t - 1, max(-1, t - 6), -1):
+                        if closes[j] < opens_arr[j]:
+                            bull_ob_zones.append(OrderBlockZone("BULL", j, float(lows[j]), float(highs[j])))
+                            break
+                elif -body_t > 1.5 * atr_t:
+                    for j in range(t - 1, max(-1, t - 6), -1):
+                        if closes[j] > opens_arr[j]:
+                            bear_ob_zones.append(OrderBlockZone("BEAR", j, float(lows[j]), float(highs[j])))
+                            break
+            if bull_ob_zones:
+                dist_ob_bull_arr[t] = (c_t - bull_ob_zones[-1].upper_bound) / atr_t
+            if bear_ob_zones:
+                dist_ob_bear_arr[t] = (c_t - bear_ob_zones[-1].lower_bound) / atr_t
+
+            # 1c. Update causal Supply/Demand zones (swing pivot confirmed pivot_order bars later)
+            pivot_order = self.swing_window
+            if demand_zones:
+                demand_zones = [z for z in demand_zones if l_t > z.lower_bound]
+            if supply_zones:
+                supply_zones = [z for z in supply_zones if h_t < z.upper_bound]
+            pivot_idx = t - pivot_order
+            if pivot_idx >= pivot_order:
+                lo_win = lows[pivot_idx - pivot_order : pivot_idx + pivot_order + 1]
+                hi_win = highs[pivot_idx - pivot_order : pivot_idx + pivot_order + 1]
+                if lows[pivot_idx] <= float(np.min(lo_win)):
+                    demand_zones.append(SupplyDemandZone("DEMAND", pivot_idx, float(lows[pivot_idx]), float(highs[pivot_idx])))
+                if highs[pivot_idx] >= float(np.max(hi_win)):
+                    supply_zones.append(SupplyDemandZone("SUPPLY", pivot_idx, float(lows[pivot_idx]), float(highs[pivot_idx])))
+            if demand_zones:
+                dist_demand_arr[t] = (c_t - demand_zones[-1].upper_bound) / atr_t
+            if supply_zones:
+                dist_supply_arr[t] = (c_t - supply_zones[-1].lower_bound) / atr_t
 
             # 2. Causal Volume Profile over [max(0, t - vp_win + 1) : t + 1]
             vp_start = max(0, t - vp_win + 1)
@@ -589,6 +763,10 @@ class CandleStructuralExtractor:
         out["delta_val"] = delta_val_arr
         out["dist_fvg_bull"] = dist_fvg_bull_arr
         out["dist_fvg_bear"] = dist_fvg_bear_arr
+        out["dist_ob_bull"] = dist_ob_bull_arr
+        out["dist_ob_bear"] = dist_ob_bear_arr
+        out["dist_demand"] = dist_demand_arr
+        out["dist_supply"] = dist_supply_arr
 
         if enforce_lag:
             for col in self.STRUCTURAL_FEATURE_COLUMNS:

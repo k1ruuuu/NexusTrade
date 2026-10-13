@@ -186,14 +186,14 @@ class PositionMonitorMixin:
             if tp1_span > 0 and curr_price >= pos.entry_price + 0.70 * tp1_span:
                 locked_60 = round(pos.entry_price + 0.60 * (curr_price - pos.entry_price), 4)
                 candidate_sl = max(candidate_sl, locked_60)
-            if bar_high >= pos.entry_price + 0.50 * est_atr:
+            # Rekomendasi 2: Longgarkan aktivasi Trailing Stop agar tidak ter-cut saat pullback normal (>= 0.60 * ATR)
+            if bar_high >= pos.entry_price + 0.60 * est_atr:
                 be_plus = round(pos.entry_price + 0.20 * est_atr, 4)
                 candidate_sl = max(candidate_sl, be_plus)
                 trailed = self.engine.ensemble_agent.stop_loss_manager.update_trailing_stop(
                     "BUY", bar_high, candidate_sl, trail_dist
                 )
                 candidate_sl = max(candidate_sl, trailed)
-            if candidate_sl > pos.stop_loss + 1e-6:
                 return await self._apply_trailing_stop_update(
                     pos, candidate_sl, curr_price, unr_pnl, unr_pct
                 )
@@ -250,7 +250,8 @@ class PositionMonitorMixin:
         if tp1_span_s > 0 and curr_price <= pos.entry_price - 0.70 * tp1_span_s:
             locked_60_s = round(pos.entry_price - 0.60 * (pos.entry_price - curr_price), 4)
             candidate_sl = min(candidate_sl, locked_60_s)
-        if bar_low <= pos.entry_price - 0.50 * est_atr:
+        # Rekomendasi 2: Longgarkan aktivasi Trailing Stop untuk posisi SELL (>= 0.60 * ATR)
+        if bar_low <= pos.entry_price - 0.60 * est_atr:
             be_plus = round(pos.entry_price - 0.20 * est_atr, 4)
             candidate_sl = min(candidate_sl, be_plus)
             trailed = self.engine.ensemble_agent.stop_loss_manager.update_trailing_stop(
