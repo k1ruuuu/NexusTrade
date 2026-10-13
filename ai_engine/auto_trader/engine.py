@@ -450,8 +450,17 @@ class SmartAutoTraderEngine:
             has_duplicate = len(open_positions) > 0
             user_dd, start_eq, curr_eq = self.vault.get_user_daily_drawdown(user_id, account_id=creds.account_id or None)
             eff_dd = user_dd
-            cb_tripped = self.ensemble_agent.position_sizer.is_circuit_breaker_tripped(eff_dd)
-
+            is_micro_account = 0.0 < float(creds.verified_usdt_balance) < 100.0
+            eff_dd_limit = (
+                max(float(self.settings.max_daily_drawdown_limit), 0.20)
+                if is_micro_account
+                else float(self.settings.max_daily_drawdown_limit)
+            )
+            cb_tripped = (
+                eff_dd >= eff_dd_limit
+                if is_micro_account
+                else self.ensemble_agent.position_sizer.is_circuit_breaker_tripped(eff_dd)
+            )
             risk_ok = (
                 decision.approved
                 and not cb_tripped
@@ -506,7 +515,9 @@ class SmartAutoTraderEngine:
                 s_vol=decision.s_vol,
                 portfolio_equity=user_equity,
                 reward_risk_ratio=self.settings.min_risk_reward_ratio,
-                daily_drawdown_override=eff_dd,
+                daily_drawdown_override=(
+                    eff_dd if not is_micro_account else (eff_dd if eff_dd >= eff_dd_limit else 0.0)
+                ),
             )
             if not user_sizing.approved:
                 gates.append(
@@ -535,8 +546,11 @@ class SmartAutoTraderEngine:
                 float(self.settings.max_account_risk_per_trade),
             )
             trade_budget = user_equity * eff_risk_rate
+            if is_micro_account:
+                # Slight relaxation for micro accounts (<$100): allow up to 12% per trade (max $1.20)
+                trade_budget = max(trade_budget, min(user_equity * 0.12, 1.20))
             daily_headroom = (
-                max(0.0, start_eq * self.settings.max_daily_drawdown_limit - max(0.0, start_eq - curr_eq))
+                max(0.0, start_eq * eff_dd_limit - max(0.0, start_eq - curr_eq))
                 if start_eq > 0
                 else trade_budget
             )
