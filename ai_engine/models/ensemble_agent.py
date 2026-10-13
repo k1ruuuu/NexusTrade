@@ -33,6 +33,8 @@ from data_pipeline.live_market_feed import LiveMarketDataFeed
 from config.settings import Settings, get_settings
 from data_pipeline.market_symbols import normalize_symbol
 from data_pipeline.preprocessor_ohlcv import OHLCVPreprocessor
+from src.features.structure_extractor import CandleStructuralExtractor
+from src.models.macro_regime import MacroRegimeDetector
 
 logger = get_logger("nexustrade.ai_engine.ensemble")
 
@@ -139,9 +141,10 @@ class EnsembleDecisionAgent:
         self.position_sizer = position_sizer or PositionSizer(self.settings)
         self.stop_loss_manager = stop_loss_manager or StopLossManager(self.settings)
         self.sr_detector = SupportResistanceDetector()
+        self.structural_extractor = CandleStructuralExtractor()
+        self.macro_regime_detector = MacroRegimeDetector()
         self._market_data_cache: dict[str, pd.DataFrame] = {}
         self._last_trained_signature: dict[str, tuple[str, float]] = {}
-
     @staticmethod
     def resolve_badge(action: ActionType, confidence: float) -> BadgeType:
         if action == "BUY":
@@ -419,6 +422,11 @@ class EnsembleDecisionAgent:
         )
 
         macro_ctx = self.live_feed.compute_5y_macro_context(df_5y, entry_price)
+        hmm_regime = self.macro_regime_detector.evaluate_latest(market_df)
+        tech_pred.indicators["regime_prob_bull"] = hmm_regime.prob_bull_expansion
+        tech_pred.indicators["regime_prob_chop"] = hmm_regime.prob_consolidation
+        tech_pred.indicators["regime_prob_bear"] = hmm_regime.prob_crisis_bear
+        tech_pred.indicators["roro_index"] = hmm_regime.roro_index
 
         sr_levels = self.sr_detector.detect_levels(
             market_df, current_price=entry_price, atr_14=atr_val

@@ -54,6 +54,11 @@ class OHLCVPreprocessor:
         "return_zscore_20",
         "volume_surge_20",
         "hl_range_pct",
+        "r_body",
+        "r_wick",
+        "rel_spread",
+        "score_pinbar",
+        "score_engulf",
     )
 
     def __init__(
@@ -248,6 +253,37 @@ class OHLCVPreprocessor:
         vol_mean_20 = volume.rolling(window=20, min_periods=1).mean().replace(0.0, np.nan)
         out["volume_surge_20"] = (volume / vol_mean_20).fillna(1.0)
         out["hl_range_pct"] = ((high - low) / close.replace(0.0, np.nan)).fillna(0.0)
+
+        # Module 1: Candlestick Anatomy, Dimensionless Ratios & Pattern Quantification
+        open_p = pd.to_numeric(out["open"], errors="coerce").astype(np.float64)
+        spread = (high - low).clip(lower=0.0)
+        body = (close - open_p).abs()
+        upper_wick = (high - np.maximum(open_p, close)).clip(lower=0.0)
+        lower_wick = (np.minimum(open_p, close) - low).clip(lower=0.0)
+        direction = np.sign(close - open_p)
+        eps = np.maximum(close.abs() * 1e-12, 1e-18)
+        denom = spread + eps
+        atr_safe = np.maximum(out["atr_14"].astype(np.float64), np.maximum(close.abs() * 1e-8, 1e-12))
+
+        out["r_body"] = np.where(spread > eps, (body / denom).clip(0.0, 1.0), 0.0)
+        out["r_wick"] = np.where(spread > eps, ((upper_wick - lower_wick) / denom).clip(-1.0, 1.0), 0.0)
+        out["rel_spread"] = (spread / atr_safe).fillna(0.0)
+        raw_pinbar = np.where(spread > eps, (lower_wick - 2.0 * body - upper_wick) / denom, 0.0)
+        out["score_pinbar"] = np.clip(raw_pinbar, 0.0, 1.0)
+
+        prev_body = body.shift(1).fillna(0.0)
+        prev_dir = pd.Series(direction, index=out.index).shift(1).fillna(0.0)
+        prev_high = high.shift(1).fillna(high)
+        prev_low = low.shift(1).fillna(low)
+        engulf_cond = (
+            (direction != 0.0)
+            & (prev_dir != 0.0)
+            & (direction != prev_dir)
+            & (body > prev_body)
+            & (high >= prev_high)
+            & (low <= prev_low)
+        )
+        out["score_engulf"] = np.where(engulf_cond, ((body - prev_body) / atr_safe).fillna(0.0), 0.0)
 
         return out
 

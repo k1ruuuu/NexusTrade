@@ -6,7 +6,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-
+from src.features.structure_extractor import CandleStructuralExtractor
 @dataclass
 class SupportResistanceLevels:
     """
@@ -35,6 +35,8 @@ class SupportResistanceDetector:
     3. Classic Floor Pivot Points (P, R1, R2, S1, S2)
     Clusters nearby candidate zones within 0.35 * ATR(14) tolerance.
     """
+    def __init__(self, cluster_eps_atr: float = 0.35) -> None:
+        self._structural_extractor = CandleStructuralExtractor(cluster_eps_atr=cluster_eps_atr)
 
     def detect_levels(
         self,
@@ -80,14 +82,21 @@ class SupportResistanceDetector:
         piv_r2 = pivot + (period_high - period_low)
         piv_s2 = pivot - (period_high - period_low)
 
-        # 2. Collect candidate (level, weight) pairs from Swing Highs/Lows & Donchian windows
+        # 2. Collect candidate (level, weight) pairs from DBSCAN Extrema Clusters, Swing Highs/Lows & Donchian windows
         candidates: list[tuple[float, float]] = [
             (piv_r1, 2.2),
             (piv_r2, 1.8),
             (piv_s1, 2.2),
             (piv_s2, 1.8),
         ]
-
+        try:
+            _, _, db_clusters = self._structural_extractor.detect_support_resistance_clusters(
+                df, window=5, lookback=min(m, 160)
+            )
+            for cl in db_clusters:
+                candidates.append((float(cl.level), min(6.0, 2.0 + 0.5 * float(cl.touches))))
+        except Exception:
+            pass
         for d_win, w in ((20, 2.5), (50, 3.0), (120, 3.2)):
             if m >= d_win:
                 candidates.append((float(np.max(highs[-d_win:])), w))

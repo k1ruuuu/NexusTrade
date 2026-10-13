@@ -74,8 +74,12 @@ class OHLCVPredictor:
         "adl_norm_20",
         "pct_above_ma20",
         "expected_move_ratio",
+        "r_body",
+        "r_wick",
+        "rel_spread",
+        "score_pinbar",
+        "score_engulf",
     )
-
     def __init__(
         self,
         settings: Optional[Settings] = None,
@@ -419,8 +423,11 @@ class OHLCVPredictor:
             "ema_50": round(float(latest_row["ema_50"].iloc[0]), 4),
             "ema_200": round(float(latest_row["ema_200"].iloc[0]), 4),
             "vwap": round(float(latest_row["vwap"].iloc[0]), 4),
+            "r_body": round(float(latest_row["r_body"].iloc[0]), 4),
+            "r_wick": round(float(latest_row["r_wick"].iloc[0]), 4),
+            "rel_spread": round(float(latest_row["rel_spread"].iloc[0]), 4),
+            "score_pinbar": round(float(latest_row["score_pinbar"].iloc[0]), 4),
         }
-
         return TechnicalPrediction(
             symbol=symbol.upper(),
             timeframe=timeframe,
