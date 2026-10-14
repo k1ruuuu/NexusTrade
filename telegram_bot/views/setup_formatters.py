@@ -222,8 +222,11 @@ def format_timed_session_started_card(
             f"• <b>Tindakan AI:</b> Memindai tren <b>1D, 1H, 15M, 5M</b> non-stop &amp; langsung membuka posisi di <b>5M</b> begitu ke-6 Gerbang selaras."
         )
     else:
+        last_reason = html.escape(session.last_check_summary)
         cycle_block = (
-            f"🔍 <b>STATUS PEMANTAUAN 24/7:</b> <i>{html.escape(session.last_check_summary)}</i>"
+            f"🔍 <b>STATUS PEMANTAUAN 24/7 (MENUNGGU ENTRY 5M TERBAIK):</b>\n"
+            f"• <b>Filter 6 Gerbang:</b> <i>{last_reason}</i>\n"
+            f"• <b>Tindakan AI:</b> Memindai tren <b>1D, 1H, 15M, 5M</b> non-stop &amp; langsung membuka posisi di <b>5M</b> begitu ke-6 Gerbang selaras."
         )
 
     lot_lbl = (
@@ -245,6 +248,7 @@ def format_timed_session_started_card(
         f"• <b>Realized Profit (Terealisasi):</b> <code>${realized_pnl:+.2f} USD</code> (🟢 <code>{session.winning_trades}W</code> / 🔴 <code>{session.losing_trades}L</code>)\n"
         f"• <b>Total Akumulasi Profit:</b> {net_icon} <b><code>${total_net_pnl:+.2f} USD</code></b>\n"
         f"• <b>Harga Live (5m) &amp; Siklus:</b> <code>{format_price(live_px)}</code> | Siklus <code>#{session.cycles_completed}</code> (<code>{upd_str}</code>)\n\n"
+        f"{cycle_block}\n\n"
         f"<i>💡 Data profit di atas diperbarui otomatis secara real-time. Ketik <code>/autotrade off</code> untuk menonaktifkan Auto-Trade 24/7.</i>"
     )
 

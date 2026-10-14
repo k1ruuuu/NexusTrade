@@ -130,7 +130,7 @@ async def handle_analyze(message: Message, **data: Any) -> None:
     settings: Settings = data.get("settings") or get_settings()
     agent: EnsembleDecisionAgent = data.get("ensemble_agent") or EnsembleDecisionAgent(settings)
     symbol = _extract_symbol_arg(message.text, default="BTCUSDT")
-    decision = agent.analyze_symbol(symbol=symbol, timeframe="15m")
+    decision = agent.analyze_multi_timeframe_autotrade(symbol=symbol)
     card = format_signal_card(decision)
     await message.answer(
         card,

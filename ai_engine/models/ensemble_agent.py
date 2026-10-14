@@ -621,6 +621,15 @@ class EnsembleDecisionAgent:
         if is_market_chop:
             decision.is_sideways = True
             decision.market_structure_status = "Sideways / Chop (ADX Rendah • Rawan Fakeout)"
+        # Multi-Timeframe Alignment Confidence Synchronization:
+        # If higher timeframes confirm the 15M signal in the same direction (aligned_count >= 3),
+        # confidence should not be diluted below the single-timeframe baseline, and receives
+        # an institutional consensus boost for 4/5 or 5/5 unanimity.
+        if (base_15m.s_tech * dom_sign) > 0 and not is_market_chop:
+            mtf_bonus = 0.04 if aligned_count >= 4 else (0.02 if aligned_count >= 3 else 0.0)
+            target_confidence = max(decision.confidence, base_15m.confidence) + mtf_bonus
+            decision.confidence = round(float(np.clip(target_confidence, 0.0, 0.98)), 4)
+            decision.badge = self.resolve_badge(decision.action, decision.confidence)
         if getattr(sent_90d, "is_macro_blackout", False):
             self._reject(decision, f"HIGH_IMPACT_NEWS_BLACKOUT ({sent_90d.blackout_event or 'High Impact Event'})")
         elif decision.action == "BUY" and decision.s_sent < -0.35:

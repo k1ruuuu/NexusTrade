@@ -36,7 +36,10 @@ async def send_signal_response(
 ) -> None:
     """Shared signal + 1200x800 chart sender for /signal and inline callbacks."""
     df = agent.load_market_series(symbol=symbol, timeframe=timeframe)
-    decision = agent.analyze_symbol(symbol=symbol, timeframe=timeframe, df=df)
+    if timeframe in ("15m", "5m"):
+        decision = agent.analyze_multi_timeframe_autotrade(symbol=symbol)
+    else:
+        decision = agent.analyze_symbol(symbol=symbol, timeframe=timeframe, df=df)
     chart_path = await charts.generate_chart_async(
         df=df,
         symbol=decision.symbol,
