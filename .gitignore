@@ -226,5 +226,6 @@ data/processed/*
 !data/processed/.gitkeep
 data/cache/*
 !data/cache/.gitkeep
+data/research/*
 logs/*
 !logs/.gitkeep

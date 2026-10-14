@@ -89,6 +89,30 @@ class Settings(BaseSettings):
     finbert_model_name: str = Field(default="ProsusAI/finbert")
     use_transformers_pipeline: bool = Field(default=False)
 
+    # Real-Time Multi-Source News & Macro Providers
+    finnhub_api_key: str = Field(default="", description="Finnhub.io REST API key")
+    alphavantage_api_key: str = Field(default="", description="Alpha Vantage News & Sentiment API key")
+    cryptopanic_api_key: str = Field(default="", description="CryptoPanic REST API key")
+    forexfactory_calendar_url: str = Field(
+        default="https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+        description="Fair Economy ForexFactory JSON calendar endpoint",
+    )
+    marctomarket_feed_url: str = Field(
+        default="https://www.marctomarket.com/feeds/posts/default?alt=json",
+        description="MarcToMarket Atom/JSON macro feed endpoint",
+    )
+    ttl_forexfactory: int = Field(default=3600, ge=60, description="ForexFactory cache TTL (seconds)")
+    ttl_marctomarket: int = Field(default=1800, ge=60, description="MarcToMarket cache TTL (seconds)")
+    ttl_finnhub: int = Field(default=120, ge=30, description="Finnhub cache TTL (seconds)")
+    ttl_alphavantage: int = Field(default=1800, ge=60, description="Alpha Vantage cache TTL (seconds)")
+    ttl_cryptopanic: int = Field(default=180, ge=30, description="CryptoPanic cache TTL (seconds)")
+    macro_blackout_window_minutes: int = Field(
+        default=15, ge=1, description="Execution blackout window in minutes (+/-) around High Impact events"
+    )
+    macro_blackout_enabled: bool = Field(
+        default=True, description="Enforce execution blackout on correlated pairs around High Impact events"
+    )
+
     # Institutional Risk Guardrails
     portfolio_initial_capital: float = Field(default=100000.0, gt=0.0)
     max_account_risk_per_trade: float = Field(default=0.015, gt=0.0, le=0.10)

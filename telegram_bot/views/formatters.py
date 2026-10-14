@@ -96,10 +96,34 @@ def format_signal_card(decision: SignalDecision) -> str:
 
     r1_pct = format_pct_diff(decision.resistance_1, decision.entry_price)
     s1_pct = format_pct_diff(decision.support_1, decision.entry_price)
+    def _format_rejection_badge(reason: Optional[str]) -> str:
+        if not reason:
+            return "Filter Risiko"
+        r = reason.strip()
+        if "BLACKOUT" in r or "blackout" in r.lower():
+            return "Blackout Berita"
+        if "Chronological model validation" in r:
+            return "Validasi AI"
+        if "Synthetic or incompatible" in r:
+            return "Data Riwayat"
+        if "Directional evidence is neutral" in r:
+            return "Sinyal Netral"
+        if "Stale market data" in r:
+            return "Data Kadaluarsa"
+        if "Ruang S/R Sempit" in r:
+            return "Dekat S/R Kunci"
+        if "Konfluensi Kurang" in r:
+            return "Konfluensi Rendah"
+        if "PASAR SIDEWAYS" in r or "sideways" in r.lower():
+            return "Pasar Sideways"
+        if len(r) > 24:
+            return r[:22] + ".."
+        return r
+
     approval_line = (
         "🟢 <b>AMAN</b>"
         if decision.approved
-        else f"🔴 <b>DITAHAN ({html.escape((decision.rejection_reason or 'Filter')[:32])})</b>"
+        else f"🔴 <b>DITAHAN ({html.escape(_format_rejection_badge(decision.rejection_reason))})</b>"
     )
     acc_pct = decision.validation_accuracy * 100.0
     auc_pct = decision.validation_roc_auc * 100.0
@@ -172,13 +196,24 @@ def format_sentiment_card(result: SentimentAnalysisResult) -> str:
         if result.live_news_used
         else "📁 <b>Memori Lokal</b>"
     )
+    macro_line = (
+        f"<b>Kalender Makro (ForexFactory):</b> 🔴 <b>BLACKOUT AKTIF ({html.escape(result.blackout_event or 'High Impact Event')})</b>\n"
+        if result.is_macro_blackout
+        else "<b>Kalender Makro (ForexFactory):</b> 🟢 <b>CLEAR (Tidak Ada Berita High Impact ±15m)</b>\n"
+    )
+    prov_line = ""
+    if result.provider_breakdown:
+        items_str = ", ".join(f"{k.capitalize()}: {v}" for k, v in result.provider_breakdown.items())
+        prov_line = f"<b>Provider Live:</b> <code>{html.escape(items_str)}</code>\n"
 
     return (
         f"📰 <b>FINBERT SENTIMENT ENGINE — {sym}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>Suasana Pasar:</b> {badge}\n"
         f"<b>Skor Sentimen:</b> <code>[{bar}] {result.s_sent:+.2f}</code> <i>(Skala -1 s/d +1)</i>\n"
-        f"<b>Sumber Data:</b> {feed_badge}\n\n"
+        f"<b>Sumber Data:</b> {feed_badge}\n"
+        f"{macro_line}"
+        f"{prov_line}"
         f"💡 <b>Ringkasan:</b> {human_note}\n\n"
         f"<b>📊 Proporsi Berita Saat Ini:</b>\n"
         f"• 🟢 <b>Berita Positif (Bullish):</b> <code>{result.bullish_ratio * 100:.0f}%</code>\n"

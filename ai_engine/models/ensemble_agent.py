@@ -433,7 +433,7 @@ class EnsembleDecisionAgent:
         )
         if action_hint is None:
             s_tech = float(np.clip(s_tech + sr_levels.sr_bias, -1.0, 1.0))
-        return self.synthesize_scores(
+        decision = self.synthesize_scores(
             s_tech=s_tech,
             s_vol=vol_forecast.s_vol,
             s_sent=s_sent,
@@ -456,6 +456,17 @@ class EnsembleDecisionAgent:
             market_df=market_df,
             annualized_volatility=vol_forecast.annualized_volatility,
         )
+        if getattr(sent_result, "is_macro_blackout", False):
+            self._reject(decision, f"HIGH_IMPACT_NEWS_BLACKOUT ({sent_result.blackout_event or 'High Impact Event'})")
+        return decision
+
+    @staticmethod
+    def _reject(decision: SignalDecision, reason: str) -> None:
+        decision.action = "HOLD"
+        decision.badge = "NEUTRAL / HOLD"
+        decision.approved = False
+        decision.rejection_reason = reason
+        decision.position_units = decision.position_notional = decision.account_risk_pct = 0.0
 
     def _score_timeframe_trend(
         self,
@@ -610,6 +621,12 @@ class EnsembleDecisionAgent:
         if is_market_chop:
             decision.is_sideways = True
             decision.market_structure_status = "Sideways / Chop (ADX Rendah • Rawan Fakeout)"
+        if getattr(sent_90d, "is_macro_blackout", False):
+            self._reject(decision, f"HIGH_IMPACT_NEWS_BLACKOUT ({sent_90d.blackout_event or 'High Impact Event'})")
+        elif decision.action == "BUY" and decision.s_sent < -0.35:
+            self._reject(decision, f"Sentiment Conflict: Composite sentiment ({decision.s_sent:+.2f}) vetoes BUY")
+        elif decision.action == "SELL" and decision.s_sent > 0.35:
+            self._reject(decision, f"Sentiment Conflict: Composite sentiment ({decision.s_sent:+.2f}) vetoes SELL")
         decision.mtf_aligned_count = aligned_count
         decision.mtf_summary = (
             f"News 3Bln({len(sent_90d.headline_scores)} berita: {sent_90d.s_sent:+.2f}) • "

@@ -325,4 +325,24 @@ class KaggleDatasetDownloader:
                 source="kaggle_api",
                 error=str(exc),
             )
+    def download_all(
+        self,
+        keys: Optional[list[str]] = None,
+        force: bool = False,
+        offline_training: bool = False,
+    ) -> dict[str, DownloadArtifactReport]:
+        """
+        Download datasets. Static NLP datasets (financial_phrasebank, massive_news_db)
+        are downloaded strictly when offline_training=True (PRD Section 6.1).
+        """
+        target_keys = keys or list(KAGGLE_DATASET_REGISTRY.keys())
+        if not offline_training:
+            target_keys = [
+                k for k in target_keys
+                if k not in ("financial_phrasebank", "massive_news_db")
+            ]
+        results = {}
+        for k in target_keys:
+            results[k] = self.download_resource(k, force=force)
+        return results
 

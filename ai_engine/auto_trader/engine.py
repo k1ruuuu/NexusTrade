@@ -346,24 +346,26 @@ class SmartAutoTraderEngine:
         )
         # Gate 2: Mandatory Breaking + 3-Month (90-Day) Deep News Sentiment Alignment
         n_news = len(decision.headlines)
-        if decision.action == "BUY":
+        if "HIGH_IMPACT_NEWS_BLACKOUT" in (decision.rejection_reason or ""):
+            news_ok = False
+            news_detail = f"DITOLAK (BLACKOUT KALENDER MAKRO): {decision.rejection_reason}"
+        elif decision.action == "BUY":
             news_ok = decision.s_sent > -0.15
             news_detail = (
-                f"Berita Terbaru s/d 3 Bulan Selaras ({decision.s_sent:+.2f} dari {n_news} berita 90 hari mendukung/netral untuk BELI)"
+                f"Berita 5-Provider Selaras ({decision.s_sent:+.2f} dari {n_news} berita mendukung/netral untuk BELI)"
                 if news_ok
-                else f"DITOLAK: Berita Terbaru s/d 3 Bulan negatif ({decision.s_sent:+.2f} dari {n_news} berita), berbahaya untuk BELI"
+                else f"DITOLAK: Berita negatif ({decision.s_sent:+.2f} dari {n_news} berita), berbahaya untuk BELI"
             )
         elif decision.action == "SELL":
             news_ok = decision.s_sent < 0.15
             news_detail = (
-                f"Berita Terbaru s/d 3 Bulan Selaras ({decision.s_sent:+.2f} dari {n_news} berita 90 hari mendukung/netral untuk JUAL)"
+                f"Berita 5-Provider Selaras ({decision.s_sent:+.2f} dari {n_news} berita mendukung/netral untuk JUAL)"
                 if news_ok
-                else f"DITOLAK: Berita Terbaru s/d 3 Bulan positif ({decision.s_sent:+.2f} dari {n_news} berita), berbahaya untuk JUAL"
+                else f"DITOLAK: Berita positif ({decision.s_sent:+.2f} dari {n_news} berita), berbahaya untuk JUAL"
             )
         else:
             news_ok = False
-            news_detail = f"Sentimen berita 3 bulan {decision.s_sent:+.2f} ({n_news} berita), menunggu pemicu arah kuat"
-
+            news_detail = f"Sentimen berita {decision.s_sent:+.2f} ({n_news} berita), menunggu pemicu arah kuat"
         gates.append(
             AutoTradeGateCheck(
                 gate_number=2,
