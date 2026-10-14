@@ -40,9 +40,9 @@ def test_realized_volatility_estimator_bounds() -> None:
     assert forecast.predicted_rv > 0.0
 
 
-def test_finbert_sentiment_engine_polarity() -> None:
-    analyzer = FinancialSentimentAnalyzer(use_transformers=False)
-
+def test_finbert_sentiment_engine_polarity(tmp_path: Path) -> None:
+    settings = Settings(data_dir=tmp_path / "data")
+    analyzer = FinancialSentimentAnalyzer(settings=settings, use_transformers=False)
     bullish = analyzer.score_headline(
         "Bitcoin institutional ETF inflows surge to record high on strong adoption"
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -10,7 +11,7 @@ import httpx
 from config.logging_config import get_logger
 from config.settings import Settings, get_settings
 from data_pipeline.news_providers.alphavantage_provider import AlphaVantageProvider
-from data_pipeline.news_providers.cryptopanic_provider import CryptoPanicProvider
+from data_pipeline.news_providers.crypto_rss_provider import Tier1CryptoRSSProvider
 from data_pipeline.news_providers.finnhub_provider import FinnhubProvider
 from data_pipeline.news_providers.forexfactory_provider import ForexFactoryProvider
 from data_pipeline.news_providers.marctomarket_provider import MarcToMarketProvider
@@ -23,44 +24,87 @@ from data_pipeline.news_providers.schemas import (
 
 logger = get_logger("nexustrade.news_providers.aggregator")
 
+BULLISH_CATALYSTS = (
+    "etf approved",
+    "institutional inflow",
+    "strategic reserve",
+    "rate cut",
+    "mainnet launch",
+    "short squeeze",
+    "all-time high",
+    "adoption",
+)
+
+BEARISH_CATALYSTS = (
+    "hacked",
+    "exploit",
+    "bridge drained",
+    "sec lawsuit",
+    "insolvency",
+    "withdrawals halted",
+    "bankruptcy",
+    "delisted",
+    "rug pull",
+)
+
 
 class MultiSourceNewsAggregator:
     """
-    Asynchronous 5-Provider News, Macro Commentary & Economic Calendar Engine.
-    Coordinates ForexFactory, MarcToMarket, Finnhub, Alpha Vantage, and CryptoPanic.
-    Applies SHA-256 deduplication, exponential time-decay weighting, provider authority weights,
-    hybrid polarity scoring, and high-impact macroeconomic blackout checks.
+    Asynchronous 5-Provider News, Macro Commentary & Economic Calendar Engine (v2.0).
+    Integrates ForexFactory, MarcToMarket, Finnhub, Alpha Vantage, and Tier-1 Crypto Media RSS.
+    Features lexical black-swan detection, time-decay weighting, and high-impact blackout protection.
     """
 
     def __init__(
         self,
         settings: Optional[Settings] = None,
         finbert_scorer: Optional[Callable[[str], float]] = None,
+        finnhub_key: Optional[str] = None,
+        alphavantage_key: Optional[str] = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.finbert_scorer = finbert_scorer or (lambda text: 0.0)
 
-        # Initialize providers
+        # Provider instances
         self.forexfactory = ForexFactoryProvider(self.settings)
         self.marctomarket = MarcToMarketProvider(self.settings)
         self.finnhub = FinnhubProvider(
-            api_key=getattr(self.settings, "finnhub_api_key", ""),
+            api_key=finnhub_key if finnhub_key is not None else getattr(self.settings, "finnhub_api_key", ""),
             settings=self.settings,
         )
         self.alphavantage = AlphaVantageProvider(
-            api_key=getattr(self.settings, "alphavantage_api_key", ""),
+            api_key=alphavantage_key if alphavantage_key is not None else getattr(self.settings, "alphavantage_api_key", ""),
             settings=self.settings,
         )
-        self.cryptopanic = CryptoPanicProvider(
-            api_key=getattr(self.settings, "cryptopanic_api_key", ""),
-            settings=self.settings,
-        )
+        self.crypto_rss = Tier1CryptoRSSProvider(self.settings)
 
     @staticmethod
-    def classify_asset_category(symbol: str) -> tuple[str, list[str]]:
-        """Identify asset class (crypto, forex, commodity, index) and relevant currency tags."""
-        clean = symbol.upper().replace("/", "").replace("-", "").strip()
-        currencies: list[str] = ["USD"]
+    def compute_lexical_modifier(text: str) -> float:
+        """
+        PRD Section 5.2 Deterministic Lexical Black-Swan / Catalyst Modifier.
+        Returns a boost/penalty in [-0.40, +0.40].
+        """
+        lower = text.lower()
+        mod = 0.0
+        for kw in BULLISH_CATALYSTS:
+            if kw in lower:
+                mod += 0.25
+        for kw in BEARISH_CATALYSTS:
+            if kw in lower:
+                mod -= 0.35
+        return max(-0.40, min(0.40, mod))
+
+    @staticmethod
+    def classify_asset_category(symbol: str) -> Tuple[str, List[str]]:
+        """Identify asset class and extract currency tags."""
+        clean = (
+            symbol.upper()
+            .replace("/", "")
+            .replace("-", "")
+            .replace("PERP", "")
+            .strip()
+        )
+        currencies: List[str] = ["USD"]
 
         if any(c in clean for c in ("BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK", "BNB", "XRP")):
             base_coin = clean.replace("USDT", "").replace("USDC", "").replace("USD", "")
@@ -84,79 +128,76 @@ class MultiSourceNewsAggregator:
         as_of: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """
-        Fetch from all active providers in parallel, deduplicate via SHA-256,
-        score hybrid polarity, apply exponential time-decay, and compute
-        composite sentiment score along with macro blackout gate status.
+        Poll all 5 providers concurrently, deduplicate by alphanumeric SHA-256,
+        apply lexical black-swan modifier, compute exponential time-decay, and
+        calculate composite sentiment and economic calendar blackout gate.
         """
         now = as_of or datetime.now(timezone.utc)
         asset_class, target_ccys = self.classify_asset_category(symbol)
+        clean_base = target_ccys[0]
 
         async with httpx.AsyncClient(
-            headers={"User-Agent": "NexusTradeAI/2.0 InstitutionalEngine"},
+            headers={"User-Agent": "Mozilla/5.0 (compatible; NexusTradeAI/2.0)"},
             timeout=15.0,
         ) as client:
-            # Query relevant providers concurrently
+            av_ticker = f"CRYPTO:{clean_base}" if asset_class == "crypto" else f"FOREX:{clean_base}"
+            fh_cat = "crypto" if asset_class == "crypto" else "forex"
+
             tasks = [
                 self.forexfactory.fetch_calendar(client),
                 self.marctomarket.fetch(client),
-                self.finnhub.fetch(
-                    client,
-                    category="crypto" if asset_class == "crypto" else "forex",
-                    symbol=symbol,
-                ),
+                self.finnhub.fetch(client, category=fh_cat, symbol=symbol),
             ]
             if self.alphavantage.api_key:
-                tasks.append(self.alphavantage.fetch(client, ticker=symbol))
-            if asset_class == "crypto" and self.cryptopanic.api_key:
-                tasks.append(self.cryptopanic.fetch(client, currencies=target_ccys[0]))
+                tasks.append(self.alphavantage.fetch(client, ticker=av_ticker))
+            if asset_class == "crypto":
+                tasks.append(self.crypto_rss.fetch(client, target_symbol=clean_base))
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
         calendar_events: List[EconomicCalendarEvent] = (
             results[0] if isinstance(results[0], list) else []
         )
-
         raw_news: List[UnifiedNewsItem] = []
         for res in results[1:]:
             if isinstance(res, list):
                 raw_news.extend(res)
 
-        # Deduplicate by SHA-256 title hash
+        # Deduplicate syndicated headlines across RSS & APIs by SHA-256 hash
         deduped: Dict[str, UnifiedNewsItem] = {}
         for item in raw_news:
             h = item.compute_hash()
             if h not in deduped:
                 deduped[h] = item
             else:
-                # If duplicate exists, keep item with higher authority weight
                 if item.authority_weight > deduped[h].authority_weight:
                     deduped[h] = item
 
-        # Score items and apply exponential time-decay
+        # Score with FinBERT + Lexical Modifier and apply exponential time-decay
         weighted_sum = 0.0
         total_weight = 0.0
-        provider_counts: dict[str, int] = {}
+        provider_counts: Dict[str, int] = {}
 
         for item in deduped.values():
-            provider_counts[item.source.value] = provider_counts.get(item.source.value, 0) + 1
-            text_payload = f"{item.title}. {item.summary}".strip()
-            fb_score = float(self.finbert_scorer(text_payload))
-            item.finbert_sentiment = fb_score
+            pub_tag = item.publisher or item.source.value
+            provider_counts[pub_tag] = provider_counts.get(pub_tag, 0) + 1
 
-            # Hybrid polarity fusion (PRD Section 5.2)
-            if item.provider_sentiment is not None:
-                if item.source == NewsSource.ALPHA_VANTAGE:
-                    item.final_polarity = 0.60 * float(item.provider_sentiment) + 0.40 * fb_score
-                elif item.source == NewsSource.CRYPTOPANIC:
-                    item.final_polarity = 0.50 * float(item.provider_sentiment) + 0.50 * fb_score
-                else:
-                    item.final_polarity = fb_score
+            text_payload = f"{item.title}. {item.summary}".strip()
+            fb_raw = float(self.finbert_scorer(text_payload))
+            lex_mod = self.compute_lexical_modifier(text_payload)
+            fb_adjusted = max(-1.0, min(1.0, fb_raw + lex_mod))
+
+            item.finbert_sentiment = fb_raw
+            item.lexical_modifier = lex_mod
+
+            if item.provider_sentiment is not None and item.source == NewsSource.ALPHA_VANTAGE:
+                item.final_polarity = 0.60 * float(item.provider_sentiment) + 0.40 * fb_adjusted
             else:
-                item.final_polarity = fb_score
+                item.final_polarity = fb_adjusted
 
             item.final_polarity = max(-1.0, min(1.0, item.final_polarity))
 
-            # Exponential time-decay (PRD Section 5.1)
+            # Exponential time-decay
             age_hours = max(0.0, (now - item.published_at).total_seconds() / 3600.0)
             half_life = 12.0 if item.source == NewsSource.MARC_TO_MARKET else 2.0
             lambda_val = math.log(2) / half_life
@@ -171,7 +212,7 @@ class MultiSourceNewsAggregator:
         )
         composite_sentiment = round(float(max(-1.0, min(1.0, composite_sentiment))), 4)
 
-        # Economic Blackout Gatekeeper (PRD Section 5.4)
+        # Economic Blackout Gatekeeper
         window_mins = getattr(self.settings, "macro_blackout_window_minutes", 15)
         blackout_enabled = getattr(self.settings, "macro_blackout_enabled", True)
         is_blackout = False
@@ -187,11 +228,13 @@ class MultiSourceNewsAggregator:
 
         top_headlines = [
             {
-                "source": i.source.value,
+                "source": i.publisher or i.source.value,
                 "title": i.title,
                 "summary": i.summary[:140],
                 "published_at": i.published_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "polarity": round(i.final_polarity, 3),
+                "relevance": round(i.relevance_score, 2),
+                "lexical_modifier": round(i.lexical_modifier, 2),
             }
             for i in sorted(
                 deduped.values(), key=lambda x: x.published_at, reverse=True
@@ -199,7 +242,7 @@ class MultiSourceNewsAggregator:
         ]
 
         logger.info(
-            "Computed multi-source news composite intelligence",
+            "Computed 5-provider composite intelligence (v2.0 Tier-1 RSS)",
             symbol=symbol,
             composite_sentiment=composite_sentiment,
             article_count=len(deduped),
@@ -218,12 +261,13 @@ class MultiSourceNewsAggregator:
             "calendar_events_count": len(calendar_events),
             "top_headlines": top_headlines,
         }
+
     def get_composite_intelligence_sync(
         self,
         symbol: str = "BTCUSDT",
         as_of: Optional[datetime] = None,
     ) -> Dict[str, Any]:
-        """Synchronous wrapper for get_composite_intelligence safe across any event loop."""
+        """Synchronous wrapper for get_composite_intelligence safe across running event loops."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:

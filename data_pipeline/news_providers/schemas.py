@@ -13,7 +13,7 @@ class NewsSource(str, Enum):
     MARC_TO_MARKET = "marctomarket"
     FINNHUB = "finnhub"
     ALPHA_VANTAGE = "alphavantage"
-    CRYPTOPANIC = "cryptopanic"
+    TIER1_CRYPTO_RSS = "tier1_crypto_rss"
 
 
 class ImpactLevel(str, Enum):
@@ -35,6 +35,7 @@ class EconomicCalendarEvent(BaseModel):
 class UnifiedNewsItem(BaseModel):
     item_id: str = Field(default="")
     source: NewsSource
+    publisher: str = ""
     title: str
     summary: str = ""
     url: str = ""
@@ -42,11 +43,13 @@ class UnifiedNewsItem(BaseModel):
     tickers: List[str] = Field(default_factory=list)
     provider_sentiment: Optional[float] = None  # [-1.0, 1.0] if native score exists
     finbert_sentiment: Optional[float] = None   # [-1.0, 1.0] computed locally
-    final_polarity: float = 0.0                 # Combined score
+    lexical_modifier: float = 0.0               # [-0.4, 0.4] black-swan / catalyst boost
+    final_polarity: float = 0.0                 # Combined score [-1.0, 1.0]
     relevance_score: float = 1.0                # [0.0, 1.0]
     authority_weight: float = 1.0
 
     def compute_hash(self) -> str:
-        normalized = f"{self.title.strip().lower()[:80]}"
+        import re
+        normalized = re.sub(r"[^a-z0-9]", "", self.title.strip().lower())[:75]
         self.item_id = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
         return self.item_id

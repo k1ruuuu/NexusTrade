@@ -92,7 +92,6 @@ class Settings(BaseSettings):
     # Real-Time Multi-Source News & Macro Providers
     finnhub_api_key: str = Field(default="", description="Finnhub.io REST API key")
     alphavantage_api_key: str = Field(default="", description="Alpha Vantage News & Sentiment API key")
-    cryptopanic_api_key: str = Field(default="", description="CryptoPanic REST API key")
     forexfactory_calendar_url: str = Field(
         default="https://nfs.faireconomy.media/ff_calendar_thisweek.json",
         description="Fair Economy ForexFactory JSON calendar endpoint",
@@ -101,11 +100,15 @@ class Settings(BaseSettings):
         default="https://www.marctomarket.com/feeds/posts/default?alt=json",
         description="MarcToMarket Atom/JSON macro feed endpoint",
     )
+    crypto_rss_feeds: str = Field(
+        default="https://www.coindesk.com/arc/outboundfeeds/rss/,https://cointelegraph.com/rss,https://decrypt.co/feed,https://www.theblock.co/rss.xml",
+        description="Tier-1 Crypto Media RSS feed URLs comma separated",
+    )
     ttl_forexfactory: int = Field(default=3600, ge=60, description="ForexFactory cache TTL (seconds)")
     ttl_marctomarket: int = Field(default=1800, ge=60, description="MarcToMarket cache TTL (seconds)")
     ttl_finnhub: int = Field(default=120, ge=30, description="Finnhub cache TTL (seconds)")
     ttl_alphavantage: int = Field(default=1800, ge=60, description="Alpha Vantage cache TTL (seconds)")
-    ttl_cryptopanic: int = Field(default=180, ge=30, description="CryptoPanic cache TTL (seconds)")
+    ttl_crypto_rss: int = Field(default=60, ge=15, description="Tier-1 Crypto RSS cache TTL (seconds)")
     macro_blackout_window_minutes: int = Field(
         default=15, ge=1, description="Execution blackout window in minutes (+/-) around High Impact events"
     )

@@ -29,6 +29,7 @@ dependencies = [
     "hmmlearn>=0.3.2",
     "lightgbm>=4.3.0",
     "matplotlib>=3.9.0",
+    "feedparser>=6.0.10",
 ]
 
 [project.optional-dependencies]
