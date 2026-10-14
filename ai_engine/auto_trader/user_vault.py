@@ -309,21 +309,32 @@ class UserVault:
             ).fetchone()
 
         if row is not None:
-            api_key = self.decrypt_for_user(uid, str(row["encrypted_api_key"]))
-            api_secret = self.decrypt_for_user(uid, str(row["encrypted_api_secret"]))
-            row_keys = row.keys()
-            prov: BrokerProvider = "exness_mt5"
-            srv_name = (
-                str(row["server_name"])
-                if ("server_name" in row_keys and str(row["server_name"]).strip())
-                else ("Exness-MT5Trial7" if bool(row["testnet"]) else "Exness-MT5Real")
-            )
-            acct_id = (
-                str(row["account_id"])
-                if ("account_id" in row_keys and str(row["account_id"]).strip())
-                else compute_broker_account_id(prov, srv_name, api_key, bool(row["testnet"]))
-            )
-            return UserBinanceCredentials(
+            api_key = ""
+            api_secret = ""
+            try:
+                api_key = self.decrypt_for_user(uid, str(row["encrypted_api_key"]))
+                api_secret = self.decrypt_for_user(uid, str(row["encrypted_api_secret"]))
+            except Exception as exc:
+                logger.warning(
+                    "Failed to decrypt user vault credentials (wrong master key or corrupted token)",
+                    user_id=uid,
+                    error=str(exc),
+                )
+
+            if api_key and api_secret:
+                row_keys = row.keys()
+                prov: BrokerProvider = "exness_mt5"
+                srv_name = (
+                    str(row["server_name"])
+                    if ("server_name" in row_keys and str(row["server_name"]).strip())
+                    else ("Exness-MT5Trial7" if bool(row["testnet"]) else "Exness-MT5Real")
+                )
+                acct_id = (
+                    str(row["account_id"])
+                    if ("account_id" in row_keys and str(row["account_id"]).strip())
+                    else compute_broker_account_id(prov, srv_name, api_key, bool(row["testnet"]))
+                )
+                return UserBinanceCredentials(
                 user_id=uid,
                 username=str(row["username"]),
                 role=role,
