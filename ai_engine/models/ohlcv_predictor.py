@@ -203,6 +203,25 @@ class OHLCVPredictor:
         labels = labels.mask(normalized_score >= q_high, 2)
         return labels
 
+    @staticmethod
+    def create_triple_barrier_labels(
+        featured_df: pd.DataFrame,
+        k_tp: float = 2.0,
+        k_sl: float = 1.5,
+        horizon_bars: int = 30,
+    ) -> pd.Series:
+        """
+        ADVANCED_AI_TRADING_ENGINE_SPEC.md Section 2:
+        Assign path-dependent labels (0=SELL, 1=HOLD, 2=BUY) via TripleBarrierLabeler.
+        """
+        from ai_engine.models.meta_label_engine import TripleBarrierConfig, TripleBarrierLabeler
+        cfg = TripleBarrierConfig(k_tp=k_tp, k_sl=k_sl, horizon_bars=horizon_bars)
+        raw_labels = TripleBarrierLabeler.apply_triple_barrier(featured_df, config=cfg)
+        mapped = pd.Series(1, index=featured_df.index, dtype=np.int32)
+        mapped = mapped.mask(raw_labels == -1, 0)
+        mapped = mapped.mask(raw_labels == 1, 2)
+        return mapped
+
     def _prepare_labeled_split(
         self,
         df: pd.DataFrame,

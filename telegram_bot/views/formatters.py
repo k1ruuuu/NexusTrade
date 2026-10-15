@@ -100,6 +100,10 @@ def format_signal_card(decision: SignalDecision) -> str:
         if not reason:
             return "Filter Risiko"
         r = reason.strip()
+        if "DXY" in r:
+            return "Filter DXY"
+        if "Meta-Model" in r:
+            return "Meta-Model"
         if "BLACKOUT" in r or "blackout" in r.lower():
             return "Blackout Berita"
         if "Chronological model validation" in r:
@@ -152,7 +156,7 @@ def format_signal_card(decision: SignalDecision) -> str:
         f"• <b>Teknikal &amp; CVD:</b> <code>{decision.s_tech:+.2f}</code> | <i>{html.escape(decision.cvd_status)}</i> (RVOL <code>{decision.relative_volume:.1f}x</code>)\n"
         f"• <b>Sentimen &amp; Vol:</b> <code>{decision.s_sent:+.2f}</code> ({sent_desc}) | Vol <code>{decision.s_vol:.2f}</code>\n"
         f"• <b>Konfluensi:</b> <code>{decision.confluence_pillars}/6 Pilar</code> | Exp <code>{decision.expectancy_r:+.2f}R</code>\n"
-        f"{mem_line}"
+        f"• <b>Meta-Model:</b> <code>P(Sukses) {decision.meta_probability * 100:.1f}%</code> | Makro: {html.escape(decision.macro_regime)}\n"
         f"<b>🛡️ Ukuran:</b> <code>{decision.position_units:,.4f} {sym}</code> (<code>${decision.position_notional:,.2f}</code> | Risiko <code>{decision.account_risk_pct * 100:.2f}%</code>)\n"
         f"⏱️ <i>UTC: {html.escape(decision.timestamp)}</i>"
     )

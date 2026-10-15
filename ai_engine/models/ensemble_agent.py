@@ -35,6 +35,11 @@ from data_pipeline.market_symbols import normalize_symbol
 from data_pipeline.preprocessor_ohlcv import OHLCVPreprocessor
 from src.features.structure_extractor import CandleStructuralExtractor
 from src.models.macro_regime import MacroRegimeDetector
+from ai_engine.models.meta_label_engine import (
+    AdvancedFeatureExtractor,
+    MacroRiskFilter,
+    TwoStageMetaLabelEngine,
+)
 
 logger = get_logger("nexustrade.ai_engine.ensemble")
 
@@ -102,6 +107,8 @@ class SignalDecision:
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
+    meta_probability: float = 0.0
+    dxy_filter_triggered: bool = False
     @property
     def meets_confidence_threshold(self) -> bool:
         return self.approved and self.action in ("BUY", "SELL") and self.confidence >= 0.72
@@ -145,6 +152,9 @@ class EnsembleDecisionAgent:
         self.macro_regime_detector = MacroRegimeDetector()
         self._market_data_cache: dict[str, pd.DataFrame] = {}
         self._last_trained_signature: dict[str, tuple[str, float]] = {}
+        self.meta_engine = TwoStageMetaLabelEngine(
+            gate_threshold=self.settings.signal_confidence_threshold
+        )
     @staticmethod
     def resolve_badge(action: ActionType, confidence: float) -> BadgeType:
         if action == "BUY":
@@ -456,6 +466,26 @@ class EnsembleDecisionAgent:
             market_df=market_df,
             annualized_volatility=vol_forecast.annualized_volatility,
         )
+        # Stage 2: Secondary Meta-Model & Macro Risk Filtering (ADVANCED_AI_TRADING_ENGINE_SPEC)
+        meta_feat = AdvancedFeatureExtractor.compute_features(
+            market_df, sr_level=sr_levels.support_1 if s_tech > 0 else sr_levels.resistance_1
+        )
+        if len(meta_feat) > 0:
+            meta_prob = self.meta_engine.predict_meta_probability(
+                meta_feat.iloc[-1], primary_confidence=decision.confidence
+            )
+        else:
+            meta_prob = decision.confidence
+        decision.meta_probability = round(meta_prob, 4)
+
+        # Section 5.1: DXY 1-hour trend filter
+        if self.settings.use_live_market_data and clean_sym in ("BTCUSDT", "BTCUSD", "XAUUSD", "ETHUSDT"):
+            dxy_df = self.live_feed.fetch_live_ohlcv("DXY", timeframe="15m", limit=10)
+            dxy_suppressed, dxy_reason = MacroRiskFilter.evaluate_dxy_trend_filter(dxy_df, decision.action)
+            if dxy_suppressed:
+                decision.dxy_filter_triggered = True
+                self._reject(decision, dxy_reason)
+
         if getattr(sent_result, "is_macro_blackout", False):
             self._reject(decision, f"HIGH_IMPACT_NEWS_BLACKOUT ({sent_result.blackout_event or 'High Impact Event'})")
         return decision
