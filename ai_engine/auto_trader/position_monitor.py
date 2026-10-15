@@ -447,6 +447,10 @@ class PositionMonitorMixin:
         (`s_sent <= -0.30` -> `SELL`, `s_sent >= +0.30` -> `BUY`) right after an Emergency News Exit.
         """
         try:
+            # Guard 1: Check if automatic news reversal is permitted by settings
+            if not getattr(self.engine.settings, "allow_news_auto_reverse", True):
+                return None
+
             creds = self.engine.vault.resolve_credentials(closed_pos.user_id)
             if (
                 creds is None
@@ -468,6 +472,13 @@ class PositionMonitorMixin:
             sr_levels = self.engine.ensemble_agent.sr_detector.detect_levels(
                 mkt_df, current_price=curr_price, atr_14=eff_atr
             )
+            # Guard 2: Verify structural Support/Resistance room before reversing
+            if new_side == "BUY" and sr_levels.dist_to_r1_pct < 0.15:
+                logger.info("Blocked news auto-reverse BUY: price too close to R1 resistance", symbol=closed_pos.symbol)
+                return None
+            if new_side == "SELL" and abs(sr_levels.dist_to_s1_pct) < 0.15:
+                logger.info("Blocked news auto-reverse SELL: price too close to S1 support", symbol=closed_pos.symbol)
+                return None
             targets = self.engine.ensemble_agent.stop_loss_manager.calculate_realistic_targets(
                 entry_price=curr_price,
                 atr_14=eff_atr,

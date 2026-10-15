@@ -199,18 +199,18 @@ class EnsembleDecisionAgent:
         clamped_tech = float(np.clip(s_tech, -1.0, 1.0))
         clamped_sent = float(np.clip(s_sent, -1.0, 1.0))
         clamped_vol = float(np.clip(s_vol, 0.0, 1.0))
+        # Calibrated weight redistribution when news is neutral (never mutates s_sent)
         if (
             abs(clamped_tech) >= 0.72
             and abs(clamped_sent) < 0.15
             and headlines is not None
             and len(headlines) > 0
         ):
-            eff_sent = float(np.sign(clamped_tech)) * max(
-                abs(clamped_sent), 0.42 * abs(clamped_tech)
-            )
+            eff_w1 = min(0.82, w1 + 0.15)
+            eff_w2 = max(0.18, 1.0 - eff_w1)
+            signed_composite = eff_w1 * clamped_tech + eff_w2 * clamped_sent
         else:
-            eff_sent = clamped_sent
-        signed_composite = w1 * clamped_tech + w2 * eff_sent
+            signed_composite = w1 * clamped_tech + w2 * clamped_sent
         confidence = round(float(np.clip(abs(signed_composite), 0.0, 1.0)), 4)
         risk_multiplier = round(1.0 - clamped_vol, 4)
 
@@ -410,16 +410,16 @@ class EnsembleDecisionAgent:
             rsi_val = float(indicator_overrides.get("rsi", 55.0))
             macd_val = float(indicator_overrides.get("macd", 1.0))
             if rsi_val >= 50.0 and macd_val >= 0.0:
-                s_tech = max(s_tech, 0.90)
+                s_tech = float(np.clip(0.70 * s_tech + 0.30 * 0.90, -1.0, 1.0))
                 if s_sent > -0.35:
-                    s_sent = max(s_sent, 0.50)
+                    s_sent = float(np.clip(0.70 * s_sent + 0.30 * 0.50, -1.0, 1.0))
         elif action_hint == "SELL" and indicator_overrides:
             rsi_val = float(indicator_overrides.get("rsi", 45.0))
             macd_val = float(indicator_overrides.get("macd", -1.0))
             if rsi_val <= 50.0 and macd_val <= 0.0:
-                s_tech = min(s_tech, -0.90)
+                s_tech = float(np.clip(0.70 * s_tech + 0.30 * (-0.90), -1.0, 1.0))
                 if s_sent < 0.35:
-                    s_sent = min(s_sent, -0.50)
+                    s_sent = float(np.clip(0.70 * s_sent + 0.30 * (-0.50), -1.0, 1.0))
         entry_price = (
             float(price_override)
             if price_override is not None and price_override > 0
@@ -578,23 +578,34 @@ class EnsembleDecisionAgent:
         s_15m = float(np.clip(0.65 * base_15m.s_tech + 0.35 * s_15m_raw, -1.0, 1.0))
         lbl_15m = "🟢 BULL" if s_15m >= 0.12 else ("🔴 BEAR" if s_15m <= -0.12 else "🟡 FLAT")
 
-        mtf_trend_score = 0.15 * s_1d + 0.20 * s_4h + 0.25 * s_1h + 0.25 * s_15m + 0.15 * s_5m
+        # Step 2: Strict Asymmetric HTF Gate (1D, 4H, 1H) + LTF Execution Trigger (15M, 5M, 1M)
+        htf_anchor_score = 0.30 * s_1d + 0.35 * s_4h + 0.35 * s_1h
+        ltf_exec_score = 0.60 * s_15m + 0.40 * s_5m
+        mtf_trend_score = 0.55 * htf_anchor_score + 0.45 * ltf_exec_score
+
         dom_sign = 1.0 if mtf_trend_score >= 0 else -1.0
         tf_scores = [s_1d, s_4h, s_1h, s_15m, s_5m]
         aligned_count = sum(1 for sc in tf_scores if (sc * dom_sign) >= 0.08)
 
-        # F12: Never invert an opposing 15m model score using abs(); only boost when 15m agrees with dom_sign
-        if (base_15m.s_tech * dom_sign) < -0.15:
+        # Asymmetric HTF Lock: Never allow LTF counter-trend bounce to override strong HTF trend
+        htf_bull_locked = htf_anchor_score >= 0.18 and s_1h >= 0.10
+        htf_bear_locked = htf_anchor_score <= -0.18 and s_1h <= -0.10
+
+        if htf_bull_locked and mtf_trend_score < 0:
+            blended_s_tech = 0.0
+        elif htf_bear_locked and mtf_trend_score > 0:
+            blended_s_tech = 0.0
+        elif (base_15m.s_tech * dom_sign) < -0.15:
             blended_s_tech = float(0.50 * mtf_trend_score + 0.50 * base_15m.s_tech)
         elif aligned_count >= 3:
             aligned_15m = abs(base_15m.s_tech) if (base_15m.s_tech * dom_sign) > 0 else 0.0
-            blended_s_tech = float(
-                dom_sign * max(aligned_15m, abs(mtf_trend_score), 0.85)
-            )
+            alignment_boost = 1.0 + 0.10 * (aligned_count - 2)
+            raw_mag = max(aligned_15m, abs(mtf_trend_score) * alignment_boost)
+            blended_s_tech = float(dom_sign * np.clip(raw_mag, 0.0, 0.96))
         elif aligned_count == 2 and abs(base_15m.s_tech) >= 0.72 and (s_15m * s_5m) > 0:
             blended_s_tech = float(base_15m.s_tech)
         else:
-            blended_s_tech = float(mtf_trend_score * 0.45)
+            blended_s_tech = float(mtf_trend_score * 0.55)
         # Step 3: Rekomendasi 1 & 3 — Eksekusi Aksi di 5M, ATR Robust (bebas noise spread), & Filter Sideways/Chop
         entry_px_5m = (
             float(df_5m["close"].iloc[-1])

@@ -215,29 +215,43 @@ class MacroRegimeDetector:
         else:
             x_fit = x_mat
 
+        fitted_model = None
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             try:
-                self.model = hmm.GaussianHMM(
+                cand = hmm.GaussianHMM(
                     n_components=self.n_regimes,
                     covariance_type="full",
                     n_iter=200,
                     random_state=42,
                     min_covar=1e-4,
                 )
-                self.model.fit(x_fit)
-                self._is_fitted = True
+                cand.fit(x_fit)
+                if hasattr(cand, "means_"):
+                    fitted_model = cand
             except Exception:
-                self.model = hmm.GaussianHMM(
-                    n_components=self.n_regimes,
-                    covariance_type="diag",
-                    n_iter=200,
-                    random_state=42,
-                    min_covar=1e-3,
-                )
-                self.model.fit(x_fit)
-                self._is_fitted = True
+                pass
+            if fitted_model is None:
+                try:
+                    cand = hmm.GaussianHMM(
+                        n_components=self.n_regimes,
+                        covariance_type="diag",
+                        n_iter=200,
+                        random_state=42,
+                        min_covar=1e-3,
+                    )
+                    cand.fit(x_fit)
+                    if hasattr(cand, "means_"):
+                        fitted_model = cand
+                except Exception:
+                    pass
 
+        if fitted_model is None or not hasattr(fitted_model, "means_"):
+            self._is_fitted = False
+            return self
+
+        self.model = fitted_model
+        self._is_fitted = True
         # Canonical state ordering:
         # Score each state by (mean_return + 0.25 * mean_roro - 0.50 * mean_vol)
         means = self.model.means_  # shape [K, D]

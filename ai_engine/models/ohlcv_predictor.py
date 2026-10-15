@@ -13,6 +13,8 @@ from ai_engine.models.confluence_analyzer import MultiFactorConfluenceAnalyzer
 from config.logging_config import get_logger
 from config.settings import Settings, get_settings
 from data_pipeline.preprocessor_ohlcv import OHLCVPreprocessor
+from src.features.structure_extractor import CandleStructuralExtractor
+from src.models.macro_regime import MacroRegimeDetector
 
 logger = get_logger("nexustrade.ai_engine.ohlcv_predictor")
 
@@ -79,15 +81,36 @@ class OHLCVPredictor:
         "rel_spread",
         "score_pinbar",
         "score_engulf",
+        # Connected Structural Zone & Volume Profile Features (Module 2 & 3)
+        "delta_r",
+        "delta_s",
+        "pos_sr",
+        "delta_poc",
+        "delta_vah",
+        "delta_val",
+        "dist_fvg_bull",
+        "dist_fvg_bear",
+        "dist_ob_bull",
+        "dist_ob_bear",
+        "dist_demand",
+        "dist_supply",
+        # Connected Gaussian HMM Macro Regime Features (Module 4)
+        "regime_prob_bull",
+        "regime_prob_chop",
+        "regime_prob_bear",
+        "roro_index",
     )
     def __init__(
         self,
         settings: Optional[Settings] = None,
         preprocessor: Optional[OHLCVPreprocessor] = None,
+        structural_extractor: Optional[CandleStructuralExtractor] = None,
+        macro_detector: Optional[MacroRegimeDetector] = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.preprocessor = preprocessor or OHLCVPreprocessor(self.settings)
-        self.model: Optional[lgb.LGBMClassifier] = None
+        self.structural_extractor = structural_extractor or CandleStructuralExtractor()
+        self.macro_detector = macro_detector or MacroRegimeDetector()
         self.validation_roc_auc: float = 0.0
         self.validation_accuracy: float = 0.0
         self.memory_bars_trained: int = 0
@@ -109,6 +132,15 @@ class OHLCVPredictor:
         cleaned = self.preprocessor.clean_ohlcv(df, symbol=symbol, timeframe=timeframe)
         raw_ind = self.preprocessor.compute_raw_indicators(cleaned)
         raw_ind = MultiFactorConfluenceAnalyzer.compute_confluence_series(raw_ind)
+
+        # Connect Module 2 & 3: DBSCAN S/R, Volume Profile (POC/VAH/VAL), FVG, Order Blocks, Supply/Demand
+        raw_ind = self.structural_extractor.extract_structural_features(
+            raw_ind, enforce_lag=False
+        )
+        # Connect Module 4: 3-State Gaussian HMM Macro Regime Posteriors & RoRo Index
+        raw_ind = self.macro_detector.detect_regime_series(
+            raw_ind, enforce_lag=False
+        )
 
         close = raw_ind["close"].replace(0.0, np.nan)
         raw_ind["macd_norm"] = (raw_ind["macd"] / close).fillna(0.0)
@@ -177,31 +209,80 @@ class OHLCVPredictor:
     @staticmethod
     def create_target_labels(
         featured_df: pd.DataFrame,
-        horizon: int = 3,
+        horizon: int = 5,
+        k_tp: float = 1.15,
+        k_sl: float = 0.85,
     ) -> pd.Series:
         """
-        Create directional regime labels (0=SELL, 1=HOLD, 2=BUY) from forward returns
-        and lagged regime structure. Features in featured_df at index t are already
-        shifted to t-1, so predicting bar t..t+horizon outcome has zero lookahead bias.
+        Path-Dependent Volatility-Scaled Triple-Barrier Labeling (0=SELL, 1=HOLD, 2=BUY).
+        Eliminates feature-to-target leakage and lookahead bias.
         """
-        close = featured_df["close"].astype(np.float64)
-        open_p = featured_df["open"].astype(np.float64)
-        future_close = close.shift(-(horizon - 1))
-        forward_ret = ((future_close - open_p) / open_p.replace(0.0, np.nan)).fillna(0.0)
+        closes = pd.to_numeric(featured_df["close"], errors="coerce").to_numpy(dtype=np.float64)
+        highs = pd.to_numeric(featured_df["high"], errors="coerce").to_numpy(dtype=np.float64)
+        lows = pd.to_numeric(featured_df["low"], errors="coerce").to_numpy(dtype=np.float64)
+        opens = pd.to_numeric(featured_df["open"], errors="coerce").to_numpy(dtype=np.float64)
 
-        vol_scale = featured_df["atr_pct"].astype(np.float64).clip(lower=1e-4)
-        normalized_score = (
-            featured_df["regime_composite"].astype(np.float64)
-            + 0.18 * (forward_ret / vol_scale)
-        )
+        if "atr_14" in featured_df.columns:
+            atrs = pd.to_numeric(featured_df["atr_14"], errors="coerce").to_numpy(dtype=np.float64)
+        else:
+            atrs = np.abs(highs - lows)
 
-        q_low = normalized_score.expanding(min_periods=1).quantile(0.33)
-        q_high = normalized_score.expanding(min_periods=1).quantile(0.67)
+        n = len(closes)
+        labels = np.ones(n, dtype=np.int32)
+        eff_horizon = max(int(horizon), 2)
 
-        labels = pd.Series(1, index=featured_df.index, dtype=np.int32)
-        labels = labels.mask(normalized_score <= q_low, 0)
-        labels = labels.mask(normalized_score >= q_high, 2)
-        return labels
+        for t in range(n):
+            entry_p = opens[t] if opens[t] > 0 else closes[t]
+            atr_t = atrs[t] if (np.isfinite(atrs[t]) and atrs[t] > 0) else (entry_p * 0.008)
+            atr_t = max(atr_t, entry_p * 1e-4)
+
+            end_idx = min(n, t + eff_horizon)
+            if end_idx <= t:
+                continue
+
+            path_h = highs[t:end_idx]
+            path_l = lows[t:end_idx]
+            path_c = closes[t:end_idx]
+
+            long_tp = entry_p + (k_tp * atr_t)
+            long_sl = entry_p - (k_sl * atr_t)
+            short_tp = entry_p - (k_tp * atr_t)
+            short_sl = entry_p + (k_sl * atr_t)
+
+            hit_long_tp = np.where(path_h >= long_tp)[0]
+            hit_long_sl = np.where(path_l <= long_sl)[0]
+            t_long_tp = int(hit_long_tp[0]) if len(hit_long_tp) > 0 else 999999
+            t_long_sl = int(hit_long_sl[0]) if len(hit_long_sl) > 0 else 999999
+
+            hit_short_tp = np.where(path_l <= short_tp)[0]
+            hit_short_sl = np.where(path_h >= short_sl)[0]
+            t_short_tp = int(hit_short_tp[0]) if len(hit_short_tp) > 0 else 999999
+            t_short_sl = int(hit_short_sl[0]) if len(hit_short_sl) > 0 else 999999
+
+            long_win = t_long_tp < t_long_sl
+            short_win = t_short_tp < t_short_sl
+
+            if long_win and not short_win:
+                labels[t] = 2
+            elif short_win and not long_win:
+                labels[t] = 0
+            elif long_win and short_win:
+                if t_long_tp < t_short_tp:
+                    labels[t] = 2
+                elif t_short_tp < t_long_tp:
+                    labels[t] = 0
+                else:
+                    labels[t] = 2 if (path_c[-1] - entry_p) >= 0 else 0
+            else:
+                net_excursion = (path_c[-1] - entry_p) / atr_t
+                if net_excursion >= 0.35:
+                    labels[t] = 2
+                elif net_excursion <= -0.35:
+                    labels[t] = 0
+                else:
+                    labels[t] = 1
+
+        return pd.Series(labels, index=featured_df.index, dtype=np.int32)
 
     @staticmethod
     def create_triple_barrier_labels(

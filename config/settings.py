@@ -115,6 +115,9 @@ class Settings(BaseSettings):
     macro_blackout_enabled: bool = Field(
         default=True, description="Enforce execution blackout on correlated pairs around High Impact events"
     )
+    allow_news_auto_reverse: bool = Field(
+        default=True, description="Allow automatic counter-trade execution after an emergency news exit"
+    )
 
     # Institutional Risk Guardrails
     portfolio_initial_capital: float = Field(default=100000.0, gt=0.0)
