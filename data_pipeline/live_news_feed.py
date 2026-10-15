@@ -4,7 +4,7 @@ import hashlib
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
@@ -220,26 +220,38 @@ class LiveNewsFeed:
     def fetch_live_news(
         self,
         symbol: str = "BTCUSDT",
-        max_items: int = 10,
+        max_items: int = 30,
         force_refresh: bool = False,
+        lookback_days: int = 90,
     ) -> list[LiveNewsItem]:
-        """Fetch deduplicated breaking news headlines sorted newest-first."""
+        """
+        Fetch deduplicated news headlines from the latest breaking news back to `lookback_days`
+        (default 90 days / 3 months) across Google News RSS (2d, 30d, 90d windows) and Yahoo Finance.
+        """
         clean_sym = normalize_symbol(symbol)
         now = time.monotonic()
 
         if not force_refresh and clean_sym in self._cache:
             ts, cached_items = self._cache[clean_sym]
-            if now - ts <= self.ttl_seconds and cached_items:
+            if now - ts <= self.ttl_seconds and len(cached_items) >= min(max_items, 12):
                 return list(cached_items[:max_items])
 
+        now_utc = datetime.now(timezone.utc)
+        cutoff_30d = (now_utc - timedelta(days=30)).strftime("%Y-%m-%d")
+        cutoff_90d = (now_utc - timedelta(days=max(lookback_days, 90))).strftime("%Y-%m-%d")
+
         rss_q, yf_q = self.resolve_queries(clean_sym)
-        hist_q = rss_q.replace("when:2d", "after:2021-10-11")
-        rss_recent = self.fetch_google_rss(clean_sym, rss_q, max_items=max_items)
-        rss_5y = self.fetch_google_rss(clean_sym, hist_q, max_items=max(15, max_items))
-        yf_items = self.fetch_yahoo_news(clean_sym, yf_q, max_items=max_items)
+        q_30d = rss_q.replace("when:2d", f"after:{cutoff_30d}")
+        q_90d = rss_q.replace("when:2d", f"after:{cutoff_90d}")
+
+        per_window = max(12, max_items // 2)
+        rss_breaking = self.fetch_google_rss(clean_sym, rss_q, max_items=per_window)
+        yf_breaking = self.fetch_yahoo_news(clean_sym, yf_q, max_items=per_window)
+        rss_30d = self.fetch_google_rss(clean_sym, q_30d, max_items=per_window)
+        rss_90d = self.fetch_google_rss(clean_sym, q_90d, max_items=max(18, max_items))
 
         deduped: dict[str, LiveNewsItem] = {}
-        for item in [*rss_recent, *yf_items, *rss_5y]:
+        for item in [*rss_breaking, *yf_breaking, *rss_30d, *rss_90d]:
             if item.headline_id not in deduped:
                 deduped[item.headline_id] = item
 
@@ -247,15 +259,16 @@ class LiveNewsFeed:
             deduped.values(),
             key=lambda x: x.published_at,
             reverse=True,
-        )[: max(max_items, 20)]
+        )[: max(max_items, 30)]
 
         if sorted_items:
             self._cache[clean_sym] = (now, sorted_items)
             logger.info(
-                "Harvested live financial news from internet",
+                "Harvested live + 3-month (90d) financial news from internet",
                 symbol=clean_sym,
                 headlines_count=len(sorted_items),
                 latest_published=sorted_items[0].published_at,
+                oldest_published=sorted_items[-1].published_at,
             )
 
         return sorted_items

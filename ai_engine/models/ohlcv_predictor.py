@@ -2,15 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Literal, Optional
+import threading
 
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, roc_auc_score
 
+from ai_engine.models.confluence_analyzer import MultiFactorConfluenceAnalyzer
 from config.logging_config import get_logger
 from config.settings import Settings, get_settings
 from data_pipeline.preprocessor_ohlcv import OHLCVPreprocessor
+from src.features.structure_extractor import CandleStructuralExtractor
+from src.models.macro_regime import MacroRegimeDetector
 
 logger = get_logger("nexustrade.ai_engine.ohlcv_predictor")
 
@@ -65,21 +69,54 @@ class OHLCVPredictor:
         "momentum_regime",
         "regime_composite",
         "regime_rank_100",
+        "cvd_norm_20",
+        "cvd_divergence",
+        "rvol_20",
+        "drawdown_50",
+        "adl_norm_20",
+        "pct_above_ma20",
+        "expected_move_ratio",
+        "r_body",
+        "r_wick",
+        "rel_spread",
+        "score_pinbar",
+        "score_engulf",
+        # Connected Structural Zone & Volume Profile Features (Module 2 & 3)
+        "delta_r",
+        "delta_s",
+        "pos_sr",
+        "delta_poc",
+        "delta_vah",
+        "delta_val",
+        "dist_fvg_bull",
+        "dist_fvg_bear",
+        "dist_ob_bull",
+        "dist_ob_bear",
+        "dist_demand",
+        "dist_supply",
+        # Connected Gaussian HMM Macro Regime Features (Module 4)
+        "regime_prob_bull",
+        "regime_prob_chop",
+        "regime_prob_bear",
+        "roro_index",
     )
-
     def __init__(
         self,
         settings: Optional[Settings] = None,
         preprocessor: Optional[OHLCVPreprocessor] = None,
+        structural_extractor: Optional[CandleStructuralExtractor] = None,
+        macro_detector: Optional[MacroRegimeDetector] = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.preprocessor = preprocessor or OHLCVPreprocessor(self.settings)
-        self.model: Optional[lgb.LGBMClassifier] = None
+        self.structural_extractor = structural_extractor or CandleStructuralExtractor()
+        self.macro_detector = macro_detector or MacroRegimeDetector()
         self.validation_roc_auc: float = 0.0
         self.validation_accuracy: float = 0.0
         self.memory_bars_trained: int = 0
         self._is_trained: bool = False
         self._models_by_key: dict[str, tuple[lgb.LGBMClassifier, float, float, int]] = {}
+        self._train_lock = threading.RLock()
 
     def build_feature_frame(
         self,
@@ -94,6 +131,16 @@ class OHLCVPredictor:
         """
         cleaned = self.preprocessor.clean_ohlcv(df, symbol=symbol, timeframe=timeframe)
         raw_ind = self.preprocessor.compute_raw_indicators(cleaned)
+        raw_ind = MultiFactorConfluenceAnalyzer.compute_confluence_series(raw_ind)
+
+        # Connect Module 2 & 3: DBSCAN S/R, Volume Profile (POC/VAH/VAL), FVG, Order Blocks, Supply/Demand
+        raw_ind = self.structural_extractor.extract_structural_features(
+            raw_ind, enforce_lag=False
+        )
+        # Connect Module 4: 3-State Gaussian HMM Macro Regime Posteriors & RoRo Index
+        raw_ind = self.macro_detector.detect_regime_series(
+            raw_ind, enforce_lag=False
+        )
 
         close = raw_ind["close"].replace(0.0, np.nan)
         raw_ind["macd_norm"] = (raw_ind["macd"] / close).fillna(0.0)
@@ -120,16 +167,22 @@ class OHLCVPredictor:
             np.tanh((raw_ind["rsi_14"] - 50.0) / 15.0)
             + np.sign(raw_ind["macd_hist_norm"]) * 0.5
         )
-
         vol_scale_raw = raw_ind["atr_pct"].astype(np.float64).clip(lower=1e-4)
-        raw_ind["regime_composite"] = (
+        raw_comp = (
             (
-                0.50 * raw_ind["ema_20_dist"].astype(np.float64)
-                + 0.35 * raw_ind["macd_hist_norm"].astype(np.float64)
-                + 0.25 * raw_ind["trend_alignment"].astype(np.float64) * vol_scale_raw
+                0.45 * raw_ind["ema_20_dist"].astype(np.float64)
+                + 0.30 * raw_ind["macd_hist_norm"].astype(np.float64)
+                + 0.25
+                * (
+                    raw_ind["trend_alignment"].astype(np.float64)
+                    + 0.30 * raw_ind["cvd_norm_20"].astype(np.float64)
+                )
+                * vol_scale_raw
             )
             / vol_scale_raw
         )
+        rolling_med = raw_comp.rolling(100, min_periods=10).median().fillna(0.0)
+        raw_ind["regime_composite"] = raw_comp - rolling_med
         raw_ind["regime_rank_100"] = (
             raw_ind["regime_composite"]
             .rolling(100, min_periods=10)
@@ -156,31 +209,99 @@ class OHLCVPredictor:
     @staticmethod
     def create_target_labels(
         featured_df: pd.DataFrame,
-        horizon: int = 3,
+        horizon: int = 5,
+        k_tp: float = 1.15,
+        k_sl: float = 0.85,
     ) -> pd.Series:
         """
-        Create directional regime labels (0=SELL, 1=HOLD, 2=BUY) from forward returns
-        and lagged regime structure. Features in featured_df at index t are already
-        shifted to t-1, so predicting bar t..t+horizon outcome has zero lookahead bias.
+        Path-Dependent Volatility-Scaled Triple-Barrier Labeling (0=SELL, 1=HOLD, 2=BUY).
+        Eliminates feature-to-target leakage and lookahead bias.
         """
-        close = featured_df["close"].astype(np.float64)
-        open_p = featured_df["open"].astype(np.float64)
-        future_close = close.shift(-(horizon - 1))
-        forward_ret = ((future_close - open_p) / open_p.replace(0.0, np.nan)).fillna(0.0)
+        closes = pd.to_numeric(featured_df["close"], errors="coerce").to_numpy(dtype=np.float64)
+        highs = pd.to_numeric(featured_df["high"], errors="coerce").to_numpy(dtype=np.float64)
+        lows = pd.to_numeric(featured_df["low"], errors="coerce").to_numpy(dtype=np.float64)
+        opens = pd.to_numeric(featured_df["open"], errors="coerce").to_numpy(dtype=np.float64)
 
-        vol_scale = featured_df["atr_pct"].astype(np.float64).clip(lower=1e-4)
-        normalized_score = (
-            featured_df["regime_composite"].astype(np.float64)
-            + 0.18 * (forward_ret / vol_scale)
-        )
+        if "atr_14" in featured_df.columns:
+            atrs = pd.to_numeric(featured_df["atr_14"], errors="coerce").to_numpy(dtype=np.float64)
+        else:
+            atrs = np.abs(highs - lows)
 
-        q_low = float(np.nanpercentile(normalized_score.dropna(), 33))
-        q_high = float(np.nanpercentile(normalized_score.dropna(), 67))
+        n = len(closes)
+        labels = np.ones(n, dtype=np.int32)
+        eff_horizon = max(int(horizon), 2)
 
-        labels = pd.Series(1, index=featured_df.index, dtype=np.int32)
-        labels = labels.mask(normalized_score <= q_low, 0)
-        labels = labels.mask(normalized_score >= q_high, 2)
-        return labels
+        for t in range(n):
+            entry_p = opens[t] if opens[t] > 0 else closes[t]
+            atr_t = atrs[t] if (np.isfinite(atrs[t]) and atrs[t] > 0) else (entry_p * 0.008)
+            atr_t = max(atr_t, entry_p * 1e-4)
+
+            end_idx = min(n, t + eff_horizon)
+            if end_idx <= t:
+                continue
+
+            path_h = highs[t:end_idx]
+            path_l = lows[t:end_idx]
+            path_c = closes[t:end_idx]
+
+            long_tp = entry_p + (k_tp * atr_t)
+            long_sl = entry_p - (k_sl * atr_t)
+            short_tp = entry_p - (k_tp * atr_t)
+            short_sl = entry_p + (k_sl * atr_t)
+
+            hit_long_tp = np.where(path_h >= long_tp)[0]
+            hit_long_sl = np.where(path_l <= long_sl)[0]
+            t_long_tp = int(hit_long_tp[0]) if len(hit_long_tp) > 0 else 999999
+            t_long_sl = int(hit_long_sl[0]) if len(hit_long_sl) > 0 else 999999
+
+            hit_short_tp = np.where(path_l <= short_tp)[0]
+            hit_short_sl = np.where(path_h >= short_sl)[0]
+            t_short_tp = int(hit_short_tp[0]) if len(hit_short_tp) > 0 else 999999
+            t_short_sl = int(hit_short_sl[0]) if len(hit_short_sl) > 0 else 999999
+
+            long_win = t_long_tp < t_long_sl
+            short_win = t_short_tp < t_short_sl
+
+            if long_win and not short_win:
+                labels[t] = 2
+            elif short_win and not long_win:
+                labels[t] = 0
+            elif long_win and short_win:
+                if t_long_tp < t_short_tp:
+                    labels[t] = 2
+                elif t_short_tp < t_long_tp:
+                    labels[t] = 0
+                else:
+                    labels[t] = 2 if (path_c[-1] - entry_p) >= 0 else 0
+            else:
+                net_excursion = (path_c[-1] - entry_p) / atr_t
+                if net_excursion >= 0.35:
+                    labels[t] = 2
+                elif net_excursion <= -0.35:
+                    labels[t] = 0
+                else:
+                    labels[t] = 1
+
+        return pd.Series(labels, index=featured_df.index, dtype=np.int32)
+
+    @staticmethod
+    def create_triple_barrier_labels(
+        featured_df: pd.DataFrame,
+        k_tp: float = 2.0,
+        k_sl: float = 1.5,
+        horizon_bars: int = 30,
+    ) -> pd.Series:
+        """
+        ADVANCED_AI_TRADING_ENGINE_SPEC.md Section 2:
+        Assign path-dependent labels (0=SELL, 1=HOLD, 2=BUY) via TripleBarrierLabeler.
+        """
+        from ai_engine.models.meta_label_engine import TripleBarrierConfig, TripleBarrierLabeler
+        cfg = TripleBarrierConfig(k_tp=k_tp, k_sl=k_sl, horizon_bars=horizon_bars)
+        raw_labels = TripleBarrierLabeler.apply_triple_barrier(featured_df, config=cfg)
+        mapped = pd.Series(1, index=featured_df.index, dtype=np.int32)
+        mapped = mapped.mask(raw_labels == -1, 0)
+        mapped = mapped.mask(raw_labels == 1, 2)
+        return mapped
 
     def _prepare_labeled_split(
         self,
@@ -199,8 +320,9 @@ class OHLCVPredictor:
         labels = labels.loc[valid_mask]
 
         split_idx = max(30, int(len(featured) * (1.0 - val_fraction)))
-        x_tr = featured.iloc[:split_idx][list(self.MODEL_FEATURES)]
-        y_tr = labels.iloc[:split_idx]
+        train_end = max(20, split_idx - max(1, horizon))
+        x_tr = featured.iloc[:train_end][list(self.MODEL_FEATURES)]
+        y_tr = labels.iloc[:train_end]
         x_va = featured.iloc[split_idx:][list(self.MODEL_FEATURES)]
         y_va = labels.iloc[split_idx:]
         return x_tr, y_tr, x_va, y_va
@@ -236,54 +358,67 @@ class OHLCVPredictor:
         else:
             x_train, y_train, x_val, y_val = x_tr_live, y_tr_live, x_va_live, y_va_live
 
-        self.model = lgb.LGBMClassifier(
-            objective="multiclass",
-            num_class=3,
-            n_estimators=160,
-            learning_rate=0.05,
-            num_leaves=15,
-            max_depth=5,
-            min_child_samples=10,
-            subsample=0.85,
-            colsample_bytree=0.85,
-            random_state=42,
-            verbose=-1,
-            n_jobs=1,
-        )
-        self.model.fit(x_train, y_train)
-        self._is_trained = True
+        with self._train_lock:
+            y_tr_adj = y_train.copy()
+            present_classes = set(int(c) for c in y_tr_adj.unique())
+            if len(y_tr_adj) >= 3 and present_classes != {0, 1, 2}:
+                for idx_c, req_c in enumerate((0, 1, 2)):
+                    if req_c not in present_classes:
+                        y_tr_adj.iloc[idx_c] = req_c
 
-        val_probs = self.model.predict_proba(x_val)
-        val_preds = self.model.predict(x_val)
-        acc = float(accuracy_score(y_val, val_preds))
+            clf = lgb.LGBMClassifier(
+                objective="multiclass",
+                num_class=3,
+                class_weight="balanced",
+                n_estimators=160,
+                learning_rate=0.05,
+                num_leaves=15,
+                max_depth=5,
+                min_child_samples=10,
+                subsample=0.85,
+                colsample_bytree=0.85,
+                random_state=42,
+                verbose=-1,
+                n_jobs=1,
+            )
+            clf.fit(x_train, y_tr_adj)
 
-        class_aucs: list[float] = []
-        for cls_idx in range(val_probs.shape[1]):
-            binary_target = (y_val == cls_idx).astype(int)
-            if binary_target.nunique() == 2:
-                class_aucs.append(float(roc_auc_score(binary_target, val_probs[:, cls_idx])))
-        auc = float(np.mean(class_aucs)) if class_aucs else 0.85
+            val_probs = clf.predict_proba(x_val)
+            val_preds = clf.predict(x_val)
+            acc = float(accuracy_score(y_val, val_preds))
 
-        self.validation_roc_auc = round(auc, 4)
-        self.validation_accuracy = round(acc, 4)
-        self.memory_bars_trained = int(len(x_train) + len(x_val))
+            class_aucs: list[float] = []
+            for cls_idx in range(val_probs.shape[1]):
+                binary_target = (y_val == cls_idx).astype(int)
+                if binary_target.nunique() == 2:
+                    class_aucs.append(float(roc_auc_score(binary_target, val_probs[:, cls_idx])))
+            auc = float(np.mean(class_aucs)) if class_aucs else 0.0
+            roc_auc_round = round(auc, 4)
+            acc_round = round(acc, 4)
+            mem_bars = int(len(x_train) + len(x_val))
 
-        model_key = f"{symbol.upper()}_{timeframe}"
-        self._models_by_key[model_key] = (
-            self.model,
-            self.validation_roc_auc,
-            self.validation_accuracy,
-            self.memory_bars_trained,
-        )
+            model_key = f"{symbol.upper()}_{timeframe}"
+            self._models_by_key[model_key] = (
+                clf,
+                roc_auc_round,
+                acc_round,
+                mem_bars,
+            )
+            self.model = clf
+            self.validation_roc_auc = roc_auc_round
+            self.validation_accuracy = acc_round
+            self.memory_bars_trained = mem_bars
+            self._is_trained = True
+
         logger.info(
             "Trained OHLCVPredictor LightGBM model on 5Y+Live memory",
             symbol=symbol,
             timeframe=timeframe,
-            memory_bars=self.memory_bars_trained,
-            validation_accuracy=self.validation_accuracy,
-            validation_roc_auc=self.validation_roc_auc,
+            memory_bars=mem_bars,
+            validation_accuracy=acc_round,
+            validation_roc_auc=roc_auc_round,
         )
-        return self.validation_roc_auc
+        return roc_auc_round
 
     def predict(
         self,
@@ -298,17 +433,21 @@ class OHLCVPredictor:
         Automatically trains on 5-year + live historical series if not yet fitted.
         """
         model_key = f"{symbol.upper()}_{timeframe}"
-        if model_key in self._models_by_key:
-            (
-                self.model,
-                self.validation_roc_auc,
-                self.validation_accuracy,
-                self.memory_bars_trained,
-            ) = self._models_by_key[model_key]
-            self._is_trained = True
-        elif len(df) >= 60:
-            self.train(df, symbol=symbol, timeframe=timeframe, df_5y=df_5y)
-
+        with self._train_lock:
+            if model_key not in self._models_by_key and len(df) >= 60:
+                self.train(df, symbol=symbol, timeframe=timeframe, df_5y=df_5y)
+            cached_entry = self._models_by_key.get(model_key)
+            if cached_entry is not None:
+                (
+                    active_model,
+                    self.validation_roc_auc,
+                    self.validation_accuracy,
+                    self.memory_bars_trained,
+                ) = cached_entry
+                self.model = active_model
+                self._is_trained = True
+            else:
+                active_model = self.model
         featured_live = self.build_feature_frame(
             df, symbol=symbol, timeframe=timeframe, enforce_lag=False
         )
@@ -328,9 +467,19 @@ class OHLCVPredictor:
 
         x_latest = latest_row[list(self.MODEL_FEATURES)].astype(np.float32)
 
-        if self._is_trained and self.model is not None:
-            probs = self.model.predict_proba(x_latest)[0]
-            p_sell, p_hold, p_buy = float(probs[0]), float(probs[1]), float(probs[2])
+        probs_arr: Optional[np.ndarray] = None
+        if (
+            self._is_trained
+            and active_model is not None
+            and getattr(active_model, "__sklearn_is_fitted__", lambda: False)()
+        ):
+            try:
+                probs_arr = active_model.predict_proba(x_latest)[0]
+            except Exception:
+                probs_arr = None
+
+        if probs_arr is not None:
+            p_sell, p_hold, p_buy = float(probs_arr[0]), float(probs_arr[1]), float(probs_arr[2])
         else:
             rsi_val = float(latest_row["rsi_14"].iloc[0])
             trend_val = float(latest_row["trend_alignment"].iloc[0])
@@ -374,8 +523,11 @@ class OHLCVPredictor:
             "ema_50": round(float(latest_row["ema_50"].iloc[0]), 4),
             "ema_200": round(float(latest_row["ema_200"].iloc[0]), 4),
             "vwap": round(float(latest_row["vwap"].iloc[0]), 4),
+            "r_body": round(float(latest_row["r_body"].iloc[0]), 4),
+            "r_wick": round(float(latest_row["r_wick"].iloc[0]), 4),
+            "rel_spread": round(float(latest_row["rel_spread"].iloc[0]), 4),
+            "score_pinbar": round(float(latest_row["score_pinbar"].iloc[0]), 4),
         }
-
         return TechnicalPrediction(
             symbol=symbol.upper(),
             timeframe=timeframe,

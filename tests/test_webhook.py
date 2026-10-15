@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
-
+from unittest.mock import MagicMock
 import httpx
 import pytest
 from PIL import Image
@@ -60,6 +60,8 @@ async def test_webhook_server_auth_and_dispatch(tmp_path: Path) -> None:
         data_dir=tmp_path / "data",
         tradingview_webhook_secret=secret,
         signal_confidence_threshold=0.70,
+        use_live_market_data=False,
+        use_live_news_feed=False,
     )
     agent = EnsembleDecisionAgent(settings=settings)
     charts = ChartSnapshotGenerator(settings=settings)
@@ -110,6 +112,20 @@ async def test_webhook_server_auth_and_dispatch(tmp_path: Path) -> None:
         )
         assert bad_resp.status_code == 401
         assert bad_resp.json()["code"] == "UNAUTHORIZED"
+        validated_decision = SignalDecision(
+            action="BUY",
+            confidence=0.85,
+            risk_multiplier=0.80,
+            symbol="BTCUSDT",
+            timeframe="15m",
+            entry_price=67420.50,
+            stop_loss=66500.0,
+            take_profit_1=69000.0,
+            take_profit_2=70000.0,
+            approved=True,
+            meta_probability=0.82,
+        )
+        agent.analyze_symbol = MagicMock(return_value=validated_decision)
 
         # 3. Valid secret returns 200 OK and dispatches signal
         ok_resp = await client.post(

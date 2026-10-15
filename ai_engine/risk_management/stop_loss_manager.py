@@ -82,6 +82,60 @@ class StopLossManager:
             reward_risk_ratio_2=round(rrr_2, 2),
         )
 
+    def calculate_realistic_targets(
+        self,
+        entry_price: float,
+        atr_14: float,
+        action: TradeDirection,
+        support_1: float = 0.0,
+        support_2: float = 0.0,
+        resistance_1: float = 0.0,
+        resistance_2: float = 0.0,
+    ) -> StopLossTargets:
+        """
+        Compute realistic, tight intraday Stop-Loss and strict 1:2 (TP1) / 1:3 (TP2)
+        Take-Profit targets calibrated for 1m-5m execution:
+          - Stop-Loss: 0.65 * effective_atr (tight protection outside 1m-5m noise)
+          - TP1: 2.0 * Stop-Loss distance (Strict 1:2 Reward-to-Risk Ratio)
+          - TP2: 3.0 * Stop-Loss distance (Strict 1:3 Reward-to-Risk Ratio)
+          - Trailing Distance: 0.55 * Stop-Loss distance for responsive profit locking
+        """
+        if entry_price <= 0:
+            raise ValueError(f"entry_price must be positive, got {entry_price}")
+
+        effective_atr = atr_14 if atr_14 > 0 else entry_price * 0.001
+        stop_distance = min(0.65 * effective_atr, entry_price * 0.04)
+        trail_distance = max(0.55 * stop_distance, effective_atr * 0.35)
+
+        tp1_dist = stop_distance * 2.0
+        tp2_dist = stop_distance * 3.0
+
+        if action == "BUY":
+            stop_loss = entry_price - stop_distance
+            tp1 = entry_price + tp1_dist
+            tp2 = entry_price + tp2_dist
+        elif action == "SELL":
+            stop_loss = entry_price + stop_distance
+            tp1 = max(entry_price * 0.05, entry_price - tp1_dist)
+            tp2 = max(entry_price * 0.02, entry_price - tp2_dist)
+        else:
+            stop_loss = entry_price - stop_distance
+            tp1 = entry_price + tp1_dist
+            tp2 = entry_price + tp2_dist
+
+        return StopLossTargets(
+            action=action,
+            entry_price=round(entry_price, 4),
+            atr_14=round(effective_atr, 4),
+            stop_loss=round(stop_loss, 4),
+            take_profit_1=round(tp1, 4),
+            take_profit_2=round(tp2, 4),
+            trailing_stop_distance=round(trail_distance, 4),
+            risk_per_unit=round(stop_distance, 4),
+            reward_risk_ratio_1=2.0,
+            reward_risk_ratio_2=3.0,
+        )
+
     @staticmethod
     def update_trailing_stop(
         action: TradeDirection,

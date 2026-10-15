@@ -14,6 +14,7 @@ from telegram_bot.handlers.commands import (
     build_main_dashboard_keyboard,
     build_symbol_action_keyboard,
 )
+from telegram_bot.handlers.handler_utils import parse_command_args as _parse_command_args
 from telegram_bot.views.formatters import (
     format_backtest_card,
     format_online_learning_card,
@@ -26,13 +27,6 @@ from tradingview.chart_generator import ChartSnapshotGenerator
 signals_router = Router(name="signals")
 
 
-def _parse_command_args(text: str | None) -> list[str]:
-    if not text:
-        return []
-    parts = text.strip().split()
-    return parts[1:] if parts and parts[0].startswith("/") else parts
-
-
 async def send_signal_response(
     target_msg: Any,
     symbol: str,
@@ -42,7 +36,10 @@ async def send_signal_response(
 ) -> None:
     """Shared signal + 1200x800 chart sender for /signal and inline callbacks."""
     df = agent.load_market_series(symbol=symbol, timeframe=timeframe)
-    decision = agent.analyze_symbol(symbol=symbol, timeframe=timeframe, df=df)
+    if timeframe in ("15m", "5m"):
+        decision = agent.analyze_multi_timeframe_autotrade(symbol=symbol)
+    else:
+        decision = agent.analyze_symbol(symbol=symbol, timeframe=timeframe, df=df)
     chart_path = await charts.generate_chart_async(
         df=df,
         symbol=decision.symbol,
@@ -50,12 +47,28 @@ async def send_signal_response(
         decision=decision,
     )
     caption = format_signal_card(decision)
-    await target_msg.answer_photo(
-        photo=FSInputFile(str(chart_path)),
-        caption=caption,
-        parse_mode="HTML",
-        reply_markup=build_symbol_action_keyboard(decision.symbol),
-    )
+    kb = build_symbol_action_keyboard(decision.symbol)
+    try:
+        await target_msg.answer_photo(
+            photo=FSInputFile(str(chart_path)),
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+    except Exception as exc:
+        if "caption is too long" in str(exc).lower():
+            await target_msg.answer_photo(
+                photo=FSInputFile(str(chart_path)),
+                caption=f"📡 <b>GRAFIK SINYAL AI — {decision.symbol} ({timeframe})</b>",
+                parse_mode="HTML",
+            )
+            await target_msg.answer(
+                caption,
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+        else:
+            raise
 
 
 async def send_sentiment_response(

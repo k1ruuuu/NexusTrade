@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from ai_engine.backtester.metrics import BacktestMetrics, summarize_performance
+from ai_engine.models.confluence_analyzer import MultiFactorConfluenceAnalyzer
 from ai_engine.risk_management.position_sizer import PositionSizer
 from ai_engine.risk_management.stop_loss_manager import StopLossManager
 from config.logging_config import get_logger
@@ -87,17 +88,27 @@ class EventDrivenBacktester:
         """
         Execute event-driven backtest over OHLCV DataFrame using strictly lagged indicators.
         """
-        featured = self.preprocessor.engineer_features(
-            df, symbol=symbol, timeframe="1d", enforce_lag=True
+        raw_featured = self.preprocessor.engineer_features(
+            df, symbol=symbol, timeframe="1d", enforce_lag=False
         )
+        enriched = MultiFactorConfluenceAnalyzer.compute_confluence_series(raw_featured)
+        lag_cols = [
+            c
+            for c in enriched.columns
+            if c not in ("open", "high", "low", "close", "volume", "timestamp_iso", "symbol", "timeframe")
+        ]
+        for col in lag_cols:
+            enriched[col] = enriched[col].shift(1)
+        featured = enriched.iloc[1:].copy()
         if days > 0 and len(featured) > days:
             featured = featured.tail(days).copy()
-
         if len(featured) < 10:
             raise ValueError(f"Insufficient bars ({len(featured)}) for backtest on {symbol}")
 
         capital = initial_capital or self.settings.portfolio_initial_capital
         equity = float(capital)
+        self.position_sizer.daily_start_equity = equity
+        self.position_sizer.current_equity = equity
         equity_curve: list[float] = [round(equity, 2)]
         timestamps: list[str] = [str(featured["timestamp_iso"].iloc[0])]
         trades: list[SimulatedTrade] = []
@@ -111,8 +122,7 @@ class EventDrivenBacktester:
             high_p = float(row["high"])
             low_p = float(row["low"])
             close_p = float(row["close"])
-            atr_val = max(float(row["atr_14"]), close_p * 0.008)
-
+            atr_val = max(float(row["atr_14"]), open_p * 0.008)
             # 1. Manage active position against current bar's High/Low
             if open_position is not None:
                 direction = open_position["direction"]
@@ -132,8 +142,10 @@ class EventDrivenBacktester:
                         exit_price = tp1
                         exit_reason = "TAKE_PROFIT"
                     else:
+                        if high_p >= entry_p + 1.0 * atr_val:
+                            stop_loss = max(stop_loss, round(entry_p + 0.35 * atr_val, 4))
                         open_position["stop_loss"] = self.stop_loss_manager.update_trailing_stop(
-                            "BUY", close_p, stop_loss, open_position["trail_dist"]
+                            "BUY", high_p, stop_loss, open_position["trail_dist"]
                         )
                 elif direction == "SELL":
                     if high_p >= stop_loss:
@@ -143,8 +155,10 @@ class EventDrivenBacktester:
                         exit_price = tp1
                         exit_reason = "TAKE_PROFIT"
                     else:
+                        if low_p <= entry_p - 1.0 * atr_val:
+                            stop_loss = min(stop_loss, round(entry_p - 0.35 * atr_val, 4))
                         open_position["stop_loss"] = self.stop_loss_manager.update_trailing_stop(
-                            "SELL", close_p, stop_loss, open_position["trail_dist"]
+                            "SELL", low_p, stop_loss, open_position["trail_dist"]
                         )
 
                 if exit_price is not None:
@@ -156,6 +170,7 @@ class EventDrivenBacktester:
                     fee = (entry_p + exit_price) * units * 0.0005
                     net_pnl = raw_pnl - fee
                     equity = max(0.0, equity + net_pnl)
+                    self.position_sizer.current_equity = equity
                     ret_pct = (net_pnl / max(entry_p * units, 1e-6)) * 100.0
                     trades.append(
                         SimulatedTrade(
@@ -174,19 +189,35 @@ class EventDrivenBacktester:
                     open_position = None
 
             # 2. Evaluate new entry using strictly lagged t-1 features stored on row
-            if open_position is None:
+            elif open_position is None:
                 rsi_prev = float(row["rsi_14"])
                 ema_20_prev = float(row["ema_20"])
                 ema_50_prev = float(row["ema_50"])
                 macd_hist_prev = float(row["macd_hist"])
+                cvd_prev = float(row.get("cvd_norm_20", 0.0))
+                cvd_div_prev = float(row.get("cvd_divergence", 0.0))
+                ret5_prev = float(row.get("rolling_return_5", 0.0))
 
                 signal_dir: Optional[str] = None
-                confidence = 0.78
-                if ema_20_prev > ema_50_prev and 48.0 <= rsi_prev <= 72.0 and macd_hist_prev >= 0:
+                confidence = 0.84
+                if (
+                    ema_20_prev > ema_50_prev
+                    and 52.0 <= rsi_prev <= 66.0
+                    and macd_hist_prev > 0
+                    and cvd_prev > 0.01
+                    and cvd_div_prev >= 0.0
+                    and ret5_prev > 0.002
+                ):
                     signal_dir = "BUY"
-                elif ema_20_prev < ema_50_prev and 28.0 <= rsi_prev <= 52.0 and macd_hist_prev < 0:
+                elif (
+                    ema_20_prev < ema_50_prev
+                    and 34.0 <= rsi_prev <= 48.0
+                    and macd_hist_prev < 0
+                    and cvd_prev < -0.01
+                    and cvd_div_prev <= 0.0
+                    and ret5_prev < -0.002
+                ):
                     signal_dir = "SELL"
-
                 if signal_dir in ("BUY", "SELL"):
                     targets = self.stop_loss_manager.calculate_targets(
                         entry_price=open_p,
@@ -199,7 +230,6 @@ class EventDrivenBacktester:
                         confidence=confidence,
                         s_vol=0.25,
                         portfolio_equity=equity,
-                        daily_drawdown_override=0.0,
                     )
                     if sizing.approved and sizing.position_units > 0:
                         open_position = {
@@ -211,7 +241,50 @@ class EventDrivenBacktester:
                             "trail_dist": targets.trailing_stop_distance,
                             "units": sizing.position_units,
                         }
-
+                        # F13: Evaluate entry-bar intrabar SL/TP immediately (conservative SL-first ordering)
+                        entry_exit_px: Optional[float] = None
+                        entry_exit_reason = ""
+                        if signal_dir == "BUY":
+                            if low_p <= targets.stop_loss:
+                                entry_exit_px = targets.stop_loss
+                                entry_exit_reason = "STOP_LOSS"
+                            elif high_p >= targets.take_profit_1:
+                                entry_exit_px = targets.take_profit_1
+                                entry_exit_reason = "TAKE_PROFIT"
+                        elif signal_dir == "SELL":
+                            if high_p >= targets.stop_loss:
+                                entry_exit_px = targets.stop_loss
+                                entry_exit_reason = "STOP_LOSS"
+                            elif low_p <= targets.take_profit_1:
+                                entry_exit_px = targets.take_profit_1
+                                entry_exit_reason = "TAKE_PROFIT"
+                        if entry_exit_px is not None:
+                            units_e = sizing.position_units
+                            raw_pnl_e = (
+                                (entry_exit_px - open_p) * units_e
+                                if signal_dir == "BUY"
+                                else (open_p - entry_exit_px) * units_e
+                            )
+                            fee_e = (open_p + entry_exit_px) * units_e * 0.0005
+                            net_pnl_e = raw_pnl_e - fee_e
+                            equity = max(0.0, equity + net_pnl_e)
+                            self.position_sizer.current_equity = equity
+                            ret_pct_e = (net_pnl_e / max(open_p * units_e, 1e-6)) * 100.0
+                            trades.append(
+                                SimulatedTrade(
+                                    entry_time=bar_time,
+                                    exit_time=bar_time,
+                                    symbol=symbol.upper(),
+                                    direction=signal_dir,
+                                    entry_price=round(open_p, 4),
+                                    exit_price=round(entry_exit_px, 4),
+                                    units=round(units_e, 6),
+                                    pnl=round(net_pnl_e, 2),
+                                    return_pct=round(ret_pct_e, 2),
+                                    exit_reason=entry_exit_reason,
+                                )
+                            )
+                            open_position = None
             # Mark-to-market equity
             mtm_pnl = 0.0
             if open_position is not None:

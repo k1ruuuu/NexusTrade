@@ -22,6 +22,7 @@ from config.logging_config import get_logger
 from config.settings import Settings, get_settings
 from data_pipeline.live_news_feed import LiveNewsFeed, LiveNewsItem
 from data_pipeline.preprocessor_sentiment import SentimentNLPPreprocessor
+from data_pipeline.news_providers.aggregator import MultiSourceNewsAggregator
 
 logger = get_logger("nexustrade.ai_engine.sentiment")
 
@@ -54,7 +55,10 @@ class SentimentAnalysisResult:
     newly_learned_count: int = 0
     total_corpus_size: int = 0
     online_updates_count: int = 0
-
+    is_macro_blackout: bool = False
+    blackout_event: Optional[str] = None
+    provider_breakdown: dict[str, int] = field(default_factory=dict)
+    composite_sentiment: Optional[float] = None
 
 class FinancialSentimentAnalyzer:
     """
@@ -101,6 +105,16 @@ class FinancialSentimentAnalyzer:
         self.online_updates_count: int = 0
         self.corpus_path: Path = self.settings.processed_data_dir / "online_news_corpus.parquet"
         self._initialize_online_learner()
+        self.aggregator = MultiSourceNewsAggregator(
+            self.settings, finbert_scorer=self.score_text_polarity
+        )
+
+    def score_text_polarity(self, text: str) -> float:
+        """Helper for external aggregators to score raw text polarity via FinBERT / lexicon."""
+        try:
+            return float(self.score_headline(text).polarity)
+        except Exception:
+            return 0.0
 
     @staticmethod
     def _normalize_model_name(name: str) -> str:
@@ -259,16 +273,11 @@ class FinancialSentimentAnalyzer:
                 return 0.0
             after_bars = market_df.loc[idx >= pub_ts]
             if len(after_bars) >= 2:
-                entry_p = float(after_bars["open"].iloc[0])
-                latest_p = float(after_bars["close"].iloc[-1])
+                horizon_bars = after_bars.iloc[:5]
+                entry_p = float(horizon_bars["open"].iloc[0])
+                latest_p = float(horizon_bars["close"].iloc[-1])
                 if entry_p > 0:
                     return float((latest_p - entry_p) / entry_p)
-            # Fallback: recent 4-bar momentum impulse
-            if len(market_df) >= 5:
-                p_prev = float(market_df["close"].iloc[-5])
-                p_last = float(market_df["close"].iloc[-1])
-                if p_prev > 0:
-                    return float((p_last - p_prev) / p_prev)
         except Exception:
             return 0.0
         return 0.0
@@ -285,7 +294,7 @@ class FinancialSentimentAnalyzer:
         update the online SGDClassifier with partial_fit, and persist to Parquet.
         """
         live_items = self.live_news_feed.fetch_live_news(
-            symbol=symbol, max_items=10, force_refresh=force_refresh
+            symbol=symbol, max_items=30, force_refresh=force_refresh, lookback_days=90
         )
         if not live_items or not self.settings.online_learning_enabled:
             return live_items, 0
@@ -303,6 +312,16 @@ class FinancialSentimentAnalyzer:
         for item in new_items:
             tokenized = self.preprocessor.tokenize_text(item.headline)
             lex_pol, _, _ = self._compute_lexicon_polarity(tokenized.tokens)
+            # NT-09: If market_df is supplied, require matured post-publication bars (>= 2 bars after pub_ts)
+            if market_df is not None and not market_df.empty:
+                try:
+                    pub_ts = pd.to_datetime(item.published_at, utc=True)
+                    idx = market_df.index
+                    if isinstance(idx, pd.DatetimeIndex) and len(market_df.loc[idx >= pub_ts]) < 2:
+                        # Outcome not yet mature; leave pending for future cycle
+                        continue
+                except Exception:
+                    pass
             mkt_ret = self._estimate_market_reaction_return(item.published_at, market_df)
             mkt_signal = float(np.tanh(mkt_ret * 120.0))
 
@@ -332,11 +351,13 @@ class FinancialSentimentAnalyzer:
                 }
             )
 
+        if not new_texts:
+            return live_items, 0
+
         x_new = self.vectorizer.transform(new_texts)
         y_new = np.asarray(new_labels, dtype=np.int32)
         self.online_classifier.partial_fit(x_new, y_new, classes=self.CLASSES)
         self.online_updates_count += 1
-
         try:
             new_df = pd.DataFrame(new_records)
             if self.corpus_path.exists():
@@ -385,15 +406,48 @@ class FinancialSentimentAnalyzer:
         newly_learned = 0
         live_items: list[LiveNewsItem] = []
 
+        is_macro_blackout = False
+        blackout_event = None
+        provider_breakdown: dict[str, int] = {}
+        composite_sentiment: Optional[float] = None
+
         if headlines is None and self.settings.use_live_news_feed:
-            live_items, newly_learned = self.ingest_and_learn_live_news(
+            try:
+                intel = self.aggregator.get_composite_intelligence_sync(symbol=symbol)
+                is_macro_blackout = bool(intel.get("is_macro_blackout", False))
+                blackout_event = intel.get("blackout_event")
+                provider_breakdown = intel.get("provider_breakdown", {})
+                composite_sentiment = intel.get("composite_sentiment")
+                for th in intel.get("top_headlines", []):
+                    t_title = str(th.get("title", "")).strip()
+                    if t_title:
+                        live_items.append(
+                            LiveNewsItem(
+                                headline_id=LiveNewsFeed.compute_headline_id(t_title),
+                                symbol=symbol.upper(),
+                                headline=t_title,
+                                source=str(th.get("source", "MultiSource")),
+                                published_at=str(th.get("published_at", "")),
+                            )
+                        )
+            except Exception as exc:
+                logger.warning("MultiSourceNewsAggregator query failed, falling back to RSS", error=str(exc))
+
+            rss_items, newly_learned = self.ingest_and_learn_live_news(
                 symbol=symbol, market_df=market_df
             )
+            seen_ids = {item.headline_id for item in live_items}
+            for it in rss_items:
+                if it.headline_id not in seen_ids:
+                    live_items.append(it)
+                    seen_ids.add(it.headline_id)
             if live_items:
                 live_used = True
 
         if live_used and live_items:
-            eff_weights = [float(np.exp(-0.18 * idx)) for idx in range(len(live_items))]
+            eff_weights = [
+                float(max(0.18, np.exp(-0.10 * idx))) for idx in range(len(live_items))
+            ]
             scored_items = [
                 self.score_headline(
                     item.headline,
@@ -403,10 +457,19 @@ class FinancialSentimentAnalyzer:
                 )
                 for item, w in zip(live_items, eff_weights)
             ]
+            if composite_sentiment is not None and len(scored_items) > 0:
+                # Blend provider composite sentiment (65%) with FinBERT scored headlines (35%)
+                total_weight = sum(item.weight for item in scored_items) or 1.0
+                fb_mean = sum(item.polarity * item.weight for item in scored_items) / total_weight
+                blended_sent = 0.65 * composite_sentiment + 0.35 * fb_mean
+                s_sent = float(np.clip(blended_sent, -1.0, 1.0))
         else:
-            effective_headlines = (
-                headlines if headlines else self.get_default_headlines_for_symbol(symbol)
-            )
+            if headlines is not None:
+                effective_headlines = list(headlines)
+            elif self.settings.use_live_news_feed:
+                effective_headlines = []
+            else:
+                effective_headlines = self.get_default_headlines_for_symbol(symbol)
             if not effective_headlines:
                 return SentimentAnalysisResult(
                     symbol=symbol.upper(),
@@ -451,26 +514,14 @@ class FinancialSentimentAnalyzer:
             bullish_ratio=round(bullish_ratio, 4),
             bearish_ratio=round(bearish_ratio, 4),
             neutral_ratio=round(neutral_ratio, 4),
-            model_name=f"{self.model_name} + OnlineSGD",
+            model_name=f"{self.model_name} + MultiSource",
             headline_scores=scored_items,
             live_news_used=live_used,
             newly_learned_count=newly_learned,
             total_corpus_size=len(self._seen_headline_ids),
             online_updates_count=self.online_updates_count,
+            is_macro_blackout=is_macro_blackout,
+            blackout_event=blackout_event,
+            provider_breakdown=provider_breakdown,
+            composite_sentiment=composite_sentiment,
         )
-
-    def benchmark_phrasebank(self, df: pd.DataFrame) -> dict[str, float]:
-        """Evaluate directional accuracy on a labeled FinancialPhraseBank DataFrame."""
-        preprocessed = self.preprocessor.preprocess_dataframe(df)
-        if "sentiment_label" not in preprocessed.columns or preprocessed.empty:
-            return {"accuracy": 0.0, "samples": 0.0}
-
-        correct = 0
-        for _, row in preprocessed.iterrows():
-            score = self.score_headline(str(row["cleaned_text"]))
-            pred_int = 1 if score.label == "POSITIVE" else (-1 if score.label == "NEGATIVE" else 0)
-            if pred_int == int(row["sentiment_label"]):
-                correct += 1
-
-        accuracy = correct / len(preprocessed)
-        return {"accuracy": round(accuracy, 4), "samples": float(len(preprocessed))}

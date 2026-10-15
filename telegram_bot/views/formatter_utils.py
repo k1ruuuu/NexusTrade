@@ -42,26 +42,6 @@ def format_badge(action: str, confidence: float) -> str:
     return "🟡 <b>NEUTRAL / HOLD (Tunggu Dulu)</b>"
 
 
-def describe_tech_score(s_tech: float, rsi: float) -> str:
-    if s_tech >= 0.50:
-        trend = "Tren Naik Kuat"
-    elif s_tech >= 0.15:
-        trend = "Tren Cenderung Naik"
-    elif s_tech <= -0.50:
-        trend = "Tren Turun Kuat"
-    elif s_tech <= -0.15:
-        trend = "Tren Cenderung Turun"
-    else:
-        trend = "Arah Mendatar"
-
-    if rsi >= 70.0:
-        rsi_note = "Jenuh Beli"
-    elif rsi <= 30.0:
-        rsi_note = "Jenuh Jual"
-    else:
-        rsi_note = "Normal"
-    return f"{trend}, RSI {rsi:.0f} ({rsi_note})"
-
 
 def describe_sentiment_score(s_sent: float) -> str:
     if s_sent >= 0.35:
@@ -75,16 +55,6 @@ def describe_sentiment_score(s_sent: float) -> str:
     return "Berita Netral / Seimbang"
 
 
-def describe_volatility_score(s_vol: float, regime: str) -> str:
-    reg = regime.upper()
-    if reg == "LOW" or s_vol < 0.25:
-        return "Tenang / Risiko Rendah"
-    if reg == "NORMAL" or s_vol < 0.60:
-        return "Stabil / Normal"
-    if reg == "ELEVATED":
-        return "Gejolak Cukup Tinggi"
-    return "Ekstrem / Bahaya"
-
 
 def build_human_signal_summary(decision: SignalDecision) -> str:
     if not decision.approved:
@@ -97,16 +67,16 @@ def build_human_signal_summary(decision: SignalDecision) -> str:
     if act == "BUY":
         strength = "sangat kuat" if conf_pct >= 72 else "cukup positif"
         return (
-            f"💡 <b>Kesimpulan:</b> Peluang <b>BELI</b> terlihat {strength} ({conf_pct:.0f}%). "
-            f"Gunakan batas rugi (<i>Stop Loss</i>) dan target ambil untung di bawah ini."
+            f"💡 <b>Kesimpulan:</b> Peluang <b>BELI</b> {strength} ({conf_pct:.0f}%). "
+            f"Patuhi <i>Stop Loss</i> &amp; target di bawah."
         )
     if act == "SELL":
         strength = "sangat kuat" if conf_pct >= 72 else "cukup kuat"
         return (
-            f"💡 <b>Kesimpulan:</b> Tekanan <b>JUAL / TURUN</b> terlihat {strength} ({conf_pct:.0f}%). "
-            f"Waspadai penurunan harga dan patuhi batas <i>Stop Loss</i>."
+            f"💡 <b>Kesimpulan:</b> Tekanan <b>JUAL</b> {strength} ({conf_pct:.0f}%). "
+            f"Waspadai koreksi &amp; patuhi <i>Stop Loss</i>."
         )
     return (
-        f"💡 <b>Kesimpulan:</b> Arah pasar masih belum pasti (Keyakinan {conf_pct:.0f}%). "
-        f"Sebaiknya <b>TUNGGU (HOLD)</b> sampai muncul tren yang lebih jelas."
+        f"💡 <b>Kesimpulan:</b> Arah belum pasti ({conf_pct:.0f}%). "
+        f"Sebaiknya <b>TUNGGU (HOLD)</b> sampai tren jelas."
     )

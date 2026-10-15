@@ -185,6 +185,24 @@ class ChartSnapshotGenerator:
                     alpha=0.85,
                     label=f"Target Untung 2 (TP2): {decision.take_profit_2:,.2f}",
                 )
+            if getattr(decision, "resistance_1", 0.0) > 0:
+                ax_price.axhline(
+                    decision.resistance_1,
+                    color="#f59e0b",
+                    linestyle="-.",
+                    linewidth=1.0,
+                    alpha=0.80,
+                    label=f"Resistance Atas (R1): {decision.resistance_1:,.2f}",
+                )
+            if getattr(decision, "support_1", 0.0) > 0:
+                ax_price.axhline(
+                    decision.support_1,
+                    color="#06b6d4",
+                    linestyle="-.",
+                    linewidth=1.0,
+                    alpha=0.80,
+                    label=f"Support Bawah (S1): {decision.support_1:,.2f}",
+                )
 
             marker_color = (
                 "#10b981"

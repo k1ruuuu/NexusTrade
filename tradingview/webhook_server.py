@@ -266,6 +266,10 @@ def create_webhook_app(
 
         if is_prod and cfg.webhook_max_age_seconds > 0:
             alert_dt = datetime.fromisoformat(alert.timestamp.replace("Z", "+00:00"))
+            if alert_dt.tzinfo is None:
+                alert_dt = alert_dt.replace(tzinfo=timezone.utc)
+            else:
+                alert_dt = alert_dt.astimezone(timezone.utc)
             age_seconds = abs((datetime.now(timezone.utc) - alert_dt).total_seconds())
             if age_seconds > cfg.webhook_max_age_seconds:
                 logger.warning(

@@ -15,19 +15,17 @@ numpy>=1.26.4
 pandas>=2.2.2
 pyarrow>=16.1.0
 kaggle>=1.6.14
+feedparser>=6.0.10
 
 # Machine Learning & NLP Ensemble
 scikit-learn>=1.5.0
+scipy>=1.13.0
+hmmlearn>=0.3.2
 lightgbm>=4.3.0
 transformers>=4.41.0
 torch>=2.3.0
-
 # Charting & Visualization
 matplotlib>=3.9.0
-Pillow>=10.3.0
-
-# Cache & Persistence
-redis>=5.0.4
 
 # Testing & Quality
 pytest>=8.2.0

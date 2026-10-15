@@ -12,8 +12,6 @@ from config.settings import Settings
 from telegram_bot.views.formatter_utils import (
     build_human_signal_summary as _build_human_signal_summary,
     describe_sentiment_score as _describe_sentiment_score,
-    describe_tech_score as _describe_tech_score,
-    describe_volatility_score as _describe_volatility_score,
     format_badge,
     format_pct_diff,
     format_price,
@@ -36,12 +34,16 @@ def format_welcome_card(user_name: str, settings: Settings) -> str:
         f"3️⃣ <b>Filter Risiko:</b> Menyesuaikan ukuran transaksi dengan gejolak pasar.\n\n"
         f"<b>📌 Daftar Perintah Mudah:</b>\n"
         f"• <code>/signal BTCUSDT</code> — Sinyal Beli/Jual + Gambar Grafik\n"
+        f"• <code>/setup</code> — Hubungkan Akun Binance Pribadi (Wajib untuk Auto-Trade)\n"
+        f"• <code>/autotrade scan BTCUSDT</code> — Auto-Trade 6 Gerbang (Baca Berita + Analisis + S/R)\n"
+        f"• <code>/myaccount</code> — Lihat Status Akun Binance &amp; Posisi Terbuka Anda\n"
         f"• <code>/analyze XAUUSD</code> — Ringkasan Analisis Cepat (Tanpa Gambar)\n"
         f"• <code>/sentiment BTCUSDT</code> — Cek Sentimen Berita Terkini\n"
         f"• <code>/learn BTCUSDT</code> — Perintahkan AI Belajar Berita Baru Sekarang\n"
         f"• <code>/volatility BTCUSDT</code> — Cek Tingkat Gejolak Harga Pasar\n"
         f"• <code>/portfolio</code> — Lihat Saldo, Posisi Aktif &amp; Untung/Rugi\n"
         f"• <code>/backtest BTCUSDT 90</code> — Uji Strategi 90 Hari ke Belakang\n"
+        f"• <code>/admin</code> — Panel Kontrol Admin (User, Broadcast, Maintenance, Audit)\n"
         f"• <code>/status</code> — Cek Kesehatan Sistem &amp; Batas Pengaman Modal\n\n"
         f"<i>💡 Tips: Anda bisa mengganti simbol dengan Crypto (BTCUSDT, SOLUSDT), Emas (XAUUSD), Saham AS (NVDA, AAPL), Indeks (SPX, IHSG), atau Forex (EURUSD, GBPJPY).</i>"
     )
@@ -85,71 +87,78 @@ def format_signal_card(decision: SignalDecision) -> str:
     badge = format_badge(decision.action, decision.confidence)
     conf_bar = render_progress_bar(decision.confidence, length=10)
 
-    rsi_val = decision.indicators.get("rsi_14", 50.0)
-    tech_desc = _describe_tech_score(decision.s_tech, rsi_val)
     sent_desc = _describe_sentiment_score(decision.s_sent)
-    vol_desc = _describe_volatility_score(decision.s_vol, decision.volatility_regime)
     summary_text = _build_human_signal_summary(decision)
 
     sl_pct = format_pct_diff(decision.stop_loss, decision.entry_price)
     tp1_pct = format_pct_diff(decision.take_profit_1, decision.entry_price)
     tp2_pct = format_pct_diff(decision.take_profit_2, decision.entry_price)
 
-    approval_line = (
-        "🟢 <b>AMAN (Lolos Filter Risiko)</b>"
-        if decision.approved
-        else f"🔴 <b>DITAHAN ({html.escape(decision.rejection_reason or 'Filter Risiko')})</b>"
-    )
-    if decision.newly_learned_headlines > 0:
-        learn_line = (
-            f"• <b>Memori Berita (5Thn–Hari Ini):</b> <code>+{decision.newly_learned_headlines} baru</code> "
-            f"(Total: <code>{decision.total_corpus_size} berita</code>)\n"
-        )
-    else:
-        analyzed_n = len(decision.headlines)
-        learn_line = (
-            f"• <b>Memori Berita (5Thn–Hari Ini):</b> <code>{analyzed_n} dianalisis</code> "
-            f"(Total: <code>{decision.total_corpus_size} berita</code>)\n"
-        )
+    r1_pct = format_pct_diff(decision.resistance_1, decision.entry_price)
+    s1_pct = format_pct_diff(decision.support_1, decision.entry_price)
+    def _format_rejection_badge(reason: Optional[str]) -> str:
+        if not reason:
+            return "Filter Risiko"
+        r = reason.strip()
+        if "DXY" in r:
+            return "Filter DXY"
+        if "Meta-Model" in r:
+            return "Meta-Model"
+        if "BLACKOUT" in r or "blackout" in r.lower():
+            return "Blackout Berita"
+        if "Chronological model validation" in r:
+            return "Validasi AI"
+        if "Synthetic or incompatible" in r:
+            return "Data Riwayat"
+        if "Directional evidence is neutral" in r:
+            return "Sinyal Netral"
+        if "Stale market data" in r:
+            return "Data Kadaluarsa"
+        if "Ruang S/R Sempit" in r:
+            return "Dekat S/R Kunci"
+        if "Konfluensi Kurang" in r:
+            return "Konfluensi Rendah"
+        if "PASAR SIDEWAYS" in r or "sideways" in r.lower():
+            return "Pasar Sideways"
+        if len(r) > 24:
+            return r[:22] + ".."
+        return r
 
+    approval_line = (
+        "🟢 <b>AMAN</b>"
+        if decision.approved
+        else f"🔴 <b>DITAHAN ({html.escape(_format_rejection_badge(decision.rejection_reason))})</b>"
+    )
     acc_pct = decision.validation_accuracy * 100.0
     auc_pct = decision.validation_roc_auc * 100.0
-    acc_line = (
-        f"• <b>Akurasi AI (Uji 5Thn–Hari Ini):</b> <code>{acc_pct:.1f}%</code> "
-        f"(ROC-AUC: <code>{auc_pct:.1f}%</code> | <code>{decision.memory_bars_count:,} candle</code>)\n"
+    mem_line = (
+        f"• <b>Memori 5Thn:</b> Akurasi <code>{acc_pct:.1f}%</code> (AUC <code>{auc_pct:.1f}%</code> | <code>{decision.memory_bars_count:,} bar</code>)\n"
         if acc_pct > 0
         else ""
-    )
-    macro_line = (
-        f"• <b>Tren Makro 5 Tahun:</b> {html.escape(decision.macro_regime)} "
-        f"(Posisi: <code>{decision.five_year_percentile:.0f}%</code>)\n\n"
-        if decision.memory_bars_count > 500
-        else "\n"
     )
 
     return (
         f"📡 <b>SINYAL AI NEXUSTRADE — {sym} ({tf})</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>Keputusan AI:</b> {badge}\n"
-        f"<b>Tingkat Keyakinan:</b> <code>[{conf_bar}] {decision.confidence * 100:.1f}%</code>\n"
-        f"<b>Status Keamanan:</b> {approval_line}\n\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"<b>Keputusan:</b> {badge}\n"
+        f"<b>Keyakinan:</b> <code>[{conf_bar}] {decision.confidence * 100:.1f}%</code> | {approval_line}\n"
         f"{summary_text}\n\n"
-        f"<b>🎯 Panduan Harga Transaksi:</b>\n"
-        f"• <b>Entry Price:</b> <code>{format_price(decision.entry_price)}</code> <i>(Harga Saat Ini)</i>\n"
-        f"• <b>Stop Loss (2xATR):</b> <code>{format_price(decision.stop_loss)}</code> (<code>{sl_pct}</code> — <i>Batas Rugi</i>)\n"
-        f"• <b>Take Profit 1 (1:2):</b> <code>{format_price(decision.take_profit_1)}</code> (<code>{tp1_pct}</code> — <i>Target 1</i>)\n"
-        f"• <b>Take Profit 2 (1:3):</b> <code>{format_price(decision.take_profit_2)}</code> (<code>{tp2_pct}</code> — <i>Target 2</i>)\n\n"
-        f"<b>🧠 Alasan &amp; Memori AI (5 Tahun – Hari Ini):</b>\n"
-        f"• <b>Teknikal:</b> <code>{decision.s_tech:+.2f}</code> — {tech_desc}\n"
-        f"• <b>Sentimen:</b> <code>{decision.s_sent:+.2f}</code> — {sent_desc}\n"
-        f"• <b>Gejolak Pasar:</b> <code>{decision.s_vol:.2f}</code> — {vol_desc}\n"
-        f"{learn_line}"
-        f"{acc_line}"
-        f"{macro_line}"
-        f"<b>🛡️ Saran Ukuran Posisi:</b>\n"
-        f"• <b>Ukuran Beli/Jual:</b> <code>{decision.position_units:,.4f} {sym}</code> (<code>${decision.position_notional:,.2f}</code>)\n"
-        f"• <b>Risiko Modal:</b> <code>{decision.account_risk_pct * 100:.2f}%</code> | <b>Skala Aman:</b> <code>{decision.risk_multiplier:.2f}x</code>\n"
-        f"⏱️ <i>Update UTC: {html.escape(decision.timestamp)}</i>"
+        f"<b>🎯 Level Harga &amp; S/R:</b>\n"
+        f"• <b>Entry Price:</b> <code>{format_price(decision.entry_price)}</code>\n"
+        f"• <b>Stop Loss (2xATR):</b> <code>{format_price(decision.stop_loss)}</code> (<code>{sl_pct}</code>)\n"
+        f"• <b>Take Profit 1 (1:2):</b> <code>{format_price(decision.take_profit_1)}</code> (<code>{tp1_pct}</code>)\n"
+        f"• <b>Take Profit 2 (1:3):</b> <code>{format_price(decision.take_profit_2)}</code> (<code>{tp2_pct}</code>)\n"
+        f"• <b>Resistance Atas (R1 | R2):</b> <code>{format_price(decision.resistance_1)}</code> (<code>{r1_pct}</code>) | <code>{format_price(decision.resistance_2)}</code>\n"
+        f"• <b>Support Bawah (S1 | S2):</b> <code>{format_price(decision.support_1)}</code> (<code>{s1_pct}</code>) | <code>{format_price(decision.support_2)}</code>\n"
+        f"• <b>Posisi S/R:</b> <i>{html.escape(decision.sr_status)}</i>\n"
+        f"• <b>Struktur (ADX):</b> <i>{html.escape(decision.market_structure_status)}</i>\n\n"
+        f"<b>🧠 Analisis 6 Pilar:</b>\n"
+        f"• <b>Teknikal &amp; CVD:</b> <code>{decision.s_tech:+.2f}</code> | <i>{html.escape(decision.cvd_status)}</i> (RVOL <code>{decision.relative_volume:.1f}x</code>)\n"
+        f"• <b>Sentimen &amp; Vol:</b> <code>{decision.s_sent:+.2f}</code> ({sent_desc}) | Vol <code>{decision.s_vol:.2f}</code>\n"
+        f"• <b>Konfluensi:</b> <code>{decision.confluence_pillars}/6 Pilar</code> | Exp <code>{decision.expectancy_r:+.2f}R</code>\n"
+        f"• <b>Meta-Model:</b> <code>P(Sukses) {decision.meta_probability * 100:.1f}%</code> | Makro: {html.escape(decision.macro_regime)}\n"
+        f"<b>🛡️ Ukuran:</b> <code>{decision.position_units:,.4f} {sym}</code> (<code>${decision.position_notional:,.2f}</code> | Risiko <code>{decision.account_risk_pct * 100:.2f}%</code>)\n"
+        f"⏱️ <i>UTC: {html.escape(decision.timestamp)}</i>"
     )
 
 
@@ -191,13 +200,24 @@ def format_sentiment_card(result: SentimentAnalysisResult) -> str:
         if result.live_news_used
         else "📁 <b>Memori Lokal</b>"
     )
+    macro_line = (
+        f"<b>Kalender Makro (ForexFactory):</b> 🔴 <b>BLACKOUT AKTIF ({html.escape(result.blackout_event or 'High Impact Event')})</b>\n"
+        if result.is_macro_blackout
+        else "<b>Kalender Makro (ForexFactory):</b> 🟢 <b>CLEAR (Tidak Ada Berita High Impact ±15m)</b>\n"
+    )
+    prov_line = ""
+    if result.provider_breakdown:
+        items_str = ", ".join(f"{k.capitalize()}: {v}" for k, v in result.provider_breakdown.items())
+        prov_line = f"<b>Provider Live:</b> <code>{html.escape(items_str)}</code>\n"
 
     return (
         f"📰 <b>FINBERT SENTIMENT ENGINE — {sym}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>Suasana Pasar:</b> {badge}\n"
         f"<b>Skor Sentimen:</b> <code>[{bar}] {result.s_sent:+.2f}</code> <i>(Skala -1 s/d +1)</i>\n"
-        f"<b>Sumber Data:</b> {feed_badge}\n\n"
+        f"<b>Sumber Data:</b> {feed_badge}\n"
+        f"{macro_line}"
+        f"{prov_line}"
         f"💡 <b>Ringkasan:</b> {human_note}\n\n"
         f"<b>📊 Proporsi Berita Saat Ini:</b>\n"
         f"• 🟢 <b>Berita Positif (Bullish):</b> <code>{result.bullish_ratio * 100:.0f}%</code>\n"

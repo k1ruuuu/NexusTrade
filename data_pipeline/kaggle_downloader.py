@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import os
 import shutil
@@ -129,17 +128,6 @@ class KaggleDatasetDownloader:
         if self.settings.kaggle_key:
             env["KAGGLE_KEY"] = self.settings.kaggle_key
         return env
-
-    def has_valid_credentials(self) -> bool:
-        if (
-            self.settings.kaggle_username
-            and self.settings.kaggle_key
-            and self.settings.kaggle_username != "your_kaggle_username"
-            and self.settings.kaggle_key != "your_kaggle_api_key"
-        ):
-            return True
-        kaggle_json = Path.home() / ".kaggle" / "kaggle.json"
-        return kaggle_json.exists() and kaggle_json.stat().st_size > 0
 
     @staticmethod
     def compute_md5(file_path: Path, chunk_size: int = 65536) -> str:
@@ -337,16 +325,24 @@ class KaggleDatasetDownloader:
                 source="kaggle_api",
                 error=str(exc),
             )
-
-    async def download_all_async(
-        self, keys: Optional[list[str]] = None, force: bool = False
+    def download_all(
+        self,
+        keys: Optional[list[str]] = None,
+        force: bool = False,
+        offline_training: bool = False,
     ) -> dict[str, DownloadArtifactReport]:
-        """Asynchronously download and verify all registered Kaggle datasets."""
+        """
+        Download datasets. Static NLP datasets (financial_phrasebank, massive_news_db)
+        are downloaded strictly when offline_training=True (PRD Section 6.1).
+        """
         target_keys = keys or list(KAGGLE_DATASET_REGISTRY.keys())
-        self.sync_local_workspace_datasets()
-        tasks = [
-            asyncio.to_thread(self.download_resource, key, force)
-            for key in target_keys
-        ]
-        results = await asyncio.gather(*tasks)
-        return {report.key: report for report in results}
+        if not offline_training:
+            target_keys = [
+                k for k in target_keys
+                if k not in ("financial_phrasebank", "massive_news_db")
+            ]
+        results = {}
+        for k in target_keys:
+            results[k] = self.download_resource(k, force=force)
+        return results
+
