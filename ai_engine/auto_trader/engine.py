@@ -261,6 +261,7 @@ class SmartAutoTraderEngine:
         require_autotrade_toggle: bool = True,
         custom_lot: Optional[float] = None,
         macro_event_mode: Optional[str] = None,
+        max_positions: int = 1,
     ) -> AutoTradeExecutionReport:
         """
         Run the complete 6-Gate Pre-Trade Checklist for `user_id` on `symbol` (`timeframe`)
@@ -469,7 +470,8 @@ class SmartAutoTraderEngine:
         async with exec_lock:
             await self.sync_live_mt5_positions(user_id)
             open_positions = self.vault.get_open_positions(user_id, symbol=clean_sym, account_id=creds.account_id or None)
-            has_duplicate = len(open_positions) > 0
+            effective_max_pos = max(1, int(max_positions))
+            has_duplicate = len(open_positions) >= effective_max_pos
             user_dd, start_eq, curr_eq = self.vault.get_user_daily_drawdown(user_id, account_id=creds.account_id or None)
             eff_dd = user_dd
             is_micro_account = 0.0 < float(creds.verified_usdt_balance) < 100.0
@@ -490,7 +492,10 @@ class SmartAutoTraderEngine:
                 and not has_duplicate
             )
             if has_duplicate:
-                risk_detail = f"DITOLAK: Masih ada {len(open_positions)} posisi {clean_sym} yang sedang OPEN di akun Anda"
+                risk_detail = (
+                    f"DITOLAK (BATAS LAYER TERCAPAI): Sudah ada {len(open_positions)}/{effective_max_pos} "
+                    f"posisi {clean_sym} yang sedang OPEN di akun Anda"
+                )
             elif cb_tripped:
                 risk_detail = (
                     f"DITOLAK: Circuit Breaker Rugi Harian aktif "
@@ -501,13 +506,13 @@ class SmartAutoTraderEngine:
             else:
                 risk_detail = (
                     f"Aman (Gejolak {decision.volatility_regime}, S_vol={decision.s_vol:.2f}, "
-                    f"Drawdown Harian {eff_dd * 100:.2f}%, Tidak ada posisi ganda)"
+                    f"Drawdown Harian {eff_dd * 100:.2f}%, Layer {len(open_positions)}/{effective_max_pos})"
                 )
 
             gates.append(
                 AutoTradeGateCheck(
                     gate_number=5,
-                    name="Filter Gejolak, Circuit Breaker & Anti-Posisi Ganda",
+                    name="Filter Gejolak, Circuit Breaker & Kontrol Layer Posisi",
                     passed=risk_ok,
                     detail=risk_detail,
                 )

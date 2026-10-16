@@ -20,6 +20,7 @@ from ai_engine.auto_trader.session_models import (
     AutoTradeSessionState,
     parse_custom_lot_token,
     parse_macro_event_mode_token,
+    parse_max_positions_token,
 )
 from telegram_bot.handlers.handler_utils import (
     _PENDING_ADMIN_ACTION,
@@ -134,6 +135,44 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         )
         return
     if sub in ("off", "stop"):
+        target_token = args[1].strip() if len(args) > 1 else None
+        if target_token and target_token.lower() not in ("all", "semua"):
+            stopped_one = auto_trader.stop_session_by_id(user_id, target_token)
+            if stopped_one is not None:
+                remaining_sess = auto_trader.get_user_sessions(user_id)
+                rem_note = f"\n\nSisa sesi aktif: {len(remaining_sess)} sesi." if remaining_sess else "\n\nSemua sesi Auto-Trade telah selesai."
+                if not remaining_sess:
+                    vault.set_autotrade_enabled(user_id, False)
+                await message.answer(
+                    f"🛑 <b>Sesi Auto-Trade [ID #{stopped_one.short_id}] ({stopped_one.symbol}) Telah Dihentikan.</b>\n"
+                    f"• <b>Status:</b> Nonaktif (Dibatalkan user)\n"
+                    f"• <b>Total Siklus:</b> <code>{stopped_one.cycles_completed}x</code>\n"
+                    f"• <b>Realized PnL:</b> <code>${stopped_one.realized_pnl_usdt:+.2f} USD</code>"
+                    + rem_note,
+                    parse_mode="HTML",
+                    reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=bool(remaining_sess)),
+                )
+                return
+            else:
+                stopped_sym = auto_trader.stop_user_sessions(user_id, symbol=target_token)
+                if stopped_sym:
+                    remaining_sess = auto_trader.get_user_sessions(user_id)
+                    if not remaining_sess:
+                        vault.set_autotrade_enabled(user_id, False)
+                    await message.answer(
+                        f"🛑 <b>{len(stopped_sym)} Sesi Auto-Trade pada {target_token.upper()} Telah Dihentikan.</b>",
+                        parse_mode="HTML",
+                        reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=bool(remaining_sess)),
+                    )
+                    return
+                else:
+                    await message.answer(
+                        f"⚠️ <b>Sesi Auto-Trade dengan ID '<code>{html.escape(target_token)}</code>' tidak ditemukan atau sudah nonaktif.</b>\n"
+                        f"Ketik <code>/autotrade status</code> untuk melihat daftar ID sesi yang sedang aktif.",
+                        parse_mode="HTML",
+                    )
+                    return
+
         stopped_sessions = auto_trader.stop_user_sessions(user_id)
         vault.set_autotrade_enabled(user_id, False)
         await auto_trader.sync_live_mt5_positions(user_id)
@@ -145,7 +184,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
             else ""
         )
         await message.answer(
-            f"⚪ <b>Auto-Trade Dinonaktifkan{stop_note}.</b>\n"
+            f"⚪ <b>Seluruh Sesi Auto-Trade Dinonaktifkan{stop_note}.</b>\n"
             f"Bot tidak akan membuka posisi otomatis baru sampai Anda mengaktifkannya kembali.\n\n"
             + format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), updated, positions),
             parse_mode="HTML",
@@ -160,11 +199,12 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         sess_lines = ""
         if active_sessions:
             s_items = [
-                f"• <b>{s.symbol} ({s.duration_label})</b>: Sisa <code>{s.remaining_human}</code> | "
-                f"Siklus: <code>{s.cycles_completed}x</code> | <i>{s.last_check_summary}</i>"
+                f"• <b>[ID #{s.short_id}] {s.symbol}</b> ({s.duration_label} | {s.custom_lot or 'Auto'} Lot | Max {s.max_positions} Posisi):\n"
+                f"   Sisa: <code>{s.remaining_human}</code> | Siklus: <code>{s.cycles_completed}x</code> | <i>{s.last_check_summary}</i>\n"
+                f"   👉 <i>Ketik <code>/autotrade stop {s.short_id}</code> untuk menghentikan sesi ini saja.</i>"
                 for s in active_sessions
             ]
-            sess_lines = "\n\n<b>⏱️ Sesi Auto-Trade Berjangka Aktif:</b>\n" + "\n".join(s_items)
+            sess_lines = "\n\n<b>⏱️ Sesi Auto-Trade Aktif Berdasarkan ID:</b>\n\n" + "\n\n".join(s_items)
         await message.answer(
             format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), creds, positions)
             + sess_lines,
@@ -173,13 +213,18 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         )
         return
 
-    # Parse `/autotrade <SYMBOL> [LOT] [EVENT_MODE]` -> Always starts 24/7 Non-Stop Auto-Trade
+    # Parse `/autotrade <SYMBOL> [LOT] [EVENT_MODE] [MAX_POSITIONS]` -> Starts 24/7 Auto-Trade
     raw_tokens = args[1:] if sub == "scan" else args
     symbol = normalize_symbol(raw_tokens[0]) if len(raw_tokens) >= 1 else "BTCUSDT"
     custom_lot: float | None = None
     macro_event_mode: str | None = None
+    max_positions: int = 1
 
     for tok in raw_tokens[1:]:
+        pos_val = parse_max_positions_token(tok)
+        if pos_val is not None and max_positions == 1:
+            max_positions = pos_val
+            continue
         lot_val = parse_custom_lot_token(tok)
         if lot_val is not None and custom_lot is None:
             custom_lot = lot_val
@@ -187,6 +232,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         ev_mode = parse_macro_event_mode_token(tok)
         if ev_mode is not None and macro_event_mode is None:
             macro_event_mode = ev_mode
+            continue
     if sub != "scan":
         live_msg_ref: list[Any] = []
         kb_markup = build_setup_keyboard(has_creds=True, autotrade_on=True)
@@ -217,6 +263,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
             custom_lot=custom_lot,
             live_card_callback=_update_live_card,
             macro_event_mode=macro_event_mode,
+            max_positions=max_positions,
         )
         sent_card = await message.answer(
             format_timed_session_started_card(session_state, first_res),
@@ -266,6 +313,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         timeframe="1m",
         custom_lot=custom_lot,
         macro_event_mode=macro_event_mode,
+        max_positions=max_positions,
     )
     await message.answer(
         format_autotrade_report_card(report),

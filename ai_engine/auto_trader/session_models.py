@@ -17,6 +17,7 @@ LOT_TOKEN_RE = re.compile(
     r"^(?:lot[=:]?)?(\d+(?:\.\d+)?)(?:lots?|l)?$",
     re.IGNORECASE,
 )
+MAX_POS_RE = re.compile(r"^(?:layer[=:]?|layers[=:]?|pos[=:]?|max[=:]?|x)?(\d+)$", re.IGNORECASE)
 
 
 def is_session_duration_token(token: str) -> bool:
@@ -36,10 +37,14 @@ def is_session_duration_token(token: str) -> bool:
 def parse_custom_lot_token(token: str) -> Optional[float]:
     """
     Parse a custom lot size token (e.g. '0.01', '0.05', '0.1', '1.5', '0.05lot', 'lot=0.05').
-    Returns None if token is a duration or non-lot string.
+    Returns None if token is a duration, non-lot string, or an integer layer count (e.g. '4', '5').
     """
     cleaned = token.strip()
     if not cleaned or is_session_duration_token(cleaned):
+        return None
+    # If it's a bare integer <= 20 without decimal and without explicit 'lot' keyword,
+    # reserve it for max_positions (layers count)
+    if cleaned.isdigit() and "." not in cleaned and "lot" not in cleaned.lower() and int(cleaned) <= 20:
         return None
     m = LOT_TOKEN_RE.match(cleaned)
     if not m:
@@ -47,6 +52,25 @@ def parse_custom_lot_token(token: str) -> Optional[float]:
     val = float(m.group(1))
     if 0.001 <= val <= 50.0:
         return round(max(0.01, val), 2)
+    return None
+
+
+def parse_max_positions_token(token: str) -> Optional[int]:
+    """
+    Parse maximum concurrent positions / layer count token (e.g. '4', '5', 'x4', 'layer=4', 'pos:5').
+    Returns int between 1 and 20 if valid, else None.
+    """
+    cleaned = token.strip()
+    if not cleaned or is_session_duration_token(cleaned):
+        return None
+    if "." in cleaned or "lot" in cleaned.lower():
+        return None
+    m = MAX_POS_RE.match(cleaned)
+    if not m:
+        return None
+    val = int(m.group(1))
+    if 1 <= val <= 20:
+        return val
     return None
 SUPPORTED_MACRO_EVENTS = (
     "FOMC",      # Fed Interest Rate Decision, Powell Press Conference, Minutes, Dot Plot
@@ -183,6 +207,8 @@ class AutoTradeSessionState:
     last_check_summary: str = "Memulai pemantauan 24/7 Non-Stop..."
     custom_lot: Optional[float] = None
     macro_event_mode: Optional[str] = None
+    short_id: str = ""
+    max_positions: int = 1
     task: Optional[asyncio.Task[Any]] = field(default=None, repr=False)
 
     @property
