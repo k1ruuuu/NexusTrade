@@ -10,7 +10,6 @@ import httpx
 
 from config.logging_config import get_logger
 from config.settings import Settings, get_settings
-from data_pipeline.news_providers.alphavantage_provider import AlphaVantageProvider
 from data_pipeline.news_providers.crypto_rss_provider import Tier1CryptoRSSProvider
 from data_pipeline.news_providers.finnhub_provider import FinnhubProvider
 from data_pipeline.news_providers.forexfactory_provider import ForexFactoryProvider
@@ -55,8 +54,8 @@ BEARISH_CATALYSTS = (
 
 class MultiSourceNewsAggregator:
     """
-    Asynchronous 6-Provider News, Macro Commentary & Economic Calendar Engine (v2.5).
-    Integrates ForexFactory, MarcToMarket, Finnhub, Alpha Vantage, Tier-1 Crypto Media RSS,
+    Asynchronous 5-Provider News, Macro Commentary & Economic Calendar Engine (v3.0 Zero-Paywall).
+    Integrates ForexFactory, MarcToMarket, Finnhub, Tier-1 Crypto Media RSS,
     and Real-Time US Macro Squawk Feeds (ForexLive, CNBC, Investing.com).
     Features institutional Hawkish vs Dovish monetary transmission to Gold (XAUUSD).
     """
@@ -66,7 +65,6 @@ class MultiSourceNewsAggregator:
         settings: Optional[Settings] = None,
         finbert_scorer: Optional[Callable[[str], float]] = None,
         finnhub_key: Optional[str] = None,
-        alphavantage_key: Optional[str] = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.finbert_scorer = finbert_scorer or (lambda text: 0.0)
@@ -76,10 +74,6 @@ class MultiSourceNewsAggregator:
         self.marctomarket = MarcToMarketProvider(self.settings)
         self.finnhub = FinnhubProvider(
             api_key=finnhub_key if finnhub_key is not None else getattr(self.settings, "finnhub_api_key", ""),
-            settings=self.settings,
-        )
-        self.alphavantage = AlphaVantageProvider(
-            api_key=alphavantage_key if alphavantage_key is not None else getattr(self.settings, "alphavantage_api_key", ""),
             settings=self.settings,
         )
         self.crypto_rss = Tier1CryptoRSSProvider(self.settings)
@@ -150,7 +144,6 @@ class MultiSourceNewsAggregator:
             headers={"User-Agent": "Mozilla/5.0 (compatible; NexusTradeAI/2.0)"},
             timeout=15.0,
         ) as client:
-            av_ticker = f"CRYPTO:{clean_base}" if asset_class == "crypto" else f"FOREX:{clean_base}"
             fh_cat = "crypto" if asset_class == "crypto" else "forex"
 
             tasks = [
@@ -158,8 +151,6 @@ class MultiSourceNewsAggregator:
                 self.marctomarket.fetch(client),
                 self.finnhub.fetch(client, category=fh_cat, symbol=symbol),
             ]
-            if self.alphavantage.api_key:
-                tasks.append(self.alphavantage.fetch(client, ticker=av_ticker))
             if asset_class == "crypto":
                 tasks.append(self.crypto_rss.fetch(client, target_symbol=clean_base))
             if asset_class != "crypto" or event_mode or any(k in symbol.upper() for k in ("XAU", "GOLD")):
@@ -204,8 +195,6 @@ class MultiSourceNewsAggregator:
             if item.provider_sentiment is not None and "USMacro" in pub_tag:
                 # Institutional Hawkish vs Dovish transmission to Gold
                 item.final_polarity = float(item.provider_sentiment)
-            elif item.provider_sentiment is not None and item.source == NewsSource.ALPHA_VANTAGE:
-                item.final_polarity = 0.60 * float(item.provider_sentiment) + 0.40 * fb_adjusted
             else:
                 item.final_polarity = fb_adjusted
 

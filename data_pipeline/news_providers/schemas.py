@@ -12,7 +12,6 @@ class NewsSource(str, Enum):
     FOREX_FACTORY = "forexfactory"
     MARC_TO_MARKET = "marctomarket"
     FINNHUB = "finnhub"
-    ALPHA_VANTAGE = "alphavantage"
     TIER1_CRYPTO_RSS = "tier1_crypto_rss"
     US_MACRO_SQUAWK = "us_macro_squawk"
 
