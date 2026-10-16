@@ -33,21 +33,40 @@ class EconomicCalendarEvent(BaseModel):
     actual: Optional[str] = None
 
     def matches_event_mode(self, mode: Optional[str]) -> bool:
-        """Check if this economic event matches the requested mode (e.g. CPI, PPI, NFP, PCE)."""
+        """
+        Check if this economic event matches the requested mode
+        (e.g. FOMC, IMF, NFP, CPI, PPI, PCE, GDP, RETAIL, PMI, JOBLESS).
+        """
         if not mode:
             return True
         m = mode.strip().upper()
         title_lower = self.title.lower()
+        if m == "FOMC":
+            return any(k in title_lower for k in (
+                "fomc", "federal open market", "federal reserve", "interest rate",
+                "funds rate", "powell", "rate statement", "monetary policy", "dot plot"
+            ))
+        if m == "IMF":
+            return any(k in title_lower for k in (
+                "imf", "international monetary fund", "world economic outlook", "global economic"
+            ))
         if m == "CPI":
             return "cpi" in title_lower or "consumer price" in title_lower
         if m == "PPI":
             return "ppi" in title_lower or "producer price" in title_lower
         if m == "NFP":
-            return any(k in title_lower for k in ("non-farm", "nonfarm", "payroll", "unemployment"))
+            return any(k in title_lower for k in ("non-farm", "nonfarm", "payroll", "unemployment", "labor force"))
         if m == "PCE":
             return "pce" in title_lower or "personal consumption" in title_lower
+        if m == "GDP":
+            return "gdp" in title_lower or "gross domestic product" in title_lower
+        if m == "RETAIL":
+            return "retail sales" in title_lower or "core retail" in title_lower
+        if m == "PMI":
+            return any(k in title_lower for k in ("pmi", "ism manufacturing", "ism services", "purchasing managers"))
+        if m == "JOBLESS":
+            return any(k in title_lower for k in ("jobless claims", "initial claims", "continuing claims"))
         return m.lower() in title_lower
-
     def compute_surprise(self) -> Optional[float]:
         """
         Compute economic surprise = Actual - Forecast.

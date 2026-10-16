@@ -210,6 +210,18 @@ HAWKISH_LEXICON: dict[str, float] = {
     "cpi beat": 0.90,
     "ppi beat": 0.90,
     "retail sales beat": 0.80,
+    "retail sales surge": 0.85,
+    "gdp beats": 0.85,
+    "gdp surges": 0.85,
+    "pmi expands": 0.80,
+    "ism beats": 0.80,
+    "fomc hawkish": 0.95,
+    "powell hawkish": 0.95,
+    "rate hike on table": 0.90,
+    "imf upgrades us growth": 0.85,
+    "imf raises us forecast": 0.85,
+    "jobless claims drop": 0.80,
+    "quantitative tightening": 0.80,
 }
 
 DOVISH_LEXICON: dict[str, float] = {
@@ -245,13 +257,29 @@ DOVISH_LEXICON: dict[str, float] = {
     "disinflation": -0.85,
     "deflation": -0.80,
     "jobless claims jump": -0.80,
+    "jobless claims surge": -0.85,
     "unemployment rises": -0.85,
     "cooling inflation": -0.90,
     "cpi miss": -0.90,
     "ppi miss": -0.90,
     "nfp miss": -0.90,
+    "fomc dovish": -0.95,
+    "powell dovish": -0.95,
+    "dovish pause": -0.90,
+    "rate cuts on horizon": -0.85,
+    "gdp misses": -0.85,
+    "gdp contracts": -0.90,
+    "gdp slows": -0.80,
+    "retail sales slump": -0.85,
+    "retail sales miss": -0.80,
+    "pmi contracts": -0.80,
+    "pmi misses": -0.80,
+    "imf warns global slowdown": -0.85,
+    "imf cuts global growth": -0.85,
+    "debt distress": -0.80,
+    "recession fear": -0.85,
+    "recession warning": -0.90,
 }
-
 
 def compute_macro_monetary_bias(text: str) -> Tuple[float, MacroStance]:
     """

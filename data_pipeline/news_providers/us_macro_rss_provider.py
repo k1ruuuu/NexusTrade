@@ -30,8 +30,10 @@ US_MACRO_RSS_ENDPOINTS: Dict[str, str] = {
 US_MACRO_KEYWORDS = (
     "cpi", "consumer price", "ppi", "producer price", "pce", "core pce",
     "nfp", "non-farm", "nonfarm", "payroll", "unemployment", "jobless claims",
-    "retail sales", "inflation", "powell", "fomc", "federal reserve",
-    "rate cut", "rate hike", "yields", "dxy", "dollar index",
+    "retail sales", "inflation", "powell", "fomc", "federal reserve", "fed",
+    "rate cut", "rate hike", "yields", "dxy", "dollar index", "gdp", "growth",
+    "pmi", "ism", "imf", "international monetary fund", "world economic outlook",
+    "central bank", "monetary policy", "quantitative tightening", "debt ceiling",
 )
 
 
@@ -89,18 +91,27 @@ class USMacroNewsProvider(BaseNewsProvider):
     @staticmethod
     def detect_macro_event_tag(text: str) -> Optional[str]:
         lower = text.lower()
-        if any(k in lower for k in ("nfp", "non-farm", "nonfarm", "payroll")):
-            return "NFP"
-        if any(k in lower for k in ("cpi", "consumer price index")):
-            return "CPI"
-        if any(k in lower for k in ("ppi", "producer price index")):
-            return "PPI"
-        if any(k in lower for k in ("pce", "personal consumption expenditures")):
-            return "PCE"
-        if any(k in lower for k in ("fomc", "powell", "fed rate")):
+        if any(k in lower for k in ("fomc", "federal reserve", "fed rate", "powell", "fed funds", "dot plot", "rate hike", "rate cut")):
             return "FOMC"
+        if any(k in lower for k in ("imf", "international monetary fund", "world economic outlook", "weo", "global economic outlook")):
+            return "IMF"
+        if any(k in lower for k in ("nfp", "non-farm", "nonfarm", "payroll", "unemployment rate")):
+            return "NFP"
+        if any(k in lower for k in ("cpi", "consumer price index", "headline inflation")):
+            return "CPI"
+        if any(k in lower for k in ("ppi", "producer price index", "wholesale price")):
+            return "PPI"
+        if any(k in lower for k in ("pce", "personal consumption expenditures", "core pce")):
+            return "PCE"
+        if any(k in lower for k in ("gdp", "gross domestic product")):
+            return "GDP"
+        if any(k in lower for k in ("retail sales", "core retail")):
+            return "RETAIL"
+        if any(k in lower for k in ("pmi", "ism manufacturing", "ism services", "purchasing managers")):
+            return "PMI"
+        if any(k in lower for k in ("jobless claims", "initial claims", "continuing claims")):
+            return "JOBLESS"
         return "MACRO"
-
     async def _fetch_single_macro_rss(
         self,
         client: httpx.AsyncClient,

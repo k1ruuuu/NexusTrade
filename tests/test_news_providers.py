@@ -331,10 +331,60 @@ def test_event_sniper_blackout_bypass_logic() -> None:
 
 
 def test_parse_macro_event_mode_tokens() -> None:
-    """Verify parsing /autotrade event arguments (NFP, CPI, PPI, PCE)."""
+    """Verify parsing /autotrade event arguments (FOMC, IMF, NFP, CPI, PPI, PCE, GDP, RETAIL, PMI, JOBLESS)."""
+    # Canonical tokens
+    assert parse_macro_event_mode_token("fomc") == "FOMC"
+    assert parse_macro_event_mode_token("IMF") == "IMF"
     assert parse_macro_event_mode_token("nfp") == "NFP"
     assert parse_macro_event_mode_token("CPI") == "CPI"
     assert parse_macro_event_mode_token("ppi") == "PPI"
     assert parse_macro_event_mode_token("event:pce") == "PCE"
+    assert parse_macro_event_mode_token("gdp") == "GDP"
+    assert parse_macro_event_mode_token("retail") == "RETAIL"
+    assert parse_macro_event_mode_token("pmi") == "PMI"
+    assert parse_macro_event_mode_token("jobless") == "JOBLESS"
+    # Common aliases
+    assert parse_macro_event_mode_token("powell") == "FOMC"
+    assert parse_macro_event_mode_token("fed") == "FOMC"
+    assert parse_macro_event_mode_token("weo") == "IMF"
+    assert parse_macro_event_mode_token("jobs") == "NFP"
+    assert parse_macro_event_mode_token("claims") == "JOBLESS"
+    assert parse_macro_event_mode_token("ism") == "PMI"
+    # Invalid non-event tokens
     assert parse_macro_event_mode_token("BTCUSDT") is None
     assert parse_macro_event_mode_token("0.05") is None
+
+
+def test_extended_macro_events_matching_and_transmission() -> None:
+    """Verify EconomicCalendarEvent matching and monetary transmission for FOMC, IMF, GDP, PMI."""
+    now = datetime.now(timezone.utc)
+    ev_fomc = EconomicCalendarEvent(
+        title="Federal Funds Rate Decision & Statement",
+        country="USD",
+        timestamp=now,
+        impact=ImpactLevel.HIGH,
+    )
+    assert ev_fomc.matches_event_mode("FOMC") is True
+    assert ev_fomc.matches_event_mode("CPI") is False
+
+    ev_imf = EconomicCalendarEvent(
+        title="IMF World Economic Outlook Press Conference",
+        country="USD",
+        timestamp=now,
+        impact=ImpactLevel.HIGH,
+    )
+    assert ev_imf.matches_event_mode("IMF") is True
+
+    # Test Hawkish FOMC headline -> SELL Gold
+    fomc_hawkish = "FOMC holds interest rates at 5.50% and Powell signals rate hike on table if inflation persists"
+    sc_fomc, stance_fomc = compute_macro_monetary_bias(fomc_hawkish)
+    gold_sc, act_fomc = macro_monetary_to_gold_signal(sc_fomc, "XAUUSD")
+    assert stance_fomc == "HAWKISH"
+    assert act_fomc == "SELL"
+
+    # Test Dovish IMF / Global Slowdown headline -> BUY Gold (Safe Haven + Fed Easing)
+    imf_dovish = "IMF warns global slowdown and cuts global growth forecast amid debt distress and recession fear"
+    sc_imf, stance_imf = compute_macro_monetary_bias(imf_dovish)
+    gold_imf, act_imf = macro_monetary_to_gold_signal(sc_imf, "XAUUSD")
+    assert stance_imf == "DOVISH"
+    assert act_imf == "BUY"

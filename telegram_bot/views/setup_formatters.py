@@ -17,6 +17,26 @@ from ai_engine.auto_trader.user_vault import (
 from telegram_bot.views.formatter_utils import format_price
 
 
+EVENT_ICONS: dict[str, str] = {
+    "FOMC": "🏛️",
+    "IMF": "🌐",
+    "NFP": "💼",
+    "CPI": "📊",
+    "PPI": "🏭",
+    "PCE": "📈",
+    "GDP": "🇺🇸",
+    "RETAIL": "🛒",
+    "PMI": "🏗️",
+    "JOBLESS": "📉",
+}
+
+
+def get_macro_event_icon(event_mode: Optional[str]) -> str:
+    if not event_mode:
+        return "🎯"
+    return EVENT_ICONS.get(event_mode.upper(), "🎯")
+
+
 def format_role_badge(role: UserRole, source: Optional[str] = None) -> str:
     if role == "admin":
         if source == "admin_env":
@@ -235,8 +255,9 @@ def format_timed_session_started_card(
         else "<code>Otomatis (Sesuai Risiko Modal)</code>"
     )
     upd_str = html.escape(session.last_updated_iso or session.started_at_iso)
+    ev_icon = get_macro_event_icon(session.macro_event_mode)
     event_line = (
-        f"• <b>Mode Event Makro:</b> 🦅 <b>{session.macro_event_mode} Event Sniper</b> (Blackout Bypass Aktif)\n"
+        f"• <b>Mode Event Makro:</b> {ev_icon} <b>{session.macro_event_mode} Event Sniper</b> (Blackout Bypass Aktif)\n"
         if session.macro_event_mode
         else ""
     )
@@ -305,11 +326,12 @@ def format_autotrade_report_card(report: AutoTradeExecutionReport) -> str:
     event_header = ""
     if report.decision and getattr(report.decision, "event_mode", None):
         ev_m = report.decision.event_mode
+        ev_icon = get_macro_event_icon(ev_m)
         st_m = getattr(report.decision, "macro_stance", "NEUTRAL")
         icon_st = "🦅" if st_m == "HAWKISH" else ("🕊️" if st_m == "DOVISH" else "⚖️")
         bias_g = getattr(report.decision, "gold_action_bias", "HOLD")
         event_header = (
-            f"🎯 <b>US MACRO EVENT SNIPER: {ev_m}</b>\n"
+            f"{ev_icon} <b>US MACRO EVENT SNIPER: {ev_m}</b>\n"
             f"• <b>Sikap Kebijakan AS:</b> {icon_st} <b>{st_m}</b> (Transmisi Emas ➔ <b>{bias_g}</b>)\n"
             f"• <b>Status Blackout:</b> 🟢 <b>Dilewati (Bypassed)</b> — AI Aktif Berburu Setup\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"

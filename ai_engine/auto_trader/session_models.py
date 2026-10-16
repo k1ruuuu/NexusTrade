@@ -48,12 +48,53 @@ def parse_custom_lot_token(token: str) -> Optional[float]:
     if 0.001 <= val <= 50.0:
         return round(max(0.01, val), 2)
     return None
-SUPPORTED_MACRO_EVENTS = ("NFP", "CPI", "PPI", "PCE")
+SUPPORTED_MACRO_EVENTS = (
+    "FOMC",      # Fed Interest Rate Decision, Powell Press Conference, Minutes, Dot Plot
+    "NFP",       # Non-Farm Payrolls & US Unemployment
+    "CPI",       # Consumer Price Index & Core CPI
+    "PPI",       # Producer Price Index & Core PPI
+    "PCE",       # Core PCE Inflation (Fed's Target Indicator)
+    "GDP",       # Gross Domestic Product Growth (QoQ / YoY)
+    "IMF",       # IMF World Economic Outlook & Global Growth/Debt Risk
+    "RETAIL",    # US Retail Sales & Consumer Spending
+    "PMI",       # ISM Manufacturing / Services PMI & Flash PMI
+    "JOBLESS",   # US Initial Jobless Claims & Labor Softening
+)
+
+MACRO_EVENT_ALIASES: dict[str, str] = {
+    "FED": "FOMC",
+    "POWELL": "FOMC",
+    "RATES": "FOMC",
+    "RATE": "FOMC",
+    "INTEREST_RATE": "FOMC",
+    "INTEREST_RATES": "FOMC",
+    "FOMC_MINUTES": "FOMC",
+    "PAYROLL": "NFP",
+    "PAYROLLS": "NFP",
+    "JOBS": "NFP",
+    "UNEMPLOYMENT": "NFP",
+    "INFLATION": "CPI",
+    "CORE_CPI": "CPI",
+    "PRODUCER_PRICE": "PPI",
+    "CORE_PCE": "PCE",
+    "CLAIMS": "JOBLESS",
+    "JOBLESS_CLAIMS": "JOBLESS",
+    "INITIAL_CLAIMS": "JOBLESS",
+    "ISM": "PMI",
+    "SERVICES_PMI": "PMI",
+    "MANUFACTURING_PMI": "PMI",
+    "RETAIL_SALES": "RETAIL",
+    "GROWTH": "GDP",
+    "US_GDP": "GDP",
+    "WEO": "IMF",
+    "WORLD_BANK": "IMF",
+}
 
 
 def parse_macro_event_mode_token(token: str) -> Optional[str]:
     """
-    Parse macro event sniper mode token (e.g. 'NFP', 'CPI', 'PPI', 'PCE', 'event:cpi').
+    Parse macro event sniper mode token (e.g. 'FOMC', 'IMF', 'NFP', 'CPI', 'PPI', 'PCE', 'GDP', 'RETAIL', 'PMI', 'JOBLESS').
+    Supports aliases like 'FED', 'POWELL', 'JOBS', 'CLAIMS', 'ISM', 'WEO'.
     Returns normalized uppercase string if valid, else None.
     """
     cleaned = token.strip().upper()
@@ -61,8 +102,9 @@ def parse_macro_event_mode_token(token: str) -> Optional[str]:
         cleaned = cleaned.split(":", 1)[1].strip()
     if cleaned in SUPPORTED_MACRO_EVENTS:
         return cleaned
+    if cleaned in MACRO_EVENT_ALIASES:
+        return MACRO_EVENT_ALIASES[cleaned]
     return None
-
 
 def parse_session_duration(raw: str = "24/7", default_hours: float = 87600.0) -> tuple[int, str]:
     """
