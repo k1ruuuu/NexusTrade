@@ -236,8 +236,17 @@ class EnsembleDecisionAgent:
         resolved_sr = sr_levels or self.sr_detector.detect_levels(
             None, current_price=entry_price, atr_14=effective_atr
         )
-        if sr_levels is not None:
-            targets: StopLossTargets = self.stop_loss_manager.calculate_realistic_targets(
+        if event_mode:
+            targets: StopLossTargets = self.stop_loss_manager.calculate_event_mode_targets(
+                entry_price=entry_price,
+                action=raw_action,
+                account_balance=portfolio_equity or self.settings.portfolio_initial_capital,
+                lot_size=0.01,
+                symbol=symbol,
+                risk_pct=self.settings.max_account_risk_per_trade,
+            )
+        elif sr_levels is not None:
+            targets = self.stop_loss_manager.calculate_realistic_targets(
                 entry_price=entry_price,
                 atr_14=effective_atr,
                 action=raw_action,
@@ -503,7 +512,7 @@ class EnsembleDecisionAgent:
                 decision.dxy_filter_triggered = True
                 self._reject(decision, dxy_reason)
 
-        if getattr(sent_result, "is_macro_blackout", False):
+        if getattr(self.settings, "macro_blackout_enabled", False) and getattr(sent_result, "is_macro_blackout", False):
             self._reject(decision, f"HIGH_IMPACT_NEWS_BLACKOUT ({sent_result.blackout_event or 'High Impact Event'})")
         return decision
 
@@ -708,7 +717,7 @@ class EnsembleDecisionAgent:
                 decision.approved = True
                 decision.confidence = round(max(decision.confidence, 0.76), 4)
                 decision.badge = self.resolve_badge(decision.action, decision.confidence)
-        if getattr(sent_90d, "is_macro_blackout", False):
+        if getattr(self.settings, "macro_blackout_enabled", False) and getattr(sent_90d, "is_macro_blackout", False):
             self._reject(decision, f"HIGH_IMPACT_NEWS_BLACKOUT ({sent_90d.blackout_event or 'High Impact Event'})")
         elif decision.action == "BUY" and decision.s_sent < -0.35:
             self._reject(decision, f"Sentiment Conflict: Composite sentiment ({decision.s_sent:+.2f}) vetoes BUY")

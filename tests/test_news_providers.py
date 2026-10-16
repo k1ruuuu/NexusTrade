@@ -200,7 +200,7 @@ def test_forexfactory_blackout_logic() -> None:
 
 def test_ensemble_agent_blackout_rejection() -> None:
     """Verify active macro blackout forces EnsembleDecisionAgent to reject trade with HOLD."""
-    cfg = Settings(_env_file=None, use_live_market_data=False, use_live_news_feed=True)
+    cfg = Settings(_env_file=None, use_live_market_data=False, use_live_news_feed=True, macro_blackout_enabled=True)
     agent = EnsembleDecisionAgent(settings=cfg)
 
     blackout_event_name = "USD CPI m/m (12:30 UTC)"
@@ -388,3 +388,63 @@ def test_extended_macro_events_matching_and_transmission() -> None:
     gold_imf, act_imf = macro_monetary_to_gold_signal(sc_imf, "XAUUSD")
     assert stance_imf == "DOVISH"
     assert act_imf == "BUY"
+
+
+def test_blackout_disabled_by_default_allows_early_setup() -> None:
+    """Verify blackout is disabled by default so AI builds setups early before news."""
+    cfg = Settings(_env_file=None, use_live_market_data=False, use_live_news_feed=True)
+    assert cfg.macro_blackout_enabled is False
+    agent = EnsembleDecisionAgent(settings=cfg)
+
+    mock_res = SentimentAnalysisResult(
+        symbol="BTCUSDT",
+        s_sent=0.0,
+        label="NEUTRAL",
+        bullish_ratio=0.0,
+        bearish_ratio=0.0,
+        neutral_ratio=1.0,
+        model_name="ProsusAI/finbert",
+        is_macro_blackout=True,  # Calendar has blackout, but system has it disabled!
+        blackout_event="USD CPI m/m",
+    )
+    with patch.object(agent.sentiment_analyzer, "analyze_headlines", return_value=mock_res):
+        decision = agent.analyze_symbol(symbol="BTCUSDT", timeframe="15m")
+        # Should NOT be rejected by blackout because blackout is disabled globally!
+        assert "HIGH_IMPACT_NEWS_BLACKOUT" not in (decision.rejection_reason or "")
+
+
+def test_event_mode_targets_removes_tp_and_calculates_anti_mc_sl() -> None:
+    """Verify event mode removes TP (TP=0.0) and tailors SL strictly to account capital to prevent Margin Call."""
+    from ai_engine.risk_management.stop_loss_manager import StopLossManager
+    sl_mgr = StopLossManager()
+
+    # 1. Gold (XAUUSD) BUY with $5,000 balance and 0.10 lot
+    targets_buy = sl_mgr.calculate_event_mode_targets(
+        entry_price=2650.0,
+        action="BUY",
+        account_balance=5000.0,
+        lot_size=0.10,
+        symbol="XAUUSD",
+        risk_pct=0.015,
+    )
+    assert targets_buy.take_profit_1 == 0.0
+    assert targets_buy.take_profit_2 == 0.0
+    assert targets_buy.stop_loss < 2650.0
+    # Dollar risk = distance * lot * 100
+    loss_buy = (2650.0 - targets_buy.stop_loss) * 0.10 * 100.0
+    assert loss_buy <= 5000.0 * 0.05  # Max loss <= 5% of balance -> NO MARGIN CALL!
+
+    # 2. Gold (XAUUSD) SELL with $10,000 balance and 0.20 lot
+    targets_sell = sl_mgr.calculate_event_mode_targets(
+        entry_price=2650.0,
+        action="SELL",
+        account_balance=10000.0,
+        lot_size=0.20,
+        symbol="XAUUSD",
+        risk_pct=0.015,
+    )
+    assert targets_sell.take_profit_1 == 0.0
+    assert targets_sell.take_profit_2 == 0.0
+    assert targets_sell.stop_loss > 2650.0
+    loss_sell = (targets_sell.stop_loss - 2650.0) * 0.20 * 100.0
+    assert loss_sell <= 10000.0 * 0.05  # Max loss <= 5% of balance -> NO MARGIN CALL!

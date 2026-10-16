@@ -118,7 +118,7 @@ class Settings(BaseSettings):
         default=15, ge=1, description="Execution blackout window in minutes (+/-) around High Impact events"
     )
     macro_blackout_enabled: bool = Field(
-        default=True, description="Enforce execution blackout on correlated pairs around High Impact events"
+        default=False, description="Enforce execution blackout on correlated pairs around High Impact events (Total Nonaktif)"
     )
     allow_news_auto_reverse: bool = Field(
         default=True, description="Allow automatic counter-trade execution after an emergency news exit"

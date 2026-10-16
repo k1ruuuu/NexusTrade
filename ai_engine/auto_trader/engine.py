@@ -349,7 +349,7 @@ class SmartAutoTraderEngine:
         # Gate 2: Mandatory Breaking + 3-Month (90-Day) Deep News Sentiment Alignment
         n_news = len(decision.headlines)
         is_event_sniper = bool(macro_event_mode and decision.gold_action_bias in ("BUY", "SELL"))
-        if "HIGH_IMPACT_NEWS_BLACKOUT" in (decision.rejection_reason or ""):
+        if getattr(self.settings, "macro_blackout_enabled", False) and "HIGH_IMPACT_NEWS_BLACKOUT" in (decision.rejection_reason or ""):
             news_ok = False
             news_detail = f"DITOLAK (BLACKOUT KALENDER MAKRO): {decision.rejection_reason}"
         elif is_event_sniper:
@@ -584,13 +584,30 @@ class SmartAutoTraderEngine:
                 else trade_budget
             )
             max_risk_budget = min(trade_budget, daily_headroom)
-            eff_stop_loss = decision.stop_loss
+            if macro_event_mode:
+                event_targets = self.ensemble_agent.stop_loss_manager.calculate_event_mode_targets(
+                    entry_price=decision.entry_price,
+                    action=decision.action,
+                    account_balance=user_equity,
+                    lot_size=candidate_lots,
+                    symbol=clean_sym,
+                    risk_pct=eff_risk_rate,
+                )
+                eff_stop_loss = event_targets.stop_loss
+                eff_take_profit = 0.0
+                decision.stop_loss = eff_stop_loss
+                decision.take_profit_1 = 0.0
+                decision.take_profit_2 = 0.0
+            else:
+                eff_stop_loss = decision.stop_loss
+                eff_take_profit = decision.take_profit_1
+
             loss_at_stop = abs(
                 estimate_mt5_pnl_usdt(
                     clean_sym, order_side, decision.entry_price, eff_stop_loss, candidate_lots
                 )
             )
-            if loss_at_stop > max_risk_budget + 1e-6:
+            if not macro_event_mode and loss_at_stop > max_risk_budget + 1e-6:
                 loss_per_lot = abs(
                     estimate_mt5_pnl_usdt(
                         clean_sym, order_side, decision.entry_price, eff_stop_loss, 1.0
@@ -635,7 +652,7 @@ class SmartAutoTraderEngine:
                 quantity=qty,
                 reference_price=decision.entry_price,
                 stop_loss=eff_stop_loss,
-                take_profit=decision.take_profit_1,
+                take_profit=eff_take_profit,
                 server_name=creds.server_name,
                 testnet=creds.testnet,
                 custom_lot=candidate_lots,
@@ -653,8 +670,8 @@ class SmartAutoTraderEngine:
                         quantity=order_res.executed_qty,
                         notional_usdt=order_res.notional_usdt,
                         stop_loss=0.0,
-                        take_profit_1=decision.take_profit_1,
-                        take_profit_2=decision.take_profit_2,
+                        take_profit_1=eff_take_profit,
+                        take_profit_2=0.0 if macro_event_mode else decision.take_profit_2,
                         confidence=decision.confidence,
                         order_id=order_res.order_id,
                         testnet=creds.testnet,
@@ -701,7 +718,7 @@ class SmartAutoTraderEngine:
                 notional_usdt=order_res.notional_usdt,
                 stop_loss=anchored_sl,
                 take_profit_1=anchored_tp1,
-                take_profit_2=anchored_tp2,
+                take_profit_2=0.0 if macro_event_mode else anchored_tp2,
                 confidence=decision.confidence,
                 order_id=order_res.order_id,
                 testnet=creds.testnet,

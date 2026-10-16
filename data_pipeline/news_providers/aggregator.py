@@ -227,7 +227,7 @@ class MultiSourceNewsAggregator:
 
         # Economic Blackout Gatekeeper
         window_mins = getattr(self.settings, "macro_blackout_window_minutes", 15)
-        blackout_enabled = getattr(self.settings, "macro_blackout_enabled", True)
+        blackout_enabled = getattr(self.settings, "macro_blackout_enabled", False)
         is_blackout = False
         blackout_reason = None
 

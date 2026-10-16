@@ -136,6 +136,61 @@ class StopLossManager:
             reward_risk_ratio_2=3.0,
         )
 
+    def calculate_event_mode_targets(
+        self,
+        entry_price: float,
+        action: TradeDirection,
+        account_balance: float,
+        lot_size: float = 0.01,
+        symbol: str = "XAUUSD",
+        risk_pct: float = 0.015,
+    ) -> StopLossTargets:
+        """
+        Special Macro Event Sniper Targets:
+          1. NO Take Profit (TP1 = 0.0, TP2 = 0.0) -> Let runners ride explosive news trends without ceiling.
+          2. Stop Loss strictly bounded to Account Capital (account_balance * risk_pct) -> Prevents Margin Call (MC)!
+        """
+        if entry_price <= 0:
+            raise ValueError(f"entry_price must be positive, got {entry_price}")
+
+        bal = max(10.0, float(account_balance))
+        lot = max(0.01, float(lot_size))
+        eff_risk_pct = max(0.005, min(0.05, float(risk_pct)))
+        max_dollar_risk = bal * eff_risk_pct
+
+        clean_sym = symbol.upper().replace("/", "").replace("-", "")
+        if any(k in clean_sym for k in ("XAU", "GOLD")):
+            point_mult = 100.0  # 1.0 lot = 100 oz -> $1.00 move is $100
+        elif any(k in clean_sym for k in ("BTC", "ETH", "SOL", "CRYPTO")):
+            point_mult = 1.0    # 1.0 lot = 1 coin -> $1.00 move is $1
+        else:
+            point_mult = 100000.0  # Standard FX lot
+
+        dollar_per_point = max(1e-6, lot * point_mult)
+        stop_distance = max_dollar_risk / dollar_per_point
+        # Breathing room: between 0.3% and 10% of entry price
+        stop_distance = max(entry_price * 0.003, min(stop_distance, entry_price * 0.10))
+
+        if action == "BUY":
+            stop_loss = entry_price - stop_distance
+        elif action == "SELL":
+            stop_loss = entry_price + stop_distance
+        else:
+            stop_loss = entry_price - stop_distance
+
+        return StopLossTargets(
+            action=action,
+            entry_price=round(entry_price, 4),
+            atr_14=round(stop_distance, 4),
+            stop_loss=round(stop_loss, 4),
+            take_profit_1=0.0,  # TP REMOVED
+            take_profit_2=0.0,  # TP REMOVED
+            trailing_stop_distance=round(stop_distance * 0.50, 4),
+            risk_per_unit=round(stop_distance, 4),
+            reward_risk_ratio_1=0.0,
+            reward_risk_ratio_2=0.0,
+        )
+
     @staticmethod
     def update_trailing_stop(
         action: TradeDirection,

@@ -225,12 +225,17 @@ def format_timed_session_started_card(
         sl_dist = abs(pos.entry_price - pos.stop_loss)
         tp1_dist = abs(pos.take_profit_1 - pos.entry_price)
         tp2_dist = abs(pos.take_profit_2 - pos.entry_price)
+        tp_line = (
+            "• <b>Take Profit (TP):</b> <i>Dihapus / Tanpa Batas (Runner Mode Volatilitas)</i>"
+            if pos.take_profit_1 <= 0
+            else f"• <b>Take Profit (1:2 | 1:3):</b> <code>{format_price(pos.take_profit_1)}</code> (<code>{format_price(tp1_dist)}</code>) | <code>{format_price(pos.take_profit_2)}</code> (<code>{format_price(tp2_dist)}</code>)"
+        )
         cycle_block = (
             f"🚀 <b>STATUS POSISI AKTIF (DIKAWAL REAL-TIME 5M):</b>\n"
             f"• <b>Posisi &amp; Ticket:</b> <b>{pos.side} {html.escape(pos.symbol)}</b> (<code>{pos.quantity} Lot</code> | Ticket <code>#{html.escape(pos.order_id)}</code>)\n"
             f"• <b>Harga Entry vs Live (5m):</b> <code>{format_price(pos.entry_price)}</code> ➔ <b><code>{format_price(live_px)}</code></b>\n"
             f"• <b>Stop Loss (1R):</b> <code>{format_price(pos.stop_loss)}</code> (Jarak <code>{format_price(sl_dist)}</code>)\n"
-            f"• <b>Take Profit (1:2 | 1:3):</b> <code>{format_price(pos.take_profit_1)}</code> (<code>{format_price(tp1_dist)}</code>) | <code>{format_price(pos.take_profit_2)}</code> (<code>{format_price(tp2_dist)}</code>)"
+            f"{tp_line}"
         )
     elif isinstance(first_cycle_result, AutoTradeExecutionReport):
         reason = html.escape(
@@ -307,13 +312,19 @@ def format_autotrade_report_card(report: AutoTradeExecutionReport) -> str:
         ord_r = report.order_result
         pos_r = report.position_record
         header_badge = "🚀 <b>POSISI DIBUKA OTOMATIS (LOLOS 6 GERBANG!)</b>"
+        sl_note = " (🛡️ <i>Terkalibrasi Saldo Akun • Anti-MC</i>)" if getattr(report.decision, "event_mode", None) else ""
+        tp_str = (
+            "<i>Dihapus / Tanpa Batas (Runner Mode)</i>"
+            if pos_r.take_profit_1 <= 0
+            else f"<code>{format_price(pos_r.take_profit_1)}</code> | <code>{format_price(pos_r.take_profit_2)}</code>"
+        )
         footer_block = (
             f"\n<b>🧾 Detail Order Exness Go / MT5 Anda:</b>\n"
             f"• <b>Order ID:</b> <code>{html.escape(ord_r.order_id)}</code> ({html.escape(ord_r.status)})\n"
             f"• <b>Aksi &amp; Simbol:</b> <b>{ord_r.side} {html.escape(ord_r.symbol)}</b>\n"
             f"• <b>Lot &amp; Harga Masuk:</b> <code>{ord_r.executed_qty} Lot</code> @ <code>{format_price(ord_r.avg_price)}</code> (<code>${ord_r.notional_usdt:,.2f}</code>)\n"
-            f"• <b>Stop Loss (SL):</b> <code>{format_price(pos_r.stop_loss)}</code>\n"
-            f"• <b>Take Profit 1 &amp; 2:</b> <code>{format_price(pos_r.take_profit_1)}</code> | <code>{format_price(pos_r.take_profit_2)}</code>"
+            f"• <b>Stop Loss (SL):</b> <code>{format_price(pos_r.stop_loss)}</code>{sl_note}\n"
+            f"• <b>Take Profit (TP):</b> {tp_str}"
         )
     else:
         header_badge = "🛡️ <b>POSISI DITAHAN — BELUM LOLOS 6 GERBANG AKURASI</b>"
