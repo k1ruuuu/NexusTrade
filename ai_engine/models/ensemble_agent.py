@@ -403,18 +403,14 @@ class EnsembleDecisionAgent:
             event_mode=event_mode,
         )
         sig_key = f"{clean_sym}_{timeframe}"
-        latest_bar_ts = str(market_df.index[-1]) if len(market_df) > 0 else ""
-        latest_bar_close = float(market_df["close"].iloc[-1]) if len(market_df) > 0 else 0.0
-        current_sig = (latest_bar_ts, round(latest_bar_close, 4))
-        data_changed = self._last_trained_signature.get(sig_key) != current_sig
-
-        if (sent_result.newly_learned_count > 0 or data_changed) and len(market_df) >= 60:
-            self.ohlcv_predictor.train(
-                market_df, symbol=clean_sym, timeframe=timeframe, df_5y=df_5y
-            )
-            self.volatility_estimator.fit(market_df)
-            self._last_trained_signature[sig_key] = current_sig
-
+        # Only train synchronously on initial cold-start if model is not yet fitted.
+        # Periodic retraining is handled asynchronously in the background learner thread.
+        with self.ohlcv_predictor._train_lock:
+            if sig_key not in self.ohlcv_predictor._models_by_key and len(market_df) >= 60:
+                self.ohlcv_predictor.train(
+                    market_df, symbol=clean_sym, timeframe=timeframe, df_5y=df_5y
+                )
+                self.volatility_estimator.fit(market_df)
         tech_pred: TechnicalPrediction = self.ohlcv_predictor.predict(
             market_df,
             symbol=clean_sym,

@@ -247,6 +247,11 @@ class NexusTradeBotService:
         logger.info("Starting NexusTrade AI Telegram Bot polling")
         watcher_task = asyncio.create_task(self._mt5_position_watcher_loop())
         try:
-            await self.dp.start_polling(self.bot, handle_signals=handle_signals)
+            await self.dp.start_polling(
+                self.bot,
+                handle_signals=handle_signals,
+                drop_pending_updates=True,
+                polling_timeout=20,
+            )
         finally:
             watcher_task.cancel()

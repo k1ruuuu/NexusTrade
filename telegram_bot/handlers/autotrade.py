@@ -38,6 +38,18 @@ from telegram_bot.views.setup_formatters import (
     format_timed_session_started_card,
 )
 
+async def _safe_answer_callback(
+    callback: CallbackQuery,
+    text: Optional[str] = None,
+    show_alert: bool = False,
+) -> None:
+    """Defensively answer callback query; suppresses timeout exceptions if query expired."""
+    try:
+        await callback.answer(text=text, show_alert=show_alert)
+    except Exception:
+        pass
+
+
 autotrade_router = Router(name="autotrade")
 
 
@@ -338,8 +350,9 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
     )
 
     msg = callback.message
+    # Immediate answer to dismiss client spinning state (<20ms) and prevent timeout
+    await _safe_answer_callback(callback)
     if msg is None:
-        await callback.answer()
         return
 
     user_id, user_name = extract_user_identity(callback, default_name="Trader")
@@ -350,7 +363,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
         _PENDING_SETUP_MODE[user_id] = True
         _PENDING_SETUP_PROVIDER[user_id] = ("exness_mt5", "Exness-MT5Trial7")
         await msg.answer(format_setup_prompt_key_card(testnet=True, provider="exness_mt5"), parse_mode="HTML")
-        await callback.answer("Mode Exness Go / MT5 Trial dipilih")
+        await _safe_answer_callback(callback, "Mode Exness Go / MT5 Trial dipilih")
         return
 
     if cb_data in ("setup:mode:exness_live", "setup:mode:live"):
@@ -358,7 +371,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
         _PENDING_SETUP_MODE[user_id] = False
         _PENDING_SETUP_PROVIDER[user_id] = ("exness_mt5", "Exness-MT5Real")
         await msg.answer(format_setup_prompt_key_card(testnet=False, provider="exness_mt5"), parse_mode="HTML")
-        await callback.answer("Mode Exness Go / MT5 Real dipilih")
+        await _safe_answer_callback(callback, "Mode Exness Go / MT5 Real dipilih")
         return
 
     if cb_data in ("setup:demo:exness", "setup:demo"):
@@ -385,7 +398,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
             parse_mode="HTML",
             reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=True),
         )
-        await callback.answer("Akun Demo Exness Go / MT5 aktif!")
+        await _safe_answer_callback(callback, "Akun Demo Exness Go / MT5 aktif!")
         return
 
     if cb_data == "setup:myaccount":
@@ -400,7 +413,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
                 autotrade_on=bool(creds and creds.autotrade_enabled),
             ),
         )
-        await callback.answer()
+        await _safe_answer_callback(callback)
         return
 
     if cb_data == "setup:unlink":
@@ -412,7 +425,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
             parse_mode="HTML",
             reply_markup=build_setup_keyboard(has_creds=False),
         )
-        await callback.answer("Akun diputuskan")
+        await _safe_answer_callback(callback, "Akun diputuskan")
         return
 
     if cb_data in ("autotrade:toggle:on", "autotrade:toggle:off"):
@@ -425,7 +438,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
                 parse_mode="HTML",
                 reply_markup=build_setup_keyboard(has_creds=False),
             )
-            await callback.answer("Wajib /setup dulu", show_alert=True)
+            await _safe_answer_callback(callback, "Wajib /setup dulu", show_alert=True)
             return
         creds = vault.resolve_credentials(user_id)
         positions = vault.get_open_positions(user_id)
@@ -434,7 +447,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
             parse_mode="HTML",
             reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=enable),
         )
-        await callback.answer("Auto-Trade ON" if enable else "Auto-Trade OFF")
+        await _safe_answer_callback(callback, "Auto-Trade ON" if enable else "Auto-Trade OFF")
         return
 
     if cb_data.startswith("autotrade:scan:"):
@@ -449,4 +462,4 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
                 autotrade_on=bool(creds and creds.autotrade_enabled),
             ),
         )
-        await callback.answer()
+        await _safe_answer_callback(callback)
