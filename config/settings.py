@@ -104,6 +104,11 @@ class Settings(BaseSettings):
         default="https://www.coindesk.com/arc/outboundfeeds/rss/,https://cointelegraph.com/rss,https://decrypt.co/feed,https://www.theblock.co/rss.xml",
         description="Tier-1 Crypto Media RSS feed URLs comma separated",
     )
+    us_macro_rss_feeds: str = Field(
+        default="https://www.forexlive.com/feed/,https://search.cnbc.com/rs/search/combinedAsset/rss/rss.html?partnerId=wrss01&id=20910258,https://www.investing.com/rss/news_14.rss",
+        description="US Macro News & Squawk RSS feed URLs comma separated",
+    )
+    ttl_macro_squawk: int = Field(default=20, ge=5, description="US Macro Squawk RSS cache TTL (seconds)")
     ttl_forexfactory: int = Field(default=3600, ge=60, description="ForexFactory cache TTL (seconds)")
     ttl_marctomarket: int = Field(default=1800, ge=60, description="MarcToMarket cache TTL (seconds)")
     ttl_finnhub: int = Field(default=120, ge=30, description="Finnhub cache TTL (seconds)")

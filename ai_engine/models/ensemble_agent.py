@@ -109,6 +109,9 @@ class SignalDecision:
     )
     meta_probability: float = 0.0
     dxy_filter_triggered: bool = False
+    macro_stance: str = "NEUTRAL"
+    gold_action_bias: str = "HOLD"
+    event_mode: Optional[str] = None
     @property
     def meets_confidence_threshold(self) -> bool:
         return self.approved and self.action in ("BUY", "SELL") and self.confidence >= 0.72
@@ -187,6 +190,9 @@ class EnsembleDecisionAgent:
         sr_levels: Optional[SupportResistanceLevels] = None,
         market_df: Optional[pd.DataFrame] = None,
         annualized_volatility: float = 0.45,
+        macro_stance: str = "NEUTRAL",
+        gold_action_bias: str = "HOLD",
+        event_mode: Optional[str] = None,
     ) -> SignalDecision:
         """
         Apply AGENT.md Section 5.A Ensemble Decision Matrix:
@@ -220,9 +226,12 @@ class EnsembleDecisionAgent:
             raw_action = "SELL"
         elif action_hint in ("BUY", "SELL") and abs(signed_composite) >= 0.08:
             raw_action = action_hint
+        elif event_mode and gold_action_bias in ("BUY", "SELL"):
+            # Institutional Macro Monetary Transmission in Event Sniper Mode
+            raw_action = gold_action_bias
+            confidence = max(confidence, 0.76)
         else:
             raw_action = "HOLD"
-
         effective_atr = atr_14 if (atr_14 is not None and atr_14 > 0) else entry_price * 0.012
         resolved_sr = sr_levels or self.sr_detector.detect_levels(
             None, current_price=entry_price, atr_14=effective_atr
@@ -325,6 +334,9 @@ class EnsembleDecisionAgent:
             adx_14=conf_report.adx_14,
             is_sideways=conf_report.is_sideways,
             market_structure_status=conf_report.market_structure_status,
+            macro_stance=macro_stance,
+            gold_action_bias=gold_action_bias,
+            event_mode=event_mode.upper() if event_mode else None,
         )
     def load_market_series(
         self,
@@ -360,6 +372,7 @@ class EnsembleDecisionAgent:
         action_hint: Optional[ActionType] = None,
         indicator_overrides: Optional[dict[str, float]] = None,
         daily_drawdown_override: Optional[float] = None,
+        event_mode: Optional[str] = None,
     ) -> SignalDecision:
         """
         Execute end-to-end multimodal inference (LightGBM Technical + Optiver Volatility
@@ -375,9 +388,10 @@ class EnsembleDecisionAgent:
         if self.settings.use_live_market_data:
             df_5y = self.live_feed.fetch_5y_daily_memory(clean_sym)
         sent_result: SentimentAnalysisResult = self.sentiment_analyzer.analyze_headlines(
-            headlines=headlines,
             symbol=clean_sym,
+            headlines=headlines,
             market_df=market_df,
+            event_mode=event_mode,
         )
         sig_key = f"{clean_sym}_{timeframe}"
         latest_bar_ts = str(market_df.index[-1]) if len(market_df) > 0 else ""
@@ -465,6 +479,9 @@ class EnsembleDecisionAgent:
             sr_levels=sr_levels,
             market_df=market_df,
             annualized_volatility=vol_forecast.annualized_volatility,
+            macro_stance=sent_result.macro_stance,
+            gold_action_bias=sent_result.gold_action_bias,
+            event_mode=event_mode,
         )
         # Stage 2: Secondary Meta-Model & Macro Risk Filtering (ADVANCED_AI_TRADING_ENGINE_SPEC)
         meta_feat = AdvancedFeatureExtractor.compute_features(
@@ -540,9 +557,9 @@ class EnsembleDecisionAgent:
     def analyze_multi_timeframe_autotrade(
         self,
         symbol: str = "BTCUSDT",
+        event_mode: Optional[str] = None,
     ) -> SignalDecision:
         """
-        Multi-Timeframe + 3-Month Deep News Auto-Trade Intelligence:
         1. Reads latest breaking news + 3 months (90 days) historical news in detail.
         2. Analyzes market movement & trend across `1D`, `4H`, `1H`, `15M`, and `5M`.
         3. Executes open-position timing, entry price, and realistic 1:2 / 1:3 SL/TP on `1M` (`1m`).
@@ -555,12 +572,11 @@ class EnsembleDecisionAgent:
         df_5m = self.load_market_series(clean_sym, timeframe="5m", limit=160)
         df_1m = self.load_market_series(clean_sym, timeframe="1m", limit=160)
 
-        # Step 1: Mandatory Deep News Analysis (Latest Breaking + 3 Months / 90 Days Back)
-        sent_90d = self.sentiment_analyzer.analyze_headlines(
+        sent_90d = self.sentiment_analyzer.analyze_symbol(
             symbol=clean_sym,
             market_df=df_1d if (df_1d is not None and len(df_1d) > 0) else df_15m,
+            event_mode=event_mode,
         )
-
         # Step 2: Multi-Timeframe (1D, 4H, 1H, 15M, 5M) Market & Trend Analysis
         s_1d, _, lbl_1d = self._score_timeframe_trend(df_1d)
         s_4h, atr_4h, lbl_4h = self._score_timeframe_trend(df_4h)
@@ -573,6 +589,7 @@ class EnsembleDecisionAgent:
             timeframe="15m",
             df=df_15m,
             headlines=[h.headline for h in sent_90d.headline_scores] or None,
+            event_mode=event_mode,
         )
         s_15m_raw, atr_15m, _ = self._score_timeframe_trend(df_15m)
         s_15m = float(np.clip(0.65 * base_15m.s_tech + 0.35 * s_15m_raw, -1.0, 1.0))
@@ -658,6 +675,9 @@ class EnsembleDecisionAgent:
             macro_regime=base_15m.macro_regime,
             sr_levels=sr_levels,
             market_df=df_15m,
+            macro_stance=sent_90d.macro_stance,
+            gold_action_bias=sent_90d.gold_action_bias,
+            event_mode=event_mode,
         )
         if is_market_chop:
             decision.is_sideways = True
@@ -671,6 +691,23 @@ class EnsembleDecisionAgent:
             target_confidence = max(decision.confidence, base_15m.confidence) + mtf_bonus
             decision.confidence = round(float(np.clip(target_confidence, 0.0, 0.98)), 4)
             decision.badge = self.resolve_badge(decision.action, decision.confidence)
+        decision.macro_stance = getattr(sent_90d, "macro_stance", "NEUTRAL")
+        decision.gold_action_bias = getattr(sent_90d, "gold_action_bias", "HOLD")
+        decision.event_mode = event_mode.upper() if event_mode else getattr(sent_90d, "event_mode", None)
+        if event_mode and sent_90d.gold_action_bias in ("BUY", "SELL"):
+            # Macro Monetary Policy Transmission override in Event Sniper Mode:
+            # Hawkish (US inflation/jobs strong -> Sell Gold)
+            # Dovish (US inflation/jobs weak -> Buy Gold)
+            if sent_90d.gold_action_bias == "SELL" and decision.action != "BUY":
+                decision.action = "SELL"
+                decision.approved = True
+                decision.confidence = round(max(decision.confidence, 0.76), 4)
+                decision.badge = self.resolve_badge(decision.action, decision.confidence)
+            elif sent_90d.gold_action_bias == "BUY" and decision.action != "SELL":
+                decision.action = "BUY"
+                decision.approved = True
+                decision.confidence = round(max(decision.confidence, 0.76), 4)
+                decision.badge = self.resolve_badge(decision.action, decision.confidence)
         if getattr(sent_90d, "is_macro_blackout", False):
             self._reject(decision, f"HIGH_IMPACT_NEWS_BLACKOUT ({sent_90d.blackout_event or 'High Impact Event'})")
         elif decision.action == "BUY" and decision.s_sent < -0.35:

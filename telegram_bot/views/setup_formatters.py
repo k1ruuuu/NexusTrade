@@ -235,11 +235,17 @@ def format_timed_session_started_card(
         else "<code>Otomatis (Sesuai Risiko Modal)</code>"
     )
     upd_str = html.escape(session.last_updated_iso or session.started_at_iso)
+    event_line = (
+        f"• <b>Mode Event Makro:</b> 🦅 <b>{session.macro_event_mode} Event Sniper</b> (Blackout Bypass Aktif)\n"
+        if session.macro_event_mode
+        else ""
+    )
     return (
         f"🤖 <b>AUTO-TRADE 24/7 NON-STOP AKTIF — {sym} (ACTION 5M)</b>\n"
         f"⏱️ <i>SESI AUTO-TRADE OTOMATIS ({dur.upper()}) AKTIF</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• <b>Mode Sistem:</b> 🟢 <b>24/7 Non-Stop</b> (<code>{html.escape(session.remaining_human)}</code>)\n"
+        f"{event_line}"
         f"• <b>Analisa Tren:</b> <code>1D • 1H • 15M • 5M</code> ➔ <b>Action Open/Close:</b> <code>5M</code>\n"
         f"• <b>Ukuran Lot Order:</b> {lot_lbl}\n"
         f"• <b>Peta Tren MTF:</b> <i>{html.escape(session.mtf_status_line)}</i>\n\n"
@@ -296,10 +302,24 @@ def format_autotrade_report_card(report: AutoTradeExecutionReport) -> str:
             f"<i>AI tidak membuka posisi sembarangan. {reason}</i>"
         )
 
+    event_header = ""
+    if report.decision and getattr(report.decision, "event_mode", None):
+        ev_m = report.decision.event_mode
+        st_m = getattr(report.decision, "macro_stance", "NEUTRAL")
+        icon_st = "🦅" if st_m == "HAWKISH" else ("🕊️" if st_m == "DOVISH" else "⚖️")
+        bias_g = getattr(report.decision, "gold_action_bias", "HOLD")
+        event_header = (
+            f"🎯 <b>US MACRO EVENT SNIPER: {ev_m}</b>\n"
+            f"• <b>Sikap Kebijakan AS:</b> {icon_st} <b>{st_m}</b> (Transmisi Emas ➔ <b>{bias_g}</b>)\n"
+            f"• <b>Status Blackout:</b> 🟢 <b>Dilewati (Bypassed)</b> — AI Aktif Berburu Setup\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        )
+
     return (
         f"🤖 <b>LAPORAN AUTO-TRADE 6 GERBANG — {sym} ({tf})</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>Status Eksekusi:</b> {header_badge}\n\n"
+        + event_header
+        + f"<b>Status Eksekusi:</b> {header_badge}\n\n"
         f"<b>📋 Hasil Pemeriksaan 6 Gerbang AI:</b>\n"
         f"{gates_block}\n"
         f"{footer_block}"

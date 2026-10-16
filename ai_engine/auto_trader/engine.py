@@ -260,6 +260,7 @@ class SmartAutoTraderEngine:
         decision_override: Optional[SignalDecision] = None,
         require_autotrade_toggle: bool = True,
         custom_lot: Optional[float] = None,
+        macro_event_mode: Optional[str] = None,
     ) -> AutoTradeExecutionReport:
         """
         Run the complete 6-Gate Pre-Trade Checklist for `user_id` on `symbol` (`timeframe`)
@@ -342,13 +343,21 @@ class SmartAutoTraderEngine:
 
         # Run Multi-Timeframe AI analysis (Trend: 1D, 1H, 15M, 5M -> Action Open Position: 1M)
         decision = decision_override or self.ensemble_agent.analyze_multi_timeframe_autotrade(
-            symbol=clean_sym
+            symbol=clean_sym,
+            event_mode=macro_event_mode,
         )
         # Gate 2: Mandatory Breaking + 3-Month (90-Day) Deep News Sentiment Alignment
         n_news = len(decision.headlines)
+        is_event_sniper = bool(macro_event_mode and decision.gold_action_bias in ("BUY", "SELL"))
         if "HIGH_IMPACT_NEWS_BLACKOUT" in (decision.rejection_reason or ""):
             news_ok = False
             news_detail = f"DITOLAK (BLACKOUT KALENDER MAKRO): {decision.rejection_reason}"
+        elif is_event_sniper:
+            news_ok = True
+            news_detail = (
+                f"🎯 MODE EVENT MAKRO ({macro_event_mode.upper()} SNIPER): Sikap Kebijakan {decision.macro_stance} "
+                f"(Bias Aksi: {decision.gold_action_bias} Emas) • Berita Squawk & Kalender Selaras ({n_news} berita)"
+            )
         elif decision.action == "BUY":
             news_ok = decision.s_sent > -0.15
             news_detail = (
@@ -381,31 +390,42 @@ class SmartAutoTraderEngine:
             (decision.action == "BUY" and decision.s_tech > 0.15)
             or (decision.action == "SELL" and decision.s_tech < -0.15)
         )
-        conf_ok = (
-            decision.action in ("BUY", "SELL")
-            and not decision.is_sideways
-            and decision.confidence >= min_conf
-            and tech_aligned
-            and decision.expectancy_r > 0.0
-            and decision.confluence_pillars >= 4
-        )
-        if decision.is_sideways:
-            tech_detail = (
-                f"DITOLAK (PASAR SIDEWAYS): {decision.market_structure_status} — "
-                f"Menunggu Breakout Valid ({decision.mtf_summary})"
+        if is_event_sniper:
+            conf_ok = (
+                decision.action in ("BUY", "SELL")
+                and decision.confidence >= min_conf
+                and decision.expectancy_r >= 0.0
             )
-        elif conf_ok:
             tech_detail = (
-                f"Sinyal {decision.badge} Kuat (Keyakinan {decision.confidence * 100:.1f}%, "
-                f"MTF [{decision.mtf_aligned_count}/4 Selaras]: {decision.mtf_summary}, "
-                f"Struktur: {decision.market_structure_status}, Konfluensi {decision.confluence_pillars}/6 Pilar)"
+                f"🎯 EVENT SNIPER ({macro_event_mode.upper()}): Menargetkan Volatilitas Rilis Berita AS • "
+                f"Sikap Moneter {decision.macro_stance} ➔ Eksekusi {decision.action} ({decision.confidence * 100:.1f}%)"
             )
         else:
-            tech_detail = (
-                f"DITOLAK: Keyakinan {decision.confidence * 100:.1f}% (Min {min_conf * 100:.0f}%), "
-                f"MTF [{decision.mtf_aligned_count}/4]: {decision.mtf_summary}, "
-                f"Struktur: {decision.market_structure_status}, Konfluensi {decision.confluence_pillars}/6 Pilar"
+            conf_ok = (
+                decision.action in ("BUY", "SELL")
+                and not decision.is_sideways
+                and decision.confidence >= min_conf
+                and tech_aligned
+                and decision.expectancy_r > 0.0
+                and decision.confluence_pillars >= 4
             )
+            if decision.is_sideways:
+                tech_detail = (
+                    f"DITOLAK (PASAR SIDEWAYS): {decision.market_structure_status} — "
+                    f"Menunggu Breakout Valid ({decision.mtf_summary})"
+                )
+            elif conf_ok:
+                tech_detail = (
+                    f"Sinyal {decision.badge} Kuat (Keyakinan {decision.confidence * 100:.1f}%, "
+                    f"MTF [{decision.mtf_aligned_count}/4 Selaras]: {decision.mtf_summary}, "
+                    f"Struktur: {decision.market_structure_status}, Konfluensi {decision.confluence_pillars}/6 Pilar)"
+                )
+            else:
+                tech_detail = (
+                    f"DITOLAK: Keyakinan {decision.confidence * 100:.1f}% (Min {min_conf * 100:.0f}%), "
+                    f"MTF [{decision.mtf_aligned_count}/4]: {decision.mtf_summary}, "
+                    f"Struktur: {decision.market_structure_status}, Konfluensi {decision.confluence_pillars}/6 Pilar"
+                )
         gates.append(
             AutoTradeGateCheck(
                 gate_number=3,

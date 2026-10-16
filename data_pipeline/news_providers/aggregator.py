@@ -15,11 +15,16 @@ from data_pipeline.news_providers.crypto_rss_provider import Tier1CryptoRSSProvi
 from data_pipeline.news_providers.finnhub_provider import FinnhubProvider
 from data_pipeline.news_providers.forexfactory_provider import ForexFactoryProvider
 from data_pipeline.news_providers.marctomarket_provider import MarcToMarketProvider
+from data_pipeline.news_providers.us_macro_rss_provider import USMacroNewsProvider
 from data_pipeline.news_providers.schemas import (
     EconomicCalendarEvent,
     ImpactLevel,
     NewsSource,
     UnifiedNewsItem,
+)
+from ai_engine.models.sentiment_lexicon import (
+    compute_macro_monetary_bias,
+    macro_monetary_to_gold_signal,
 )
 
 logger = get_logger("nexustrade.news_providers.aggregator")
@@ -50,9 +55,10 @@ BEARISH_CATALYSTS = (
 
 class MultiSourceNewsAggregator:
     """
-    Asynchronous 5-Provider News, Macro Commentary & Economic Calendar Engine (v2.0).
-    Integrates ForexFactory, MarcToMarket, Finnhub, Alpha Vantage, and Tier-1 Crypto Media RSS.
-    Features lexical black-swan detection, time-decay weighting, and high-impact blackout protection.
+    Asynchronous 6-Provider News, Macro Commentary & Economic Calendar Engine (v2.5).
+    Integrates ForexFactory, MarcToMarket, Finnhub, Alpha Vantage, Tier-1 Crypto Media RSS,
+    and Real-Time US Macro Squawk Feeds (ForexLive, CNBC, Investing.com).
+    Features institutional Hawkish vs Dovish monetary transmission to Gold (XAUUSD).
     """
 
     def __init__(
@@ -77,6 +83,7 @@ class MultiSourceNewsAggregator:
             settings=self.settings,
         )
         self.crypto_rss = Tier1CryptoRSSProvider(self.settings)
+        self.us_macro = USMacroNewsProvider(self.settings)
 
     @staticmethod
     def compute_lexical_modifier(text: str) -> float:
@@ -126,11 +133,14 @@ class MultiSourceNewsAggregator:
         self,
         symbol: str = "BTCUSDT",
         as_of: Optional[datetime] = None,
+        event_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Poll all 5 providers concurrently, deduplicate by alphanumeric SHA-256,
+        Poll providers concurrently, deduplicate by alphanumeric SHA-256,
         apply lexical black-swan modifier, compute exponential time-decay, and
         calculate composite sentiment and economic calendar blackout gate.
+        If event_mode is provided (e.g. 'CPI', 'PPI', 'NFP'), blackout is bypassed
+        for that event and US Macro Squawk feeds establish Hawkish vs Dovish stance.
         """
         now = as_of or datetime.now(timezone.utc)
         asset_class, target_ccys = self.classify_asset_category(symbol)
@@ -152,7 +162,8 @@ class MultiSourceNewsAggregator:
                 tasks.append(self.alphavantage.fetch(client, ticker=av_ticker))
             if asset_class == "crypto":
                 tasks.append(self.crypto_rss.fetch(client, target_symbol=clean_base))
-
+            if asset_class != "crypto" or event_mode or any(k in symbol.upper() for k in ("XAU", "GOLD")):
+                tasks.append(self.us_macro.fetch(client, target_event=event_mode))
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
         calendar_events: List[EconomicCalendarEvent] = (
@@ -190,13 +201,15 @@ class MultiSourceNewsAggregator:
             item.finbert_sentiment = fb_raw
             item.lexical_modifier = lex_mod
 
-            if item.provider_sentiment is not None and item.source == NewsSource.ALPHA_VANTAGE:
+            if item.provider_sentiment is not None and "USMacro" in pub_tag:
+                # Institutional Hawkish vs Dovish transmission to Gold
+                item.final_polarity = float(item.provider_sentiment)
+            elif item.provider_sentiment is not None and item.source == NewsSource.ALPHA_VANTAGE:
                 item.final_polarity = 0.60 * float(item.provider_sentiment) + 0.40 * fb_adjusted
             else:
                 item.final_polarity = fb_adjusted
 
             item.final_polarity = max(-1.0, min(1.0, item.final_polarity))
-
             # Exponential time-decay
             age_hours = max(0.0, (now - item.published_at).total_seconds() / 3600.0)
             half_life = 12.0 if item.source == NewsSource.MARC_TO_MARKET else 2.0
@@ -224,8 +237,25 @@ class MultiSourceNewsAggregator:
                 events=calendar_events,
                 window_minutes=window_mins,
                 as_of=now,
+                bypassed_event_mode=event_mode,
             )
 
+        # Institutional Macro Stance Calculation (Hawkish vs Dovish)
+        macro_items = [i for i in deduped.values() if "USMacro" in (i.publisher or "")]
+        if macro_items:
+            avg_macro_gold = sum(i.final_polarity for i in macro_items) / len(macro_items)
+        else:
+            avg_macro_gold = composite_sentiment
+
+        if avg_macro_gold <= -0.15:
+            macro_stance = "HAWKISH"
+            gold_action_bias = "SELL"
+        elif avg_macro_gold >= 0.15:
+            macro_stance = "DOVISH"
+            gold_action_bias = "BUY"
+        else:
+            macro_stance = "NEUTRAL"
+            gold_action_bias = "HOLD"
         top_headlines = [
             {
                 "source": i.publisher or i.source.value,
@@ -256,6 +286,9 @@ class MultiSourceNewsAggregator:
             "composite_sentiment": composite_sentiment,
             "is_macro_blackout": is_blackout,
             "blackout_event": blackout_reason,
+            "macro_stance": macro_stance,
+            "gold_action_bias": gold_action_bias,
+            "event_mode": event_mode.upper() if event_mode else None,
             "article_count": len(deduped),
             "provider_breakdown": provider_counts,
             "calendar_events_count": len(calendar_events),
@@ -266,6 +299,7 @@ class MultiSourceNewsAggregator:
         self,
         symbol: str = "BTCUSDT",
         as_of: Optional[datetime] = None,
+        event_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Synchronous wrapper for get_composite_intelligence safe across running event loops."""
         try:
@@ -277,7 +311,7 @@ class MultiSourceNewsAggregator:
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 return pool.submit(
-                    asyncio.run, self.get_composite_intelligence(symbol, as_of)
+                    asyncio.run, self.get_composite_intelligence(symbol, as_of, event_mode=event_mode)
                 ).result(timeout=18.0)
         else:
-            return asyncio.run(self.get_composite_intelligence(symbol, as_of))
+            return asyncio.run(self.get_composite_intelligence(symbol, as_of, event_mode=event_mode))

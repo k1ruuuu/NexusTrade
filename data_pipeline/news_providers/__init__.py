@@ -7,6 +7,7 @@ from data_pipeline.news_providers.crypto_rss_provider import Tier1CryptoRSSProvi
 from data_pipeline.news_providers.finnhub_provider import FinnhubProvider
 from data_pipeline.news_providers.forexfactory_provider import ForexFactoryProvider
 from data_pipeline.news_providers.marctomarket_provider import MarcToMarketProvider
+from data_pipeline.news_providers.us_macro_rss_provider import USMacroNewsProvider
 from data_pipeline.news_providers.schemas import (
     EconomicCalendarEvent,
     ImpactLevel,
@@ -25,5 +26,6 @@ __all__ = [
     "MultiSourceNewsAggregator",
     "NewsSource",
     "Tier1CryptoRSSProvider",
+    "USMacroNewsProvider",
     "UnifiedNewsItem",
 ]

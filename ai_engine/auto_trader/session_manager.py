@@ -82,6 +82,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         notify_callback: Optional[NotifyCallback] = None,
         custom_lot: Optional[float] = None,
         live_card_callback: Optional[NotifyCallback] = None,
+        macro_event_mode: Optional[str] = None,
     ) -> tuple[AutoTradeSessionState, Any]:
         """
         Start a 24/7 Non-Stop autonomous trading session for `(user_id, symbol)`
@@ -119,8 +120,8 @@ class AutoTradeSessionManager(PositionMonitorMixin):
             ),
             last_updated_iso=now_dt.strftime("%H:%M:%S UTC"),
             custom_lot=custom_lot,
+            macro_event_mode=macro_event_mode,
         )
-        self._sessions[(uid, clean_sym)] = sess
 
         # Execute immediate first cycle
         first_report = await self._run_single_session_cycle(sess, notify_callback=None)
@@ -203,6 +204,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
             timeframe="1m",
             require_autotrade_toggle=True,
             custom_lot=sess.custom_lot,
+            macro_event_mode=sess.macro_event_mode,
         )
         if report.decision is not None:
             sess.live_current_price = report.decision.entry_price

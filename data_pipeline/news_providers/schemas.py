@@ -14,7 +14,7 @@ class NewsSource(str, Enum):
     FINNHUB = "finnhub"
     ALPHA_VANTAGE = "alphavantage"
     TIER1_CRYPTO_RSS = "tier1_crypto_rss"
-
+    US_MACRO_SQUAWK = "us_macro_squawk"
 
 class ImpactLevel(str, Enum):
     LOW = "Low"
@@ -27,10 +27,46 @@ class EconomicCalendarEvent(BaseModel):
     title: str
     country: str
     timestamp: datetime
-    impact: ImpactLevel
+    impact: ImpactLevel = ImpactLevel.LOW
     forecast: Optional[str] = None
     previous: Optional[str] = None
+    actual: Optional[str] = None
 
+    def matches_event_mode(self, mode: Optional[str]) -> bool:
+        """Check if this economic event matches the requested mode (e.g. CPI, PPI, NFP, PCE)."""
+        if not mode:
+            return True
+        m = mode.strip().upper()
+        title_lower = self.title.lower()
+        if m == "CPI":
+            return "cpi" in title_lower or "consumer price" in title_lower
+        if m == "PPI":
+            return "ppi" in title_lower or "producer price" in title_lower
+        if m == "NFP":
+            return any(k in title_lower for k in ("non-farm", "nonfarm", "payroll", "unemployment"))
+        if m == "PCE":
+            return "pce" in title_lower or "personal consumption" in title_lower
+        return m.lower() in title_lower
+
+    def compute_surprise(self) -> Optional[float]:
+        """
+        Compute economic surprise = Actual - Forecast.
+        Returns float or None if either number cannot be parsed.
+        """
+        if not self.actual or not self.forecast:
+            return None
+        import re
+        def _clean_num(val: str) -> Optional[float]:
+            cleaned = re.sub(r"[^\d.-]", "", val)
+            try:
+                return float(cleaned)
+            except ValueError:
+                return None
+        act = _clean_num(self.actual)
+        fc = _clean_num(self.forecast)
+        if act is None or fc is None:
+            return None
+        return round(act - fc, 4)
 
 class UnifiedNewsItem(BaseModel):
     item_id: str = Field(default="")

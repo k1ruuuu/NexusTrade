@@ -15,12 +15,12 @@ from ai_engine.auto_trader.mt5_exness_client import MT5ExnessClient
 from ai_engine.auto_trader.engine import SmartAutoTraderEngine
 from ai_engine.auto_trader.session_manager import (
     format_position_closed_notification,
-    parse_custom_lot_token,
 )
-from ai_engine.auto_trader.user_vault import UserVault
-from ai_engine.models.ensemble_agent import EnsembleDecisionAgent
-from config.settings import Settings, get_settings
-from data_pipeline.market_symbols import normalize_symbol
+from ai_engine.auto_trader.session_models import (
+    AutoTradeSessionState,
+    parse_custom_lot_token,
+    parse_macro_event_mode_token,
+)
 from telegram_bot.handlers.handler_utils import (
     _PENDING_ADMIN_ACTION,
     _PENDING_SETUP_MODE,
@@ -173,16 +173,20 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         )
         return
 
-    # Parse `/autotrade <SYMBOL> [LOT]` -> Always starts 24/7 Non-Stop Auto-Trade (1D/1H/15M/5M trend -> 1m action)
+    # Parse `/autotrade <SYMBOL> [LOT] [EVENT_MODE]` -> Always starts 24/7 Non-Stop Auto-Trade
     raw_tokens = args[1:] if sub == "scan" else args
     symbol = normalize_symbol(raw_tokens[0]) if len(raw_tokens) >= 1 else "BTCUSDT"
     custom_lot: float | None = None
+    macro_event_mode: str | None = None
 
     for tok in raw_tokens[1:]:
         lot_val = parse_custom_lot_token(tok)
         if lot_val is not None and custom_lot is None:
             custom_lot = lot_val
-
+            continue
+        ev_mode = parse_macro_event_mode_token(tok)
+        if ev_mode is not None and macro_event_mode is None:
+            macro_event_mode = ev_mode
     if sub != "scan":
         live_msg_ref: list[Any] = []
         kb_markup = build_setup_keyboard(has_creds=True, autotrade_on=True)
@@ -212,6 +216,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
             notify_callback=_notify_user,
             custom_lot=custom_lot,
             live_card_callback=_update_live_card,
+            macro_event_mode=macro_event_mode,
         )
         sent_card = await message.answer(
             format_timed_session_started_card(session_state, first_res),
@@ -260,6 +265,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         symbol=symbol,
         timeframe="1m",
         custom_lot=custom_lot,
+        macro_event_mode=macro_event_mode,
     )
     await message.answer(
         format_autotrade_report_card(report),

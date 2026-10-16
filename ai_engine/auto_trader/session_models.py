@@ -48,6 +48,20 @@ def parse_custom_lot_token(token: str) -> Optional[float]:
     if 0.001 <= val <= 50.0:
         return round(max(0.01, val), 2)
     return None
+SUPPORTED_MACRO_EVENTS = ("NFP", "CPI", "PPI", "PCE")
+
+
+def parse_macro_event_mode_token(token: str) -> Optional[str]:
+    """
+    Parse macro event sniper mode token (e.g. 'NFP', 'CPI', 'PPI', 'PCE', 'event:cpi').
+    Returns normalized uppercase string if valid, else None.
+    """
+    cleaned = token.strip().upper()
+    if cleaned.startswith("EVENT:") or cleaned.startswith("MODE:"):
+        cleaned = cleaned.split(":", 1)[1].strip()
+    if cleaned in SUPPORTED_MACRO_EVENTS:
+        return cleaned
+    return None
 
 
 def parse_session_duration(raw: str = "24/7", default_hours: float = 87600.0) -> tuple[int, str]:
@@ -126,6 +140,7 @@ class AutoTradeSessionState:
     last_updated_iso: str = ""
     last_check_summary: str = "Memulai pemantauan 24/7 Non-Stop..."
     custom_lot: Optional[float] = None
+    macro_event_mode: Optional[str] = None
     task: Optional[asyncio.Task[Any]] = field(default=None, repr=False)
 
     @property
