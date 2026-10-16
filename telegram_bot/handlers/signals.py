@@ -35,6 +35,13 @@ async def send_signal_response(
     charts: ChartSnapshotGenerator,
 ) -> None:
     """Shared signal + 1200x800 chart sender for /signal and inline callbacks."""
+    try:
+        bot = getattr(target_msg, "bot", None)
+        chat = getattr(target_msg, "chat", None)
+        if bot and chat and hasattr(chat, "id"):
+            await bot.send_chat_action(chat.id, "upload_photo")
+    except Exception:
+        pass
     df = agent.load_market_series(symbol=symbol, timeframe=timeframe)
     if timeframe in ("15m", "5m"):
         decision = agent.analyze_multi_timeframe_autotrade(symbol=symbol)
@@ -77,6 +84,13 @@ async def send_sentiment_response(
     agent: EnsembleDecisionAgent,
 ) -> None:
     """Shared sentiment analysis sender for /sentiment and inline callbacks."""
+    try:
+        bot = getattr(target_msg, "bot", None)
+        chat = getattr(target_msg, "chat", None)
+        if bot and chat and hasattr(chat, "id"):
+            await bot.send_chat_action(chat.id, "typing")
+    except Exception:
+        pass
     market_df = agent.load_market_series(symbol=symbol, timeframe="15m", limit=120)
     result = agent.sentiment_analyzer.analyze_headlines(symbol=symbol, market_df=market_df)
     await target_msg.answer(

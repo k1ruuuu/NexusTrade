@@ -147,7 +147,7 @@ class MT5ExnessClient:
         hosts = await self._resolve_server_hosts(client, clean_srv)
         last_err = f"Tidak dapat terhubung ke server {clean_srv}"
 
-        for host, port in hosts[:6]:
+        for host, port in hosts[:2]:
             try:
                 resp = await client.get(
                     f"{MT5_REST_DIRECT_URL}/Connect",
@@ -157,6 +157,7 @@ class MT5ExnessClient:
                         "host": host,
                         "port": port,
                     },
+                    timeout=3.5,
                 )
                 body = resp.text.strip()
                 if resp.status_code == 200 and body and not body.startswith("{"):
@@ -282,7 +283,8 @@ class MT5ExnessClient:
                     testnet=testnet,
                 )
         except Exception as exc:
-            logger.warning("MT5/Exness account verification failed", error=str(exc))
+            err_msg = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+            logger.warning("MT5/Exness account verification failed", error=err_msg)
             return BinanceAccountVerification(
                 valid=False,
                 can_trade=False,

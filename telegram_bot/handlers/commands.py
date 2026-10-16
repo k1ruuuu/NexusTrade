@@ -127,6 +127,11 @@ async def handle_status(message: Message, **data: Any) -> None:
 
 @commands_router.message(Command("analyze"))
 async def handle_analyze(message: Message, **data: Any) -> None:
+    try:
+        if message.bot and message.chat:
+            await message.bot.send_chat_action(message.chat.id, "typing")
+    except Exception:
+        pass
     """Handle /analyze <symbol> command returning quick text signal card."""
     settings: Settings = data.get("settings") or get_settings()
     agent: EnsembleDecisionAgent = data.get("ensemble_agent") or EnsembleDecisionAgent(settings)

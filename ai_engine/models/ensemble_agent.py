@@ -570,12 +570,20 @@ class EnsembleDecisionAgent:
         3. Executes open-position timing, entry price, and realistic 1:2 / 1:3 SL/TP on `1M` (`1m`).
         """
         clean_sym = normalize_symbol(symbol)
-        df_1d = self.load_market_series(clean_sym, timeframe="1d", limit=160)
-        df_4h = self.load_market_series(clean_sym, timeframe="4h", limit=160)
-        df_1h = self.load_market_series(clean_sym, timeframe="1h", limit=160)
-        df_15m = self.load_market_series(clean_sym, timeframe="15m", limit=300)
-        df_5m = self.load_market_series(clean_sym, timeframe="5m", limit=160)
-        df_1m = self.load_market_series(clean_sym, timeframe="1m", limit=160)
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            f_1d = pool.submit(self.load_market_series, clean_sym, "1d", 160)
+            f_4h = pool.submit(self.load_market_series, clean_sym, "4h", 160)
+            f_1h = pool.submit(self.load_market_series, clean_sym, "1h", 160)
+            f_15m = pool.submit(self.load_market_series, clean_sym, "15m", 300)
+            f_5m = pool.submit(self.load_market_series, clean_sym, "5m", 160)
+            f_1m = pool.submit(self.load_market_series, clean_sym, "1m", 160)
+            df_1d = f_1d.result()
+            df_4h = f_4h.result()
+            df_1h = f_1h.result()
+            df_15m = f_15m.result()
+            df_5m = f_5m.result()
+            df_1m = f_1m.result()
 
         sent_90d = self.sentiment_analyzer.analyze_symbol(
             symbol=clean_sym,
