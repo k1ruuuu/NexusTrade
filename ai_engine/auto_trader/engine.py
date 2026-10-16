@@ -100,6 +100,8 @@ class SmartAutoTraderEngine:
         notify_callback: Optional[NotifyCallback] = None,
         custom_lot: Optional[float] = None,
         live_card_callback: Optional[NotifyCallback] = None,
+        macro_event_mode: Optional[str] = None,
+        max_positions: int = 1,
     ) -> tuple[AutoTradeSessionState, object]:
         """Start a 24/7 autonomous trading session on 1m action + 1D/1H/15M/5M analysis."""
         return await self.session_manager.start_timed_session(
@@ -111,7 +113,16 @@ class SmartAutoTraderEngine:
             notify_callback=notify_callback,
             custom_lot=custom_lot,
             live_card_callback=live_card_callback,
+            macro_event_mode=macro_event_mode,
+            max_positions=max_positions,
         )
+
+    def stop_session_by_id(
+        self,
+        user_id: int,
+        target_id: str,
+    ) -> Optional[AutoTradeSessionState]:
+        return self.session_manager.stop_session_by_id(user_id, target_id)
 
     def get_user_sessions(self, user_id: int) -> list[AutoTradeSessionState]:
         return self.session_manager.get_user_sessions(user_id)

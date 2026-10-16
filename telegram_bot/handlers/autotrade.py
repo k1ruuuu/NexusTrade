@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -22,6 +22,7 @@ from ai_engine.auto_trader.session_models import (
     parse_macro_event_mode_token,
     parse_max_positions_token,
 )
+from data_pipeline.market_symbols import normalize_symbol
 from telegram_bot.handlers.handler_utils import (
     _PENDING_ADMIN_ACTION,
     _PENDING_SETUP_MODE,
