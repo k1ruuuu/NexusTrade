@@ -341,14 +341,19 @@ def macro_monetary_to_gold_signal(
     Returns: (gold_sentiment_score [-1.0, +1.0], action_recommendation ['BUY', 'SELL', 'HOLD'])
     """
     clean_sym = asset_symbol.upper().replace("/", "").replace("-", "")
-    # Inverse transmission for XAUUSD / Gold and Crypto
-    if any(k in clean_sym for k in ("XAU", "GOLD", "BTC", "ETH")):
-        # Invert: Hawkish USD (+score) = Bearish Gold (-score)
-        gold_score = -float(macro_score)
-    else:
-        # Direct for USD / DXY
+    # Direct USD strength: DXY or pairs where USD is the base currency (USDJPY, USDCAD, USDCHF)
+    is_direct_usd = (
+        clean_sym in ("DXY", "USDX", "USD", "UUP")
+        or (len(clean_sym) == 6 and clean_sym.startswith("USD") and clean_sym.isalpha())
+    )
+    if is_direct_usd:
+        # Direct: Hawkish USD (+score) = Bullish USDJPY / USDCAD / USDCHF
         gold_score = float(macro_score)
-
+    else:
+        # Inverse: Commodities (XAUUSD, XAGUSD, WTI), Crypto (BTC, ETH), and XXX/USD Forex (EURUSD, GBPUSD, AUDUSD)
+        # Hawkish USD (+score) -> Bearish Gold/EURUSD (-score -> SELL)
+        # Dovish USD (-score) -> Bullish Gold/EURUSD (+score -> BUY)
+        gold_score = -float(macro_score)
     gold_score = float(max(-1.0, min(1.0, gold_score)))
     if gold_score >= 0.18:
         return round(gold_score, 4), "BUY"

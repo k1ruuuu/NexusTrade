@@ -158,9 +158,10 @@ def format_myaccount_card(
     if positions:
         pos_lines = []
         for p in positions[:5]:
+            tp_str = f"TP1: <code>{format_price(p.take_profit_1)}</code>" if p.take_profit_1 > 0 else "TP: <i>Dihapus (Runner)</i>"
             pos_lines.append(
                 f"  • <b>{html.escape(p.symbol)} ({p.side})</b>: <code>{p.quantity}</code> @ <code>{format_price(p.entry_price)}</code> "
-                f"| SL: <code>{format_price(p.stop_loss)}</code> | TP1: <code>{format_price(p.take_profit_1)}</code>"
+                f"| SL: <code>{format_price(p.stop_loss)}</code> | {tp_str}"
             )
         pos_block = "\n".join(pos_lines)
     else:

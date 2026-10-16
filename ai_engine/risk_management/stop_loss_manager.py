@@ -167,10 +167,11 @@ class StopLossManager:
             point_mult = 100000.0  # Standard FX lot
 
         dollar_per_point = max(1e-6, lot * point_mult)
-        stop_distance = max_dollar_risk / dollar_per_point
-        # Breathing room: between 0.3% and 10% of entry price
-        stop_distance = max(entry_price * 0.003, min(stop_distance, entry_price * 0.10))
-
+        base_distance = max_dollar_risk / dollar_per_point
+        # Strict Anti-MC Ceiling: Maximum risk distance must never exceed 5% of total account capital
+        max_mc_safe_dist = (bal * 0.05) / dollar_per_point
+        min_room = min(entry_price * 0.003, max_mc_safe_dist)
+        stop_distance = max(min_room, min(base_distance, max_mc_safe_dist, entry_price * 0.10))
         if action == "BUY":
             stop_loss = entry_price - stop_distance
         elif action == "SELL":

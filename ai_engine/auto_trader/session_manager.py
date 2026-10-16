@@ -176,6 +176,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         sess.cycles_completed += 1
         sess.last_updated_iso = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
         open_positions = self.engine.vault.get_open_positions(sess.user_id, symbol=sess.symbol)
+        mon_result: Optional[PositionMonitorResult] = None
 
         if open_positions:
             mon = await self.monitor_and_manage_open_position(
@@ -225,16 +226,17 @@ class AutoTradeSessionManager(PositionMonitorMixin):
                 sess.live_floating_pnl_usdt = mon.unrealized_pnl_usdt
                 sess.live_floating_pnl_pct = mon.unrealized_pnl_pct
                 sess.last_check_summary = (
-                    f"Menahan posisi {mon.position.side} @ ${mon.position.entry_price:,.2f} ➔ "
+                    f"Menahan {len(open_positions)}/{sess.max_positions} posisi {mon.position.side} @ ${mon.position.entry_price:,.2f} ➔ "
                     f"Sekarang ${mon.current_price:,.2f} (Floating: ${mon.unrealized_pnl_usdt:+.2f} / {mon.unrealized_pnl_pct:+.2f}%)"
                 )
-            return mon
+            mon_result = mon
+            # Re-query open positions after monitoring
+            open_positions = self.engine.vault.get_open_positions(sess.user_id, symbol=sess.symbol)
 
         # Check if more concurrent layers can be opened up to sess.max_positions
         if len(open_positions) < sess.max_positions:
             report = await self.engine.evaluate_and_execute(
                 user_id=sess.user_id,
-                symbol=sess.symbol,
                 timeframe="1m",
                 require_autotrade_toggle=True,
                 custom_lot=sess.custom_lot,
@@ -269,9 +271,9 @@ class AutoTradeSessionManager(PositionMonitorMixin):
             else:
                 if not open_positions:
                     sess.last_check_summary = report.rejection_summary or "Memantau sinyal 1D/1H/15M/5M ➔ 1M..."
-                return report
+                return report if mon_result is None else mon_result
 
-        return mon
+        return mon_result
     async def close_session_open_positions(
         self,
         sess: AutoTradeSessionState,

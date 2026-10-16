@@ -8,6 +8,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from ai_engine.models.ensemble_agent import EnsembleDecisionAgent
 from ai_engine.auto_trader.user_vault import UserVault
+from ai_engine.auto_trader.mt5_symbols import estimate_mt5_pnl_usdt
 from config.settings import Settings, get_settings
 from data_pipeline.market_symbols import normalize_symbol
 from telegram_bot.views.formatters import (
@@ -170,12 +171,13 @@ def build_live_portfolio_state(
             last_px = float(df_sym["close"].iloc[-1]) if len(df_sym) > 0 else rec.entry_price
         except Exception:
             last_px = rec.entry_price
-        pnl = (
-            (last_px - rec.entry_price) * rec.quantity
-            if rec.side == "BUY"
-            else (rec.entry_price - last_px) * rec.quantity
+        pnl_round = estimate_mt5_pnl_usdt(
+            symbol=rec.symbol,
+            side=rec.side,
+            entry_price=rec.entry_price,
+            exit_price=last_px,
+            lots=rec.quantity,
         )
-        pnl_round = round(pnl, 2)
         total_unrealized += pnl_round
         positions_list.append(
             {

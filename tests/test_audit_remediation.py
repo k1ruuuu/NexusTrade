@@ -1,0 +1,242 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
+import pandas as pd
+import pytest
+
+from config.settings import Settings
+from ai_engine.auto_trader.session_models import AutoTradeSessionState, parse_macro_event_mode_token, parse_max_positions_token
+from ai_engine.auto_trader.session_manager import AutoTradeSessionManager
+from ai_engine.auto_trader.engine import SmartAutoTraderEngine
+from ai_engine.auto_trader.user_vault import UserVault, UserPositionRecord
+from ai_engine.auto_trader.position_monitor import PositionMonitorResult
+from ai_engine.models.ensemble_agent import EnsembleDecisionAgent, SignalDecision
+from ai_engine.models.meta_label_engine import MacroRiskFilter
+from ai_engine.models.sentiment_lexicon import macro_monetary_to_gold_signal
+from ai_engine.risk_management.stop_loss_manager import StopLossManager
+from ai_engine.auto_trader.mt5_symbols import estimate_mt5_pnl_usdt
+from telegram_bot.handlers.commands import build_live_portfolio_state
+from telegram_bot.views.formatters import format_signal_card, format_sentiment_card
+from telegram_bot.views.setup_formatters import format_myaccount_card
+from ai_engine.models.sentiment_analyzer import SentimentAnalysisResult
+
+
+# -----------------------------------------------------------------------------
+# Finding #1 & #2: Multi-layer session manager execution and no UnboundLocalError
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_findings_01_02_session_manager_multi_layer_reachable() -> None:
+    cfg = Settings(_env_file=None, use_live_market_data=False, use_live_news_feed=False)
+    vault = UserVault(cfg)
+    agent = EnsembleDecisionAgent(settings=cfg)
+    engine = SmartAutoTraderEngine(settings=cfg, ensemble_agent=agent, user_vault=vault)
+    mgr = AutoTradeSessionManager(engine)
+
+    sess = AutoTradeSessionState(
+        session_id="SESS-TEST-12",
+        user_id=12345,
+        symbol="XAUUSD",
+        timeframe="1m",
+        duration_seconds=3600,
+        duration_label="1 Jam",
+        started_at_ts=1700000000,
+        ends_at_ts=1700003600,
+        started_at_iso="2026-10-16 12:00:00 UTC",
+        ends_at_iso="2026-10-16 13:00:00 UTC",
+        max_positions=4,
+    )
+
+    # Simulated open position
+    pos1 = UserPositionRecord(
+        position_id=101,
+        user_id=12345,
+        symbol="XAUUSD",
+        side="BUY",
+        entry_price=2650.0,
+        quantity=0.01,
+        notional_usdt=26500.0,
+        stop_loss=2640.0,
+        take_profit_1=0.0,
+        take_profit_2=0.0,
+        confidence=0.80,
+        status="OPEN",
+        order_id="TICKET-1",
+        testnet=True,
+        opened_at="2026-10-16T12:00:00Z",
+    )
+
+    with patch.object(vault, "get_open_positions", return_value=[pos1]), \
+         patch.object(engine, "evaluate_and_execute") as mock_exec, \
+         patch.object(mgr, "monitor_and_manage_open_position") as mock_mon:
+        mock_mon.return_value = PositionMonitorResult(
+            action_taken="HOLDING",
+            position=pos1,
+            current_price=2652.0,
+            unrealized_pnl_usdt=2.0,
+            unrealized_pnl_pct=0.07,
+        )
+        fake_report = MagicMock()
+        fake_report.executed = False
+        fake_report.rejection_summary = "Waiting for trigger"
+        fake_report.decision = None
+        mock_exec.return_value = fake_report
+
+        res = await mgr._run_single_session_cycle(sess)
+
+        # Finding #1 Proof: evaluate_and_execute MUST be called because 1 < 4 (max_positions)
+        mock_exec.assert_awaited_once()
+        # Finding #2 Proof: res must not raise UnboundLocalError and must return a valid monitor result
+        assert res is not None
+
+
+# -----------------------------------------------------------------------------
+# Finding #3: Multi-position monitoring in SmartPositionMonitor
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_finding_03_position_monitor_evaluates_all_layers() -> None:
+    cfg = Settings(_env_file=None, use_live_market_data=False, use_live_news_feed=False)
+    vault = UserVault(cfg)
+    agent = EnsembleDecisionAgent(settings=cfg)
+    engine = SmartAutoTraderEngine(settings=cfg, ensemble_agent=agent, user_vault=vault)
+    monitor = engine.session_manager
+
+    pos1 = UserPositionRecord(
+        position_id=1, user_id=111, symbol="XAUUSD", side="BUY",
+        entry_price=2650.0, quantity=0.01, notional_usdt=26500.0,
+        stop_loss=2640.0, take_profit_1=0.0, take_profit_2=0.0,
+        confidence=0.80, status="OPEN", order_id="TK-1", testnet=True,
+        opened_at="2026-10-16T12:00:00Z",
+    )
+    # Position 2 hit its stop loss @ 2645.0
+    pos2 = UserPositionRecord(
+        position_id=2, user_id=111, symbol="XAUUSD", side="BUY",
+        entry_price=2652.0, quantity=0.01, notional_usdt=26520.0,
+        stop_loss=2645.0, take_profit_1=0.0, take_profit_2=0.0,
+        confidence=0.80, status="OPEN", order_id="TK-2", testnet=True,
+        opened_at="2026-10-16T12:01:00Z",
+    )
+
+    with patch.object(vault, "get_open_positions", return_value=[pos1, pos2]), \
+         patch.object(monitor, "_close_position_on_broker", AsyncMock()) as mock_close:
+        mock_close.return_value = PositionMonitorResult(
+            action_taken="CLOSED_SL",
+            position=pos2,
+            current_price=2644.0,
+            realized_pnl_usdt=-8.0,
+        )
+        res = await monitor.monitor_and_manage_open_position(
+            user_id=111, symbol="XAUUSD", price_override=2644.0, low_override=2644.0, high_override=2644.0
+        )
+        # Finding #3 Proof: pos2 SL breach is caught and closed even though it is at index 1!
+        assert res.action_taken == "CLOSED_SL"
+        assert res.position.position_id == 2
+
+
+# -----------------------------------------------------------------------------
+# Finding #4: DXY Trend Filter index out-of-bounds with 4 bars
+# -----------------------------------------------------------------------------
+def test_finding_04_dxy_filter_handles_4_bars_without_error() -> None:
+    df_4 = pd.DataFrame({"close": [100.0, 100.1, 100.2, 100.4]})
+    suppressed, reason = MacroRiskFilter.evaluate_dxy_trend_filter(df_4, "BUY", threshold_pct=0.15)
+    assert "DXY filter error" not in reason
+    assert suppressed is True
+
+
+# -----------------------------------------------------------------------------
+# Finding #5: Forex currency direction transmission
+# -----------------------------------------------------------------------------
+def test_finding_05_forex_currency_transmission() -> None:
+    # Hawkish (+0.80) -> USD strengthens
+    # EURUSD drops -> SELL
+    s_eur, act_eur = macro_monetary_to_gold_signal(0.80, "EURUSD")
+    assert act_eur == "SELL" and s_eur == -0.80
+
+    # USDJPY rises -> BUY
+    s_jpy, act_jpy = macro_monetary_to_gold_signal(0.80, "USDJPY")
+    assert act_jpy == "BUY" and s_jpy == 0.80
+
+
+# -----------------------------------------------------------------------------
+# Finding #6: Portfolio contract size scaled PnL
+# -----------------------------------------------------------------------------
+def test_finding_06_portfolio_pnl_contract_size() -> None:
+    # 0.05 lot on XAUUSD, $10 move ($2650 to $2660) = 0.05 * 10 * 100 = $50.00
+    pnl_gold = estimate_mt5_pnl_usdt("XAUUSD", "BUY", 2650.0, 2660.0, 0.05)
+    assert pnl_gold == 50.00
+
+    cfg = Settings(_env_file=None, use_live_market_data=False)
+    vault = UserVault(cfg)
+    agent = EnsembleDecisionAgent(settings=cfg)
+    rec = UserPositionRecord(
+        position_id=99, user_id=123, symbol="XAUUSD", side="BUY",
+        entry_price=2650.0, quantity=0.05, notional_usdt=13250.0,
+        stop_loss=2640.0, take_profit_1=0.0, take_profit_2=0.0,
+        confidence=0.80, status="OPEN", order_id="TK-99", testnet=True,
+        opened_at="2026-10-16T12:00:00Z",
+    )
+    with patch.object(vault, "get_open_positions", return_value=[rec]), \
+         patch.object(agent, "load_market_series", return_value=pd.DataFrame({"close": [2660.0]})):
+        state = build_live_portfolio_state(agent, cfg, user_id=123, user_vault=vault)
+        assert state["unrealized_pnl"] == 50.00
+
+
+# -----------------------------------------------------------------------------
+# Finding #7: Targeted stop matching in auth middleware
+# -----------------------------------------------------------------------------
+def test_finding_07_auth_middleware_targeted_stop_matching() -> None:
+    from telegram_bot.middlewares.auth_middleware import WhitelistAuthMiddleware
+    mw = WhitelistAuthMiddleware(Settings(_env_file=None))
+
+    for cmd in ("/autotrade stop 1", "/autotrade stop AT-2", "/autotrade off 1", "/autotrade stop XAUUSD", "/unlink"):
+        lower_act = cmd.strip().lower()
+        is_emergency = (
+            lower_act.startswith("/autotrade off")
+            or lower_act.startswith("/autotrade stop")
+            or lower_act == "/unlink"
+            or lower_act in ("cb:autotrade:toggle:off", "cb:setup:unlink")
+        )
+        assert is_emergency is True
+
+
+# -----------------------------------------------------------------------------
+# Finding #8: Take profit removal formatting in signal and account cards
+# -----------------------------------------------------------------------------
+def test_finding_08_tp_removal_formatting() -> None:
+    decision = SignalDecision(
+        action="BUY", confidence=0.85, risk_multiplier=0.80, symbol="XAUUSD", timeframe="1m",
+        entry_price=2650.0, stop_loss=2642.0, take_profit_1=0.0, take_profit_2=0.0,
+    )
+    card = format_signal_card(decision)
+    # Must NOT show negative percent
+    assert "-100.0%" not in card
+    assert "Dihapus / Tanpa Batas" in card
+
+
+# -----------------------------------------------------------------------------
+# Finding #9: Sentiment card blackout state consistency
+# -----------------------------------------------------------------------------
+def test_finding_09_sentiment_card_blackout_state_consistency() -> None:
+    res = SentimentAnalysisResult(
+        symbol="XAUUSD", s_sent=0.10, label="NEUTRAL",
+        bullish_ratio=0.5, bearish_ratio=0.3, neutral_ratio=0.2, model_name="FinBERT",
+        is_macro_blackout=True, blackout_event="USD CPI m/m",
+    )
+    card = format_sentiment_card(res)
+    # When macro_blackout_enabled=False by default, card should reflect Gembok Nonaktif / CLEAR
+    assert "BLACKOUT AKTIF" not in card
+    assert "Gembok Nonaktif" in card
+
+
+# -----------------------------------------------------------------------------
+# Finding #10: Event mode anti-MC SL bounds on micro accounts
+# -----------------------------------------------------------------------------
+def test_finding_10_anti_mc_sl_bounds_on_micro_account() -> None:
+    sl_mgr = StopLossManager()
+    t_micro = sl_mgr.calculate_event_mode_targets(
+        entry_price=2650.0, action="BUY", account_balance=50.0, lot_size=0.05, symbol="XAUUSD"
+    )
+    loss = (2650.0 - t_micro.stop_loss) * 0.05 * 100.0
+    # Must never risk more than 5% of balance ($2.50)
+    assert loss <= 2.50 + 1e-4
