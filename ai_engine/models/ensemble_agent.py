@@ -650,8 +650,12 @@ class EnsembleDecisionAgent:
         )
         blended_atr = raw_robust_atr
 
-        # Rekomendasi 3: Filter Pasar Sideways / Chop (ADX < 20 atau konsolidasi tanpa momentum)
-        is_market_chop = bool(base_15m.is_sideways or (abs(s_1h) < 0.08 and abs(s_15m) < 0.08 and abs(s_5m) < 0.08))
+        # Market Chop filter only triggers when higher timeframes lack a clear trend (aligned_count < 3)
+        has_htf_trend = (aligned_count >= 3) or (htf_bull_locked or htf_bear_locked)
+        is_market_chop = bool(
+            not has_htf_trend
+            and (base_15m.is_sideways or (abs(s_1h) < 0.08 and abs(s_15m) < 0.08 and abs(s_5m) < 0.08))
+        )
         if is_market_chop:
             blended_s_tech *= 0.35
             act_5m_tag = "⏳ PASAR SIDEWAYS / CHOP (Rawan Fakeout • Tahan Entri)"

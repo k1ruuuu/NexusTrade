@@ -358,7 +358,7 @@ class SmartAutoTraderEngine:
             symbol=clean_sym,
             event_mode=macro_event_mode,
         )
-        # Gate 2: Mandatory Breaking + 3-Month (90-Day) Deep News Sentiment Alignment
+        # Gate 2: Berita 90 Hari & Terkini Sebagai Data Pendukung Acuan Tren
         n_news = len(decision.headlines)
         is_event_sniper = bool(macro_event_mode and decision.gold_action_bias in ("BUY", "SELL"))
         if getattr(self.settings, "macro_blackout_enabled", False) and "HIGH_IMPACT_NEWS_BLACKOUT" in (decision.rejection_reason or ""):
@@ -370,23 +370,19 @@ class SmartAutoTraderEngine:
                 f"🎯 MODE EVENT MAKRO ({macro_event_mode.upper()} SNIPER): Sikap Kebijakan {decision.macro_stance} "
                 f"(Bias Aksi: {decision.gold_action_bias} Emas) • Berita Squawk & Kalender Selaras ({n_news} berita)"
             )
-        elif decision.action == "BUY":
-            news_ok = decision.s_sent > -0.15
-            news_detail = (
-                f"Berita 5-Provider Selaras ({decision.s_sent:+.2f} dari {n_news} berita mendukung/netral untuk BELI)"
-                if news_ok
-                else f"DITOLAK: Berita negatif ({decision.s_sent:+.2f} dari {n_news} berita), berbahaya untuk BELI"
-            )
-        elif decision.action == "SELL":
-            news_ok = decision.s_sent < 0.15
-            news_detail = (
-                f"Berita 5-Provider Selaras ({decision.s_sent:+.2f} dari {n_news} berita mendukung/netral untuk JUAL)"
-                if news_ok
-                else f"DITOLAK: Berita positif ({decision.s_sent:+.2f} dari {n_news} berita), berbahaya untuk JUAL"
-            )
-        else:
+        elif decision.action == "BUY" and decision.s_sent < -0.40:
             news_ok = False
-            news_detail = f"Sentimen berita {decision.s_sent:+.2f} ({n_news} berita), menunggu pemicu arah kuat"
+            news_detail = f"DITOLAK (KONFLIK SENTIMEN EKSTREM): Berita sangat negatif ({decision.s_sent:+.2f} dari {n_news} berita), berbahaya untuk BELI"
+        elif decision.action == "SELL" and decision.s_sent > 0.40:
+            news_ok = False
+            news_detail = f"DITOLAK (KONFLIK SENTIMEN EKSTREM): Berita sangat positif ({decision.s_sent:+.2f} dari {n_news} berita), berbahaya untuk JUAL"
+        else:
+            news_ok = True
+            bias_tag = "Netral (Aman)" if abs(decision.s_sent) <= 0.15 else ("Bullish" if decision.s_sent > 0 else "Bearish")
+            news_detail = (
+                f"Data Berita 90 Hari Terolah ({decision.s_sent:+.2f} [{bias_tag}] dari {n_news} berita) ➔ "
+                f"Data sentimen selaras sebagai acuan pendukung arah tren"
+            )
         gates.append(
             AutoTradeGateCheck(
                 gate_number=2,

@@ -237,6 +237,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         if len(open_positions) < sess.max_positions:
             report = await self.engine.evaluate_and_execute(
                 user_id=sess.user_id,
+                symbol=sess.symbol,
                 timeframe="1m",
                 require_autotrade_toggle=True,
                 custom_lot=sess.custom_lot,
