@@ -183,6 +183,12 @@ def format_signal_card(decision: SignalDecision) -> str:
         ms_line = f"• <b>Struktur Pasar:</b> {ms_badge}{pb_text}\n• <b>Penjaga Tren:</b> 🛡️ <i>{html.escape(ms_guard)}</i>\n"
     else:
         ms_line = ""
+    bos_mss_event = str(decision.indicators.get("structure_event_type", "")).strip()
+    if bos_mss_event and bos_mss_event != "TIDAK_ADA":
+        bos_badge = f"🗺️ {bos_mss_event} (Struktur Lanjut)" if "BOS" in bos_mss_event else f"⚠️ {bos_mss_event} (Struktur Berbalik Arah!)"
+        bos_line = f"• <b>Peta Struktur (BOS/MSS):</b> {bos_badge}\n"
+    else:
+        bos_line = ""
     bsl_val = float(decision.indicators.get("liquidity_bsl", 0.0))
     ssl_val = float(decision.indicators.get("liquidity_ssl", 0.0))
     liq_sweep = str(decision.indicators.get("liquidity_sweep_desc", "")).strip()
@@ -236,6 +242,7 @@ def format_signal_card(decision: SignalDecision) -> str:
         f"• <b>Support Bawah (S1 | S2):</b> <code>{format_price(decision.support_1)}</code> (<code>{s1_pct}</code>) | <code>{format_price(decision.support_2)}</code>\n"
         f"• <b>Posisi S/R:</b> <i>{html.escape(decision.sr_status)}</i>\n"
         f"{ms_line}"
+        f"{bos_line}"
         f"{liq_line}"
         f"{svb_line}"
         f"• <b>Kondisi Tren:</b> <i>{html.escape(decision.market_structure_status)}</i>\n\n"

@@ -46,6 +46,18 @@ class PullbackWaveAnalysis:
     three_golden_rules: str
 
 @dataclass
+class StructureBreakEvent:
+    """Peristiwa penembusan struktur pasar: Break of Structure (BOS) atau Market Structure Shift (MSS)."""
+    event_type: Literal["BULLISH_BOS", "BEARISH_BOS", "BEARISH_MSS", "BULLISH_MSS", "NONE"]
+    level_broken: float
+    broken_swing_label: str
+    broken_swing_kind: Literal["HIGH", "LOW", "NONE"]
+    break_close_price: float
+    is_confirmed_by_close: bool
+    direction_meaning: Literal["CONTINUATION", "REVERSAL", "NONE"]
+    details: str
+
+@dataclass
 class MarketStructureResult:
     """Hasil diagnosis struktur pasar komprehensif sebelum entry."""
     symbol: str
@@ -75,6 +87,10 @@ class MarketStructureResult:
     structural_bias: Literal["BUY", "SELL", "WAIT"] = "WAIT"
     entry_allowed: bool = False
     pullback_analysis: Optional[PullbackWaveAnalysis] = None
+    latest_structure_event: Optional[StructureBreakEvent] = None
+    bos_count: int = 0
+    mss_occurred: bool = False
+    structure_peta_display: str = ""
     three_checks_display: str = ""
 
 @dataclass
@@ -284,13 +300,42 @@ class MarketStructureAnalyzer:
             latest_lh=latest_lh,
         )
 
-        # Tampilan 3 Checklist Wajib + 3 Aturan Trend & Pullback
+        # Deteksi Break of Structure (BOS) & Market Structure Shift (MSS)
+        struct_event, bos_cnt, mss_flag = cls.detect_bos_and_mss(
+            df=df,
+            swings=swings,
+            regime=regime,
+            latest_hl=latest_hl,
+            latest_lh=latest_lh,
+            latest_sh=lat_sh,
+            latest_sl=lat_sl,
+        )
+
+        # Jika terjadi MSS, struktur berbalik arah secara seketika!
+        if struct_event is not None and struct_event.event_type == "BEARISH_MSS":
+            regime = "DOWNTREND"
+            pattern_label = "LH-LL"
+            bias = "SELL"
+            status_detail = struct_event.details
+            summary = "📉 MSS BEARISH: Buyer Kehilangan Kendali, Struktur Berubah Jadi Downtrend"
+        elif struct_event is not None and struct_event.event_type == "BULLISH_MSS":
+            regime = "UPTREND"
+            pattern_label = "HH-HL"
+            bias = "BUY"
+            status_detail = struct_event.details
+            summary = "📈 MSS BULLISH: Seller Kehilangan Kendali, Struktur Berubah Jadi Uptrend"
+
+        event_str = f"{struct_event.event_type} ({struct_event.direction_meaning})" if struct_event else "TIDAK_ADA_EVENT_BARU"
+
+        # Tampilan 3 Checklist Wajib + 3 Aturan Trend & Pullback + 3 Aturan BOS/MSS
         checks_text = (
             f"1. 🎯 SWING HIGH & LOW MENONJOL: Swing High ${lat_sh:,.2f} | Swing Low ${lat_sl:,.2f}\n"
             f"2. 📊 POLA STRUKTUR: {pattern_label} ({summary})\n"
             f"3. 🛡️ SWING PENJAGA TREN: {guardian_kind} @ ${guardian_price:,.2f} ➔ {status_detail}\n"
             f"4. 🌊 FASE GELOMBANG: {pb_res.current_phase} ➔ {pb_res.phase_explanation}\n"
-            f"5. ☕ KESEHATAN PULLBACK: {'🟢 SEHAT (HL/LH Terjaga)' if pb_res.is_healthy else '🔴 RUSAK / ABNORMAL'}"
+            f"5. ☕ KESEHATAN PULLBACK: {'🟢 SEHAT (HL/LH Terjaga)' if pb_res.is_healthy else '🔴 RUSAK / ABNORMAL'}\n"
+            f"6. 🗺️ PERISTIWA STRUKTUR: {event_str}\n"
+            f"   ↳ {struct_event.details if struct_event else 'Belum ada BOS atau MSS baru dalam 8 bar terakhir.'}"
         )
         return MarketStructureResult(
             symbol=clean_sym,
@@ -311,6 +356,10 @@ class MarketStructureAnalyzer:
             structural_bias=bias,
             entry_allowed=allowed,
             three_checks_display=checks_text,
+            latest_structure_event=struct_event,
+            bos_count=bos_cnt,
+            mss_occurred=mss_flag,
+            structure_peta_display=event_str,
             pullback_analysis=pb_res,
         )
 
@@ -512,3 +561,115 @@ class MarketStructureAnalyzer:
             phase_explanation=phase_expl,
             three_golden_rules=golden_rules_text,
         )
+
+    @classmethod
+    def detect_bos_and_mss(
+        cls,
+        df: pd.DataFrame,
+        swings: List[SwingPoint],
+        regime: Literal["UPTREND", "DOWNTREND", "RANGE_SIDEWAYS"],
+        latest_hl: float,
+        latest_lh: float,
+        latest_sh: float,
+        latest_sl: float,
+        lookback_bars: int = 8,
+    ) -> Tuple[Optional[StructureBreakEvent], int, bool]:
+        """
+        Deteksi Penembusan Struktur Pasar (BOS vs MSS):
+        - Searah Tren = BOS (Break of Structure ➔ Lanjut).
+          - Uptrend: Candle close di atas Swing High sebelumnya (HH).
+          - Downtrend: Candle close di bawah Swing Low sebelumnya (LL).
+        - HL/LH Terakhir Tembus = MSS (Market Structure Shift ➔ Berubah Arah).
+          - Dari Uptrend jadi Downtrend: Candle close di bawah Higher Low (HL) terakhir!
+          - Dari Downtrend jadi Uptrend: Candle close di atas Lower High (LH) terakhir!
+        - WAJIB CLOSE, bukan sekadar wick!
+        """
+        if len(df) < lookback_bars:
+            return None, 0, False
+
+        subset = df.tail(lookback_bars)
+        highs = pd.to_numeric(subset["high"], errors="coerce").astype(np.float64).values
+        lows = pd.to_numeric(subset["low"], errors="coerce").astype(np.float64).values
+        closes = pd.to_numeric(subset["close"], errors="coerce").astype(np.float64).values
+
+        n = len(subset)
+
+        # 1. Cek Market Structure Shift (MSS) Terlebih Dahulu (Berubah Arah!)
+        # Uptrend patah jika close di bawah HL Terakhir
+        if regime == "UPTREND" and latest_hl > 0:
+            for i in range(n - 1, max(-1, n - 4), -1):
+                if closes[i] < latest_hl:
+                    event = StructureBreakEvent(
+                        event_type="BEARISH_MSS",
+                        level_broken=latest_hl,
+                        broken_swing_label="HL",
+                        broken_swing_kind="LOW",
+                        break_close_price=closes[i],
+                        is_confirmed_by_close=True,
+                        direction_meaning="REVERSAL",
+                        details=(
+                            f"MSS (MARKET STRUCTURE SHIFT) BEARISH: Candle berhasil CLOSE di bawah HL Terakhir (${latest_hl:,.2f})! "
+                            f"Buyer kehilangan kendali, struktur berubah dari NAIK jadi TURUN ➔ Cari Lower High (LH) untuk Sell."
+                        ),
+                    )
+                    return event, 0, True
+
+        # Downtrend patah jika close di atas LH Terakhir
+        if regime == "DOWNTREND" and latest_lh > 0:
+            for i in range(n - 1, max(-1, n - 4), -1):
+                if closes[i] > latest_lh:
+                    event = StructureBreakEvent(
+                        event_type="BULLISH_MSS",
+                        level_broken=latest_lh,
+                        broken_swing_label="LH",
+                        broken_swing_kind="HIGH",
+                        break_close_price=closes[i],
+                        is_confirmed_by_close=True,
+                        direction_meaning="REVERSAL",
+                        details=(
+                            f"MSS (MARKET STRUCTURE SHIFT) BULLISH: Candle berhasil CLOSE di atas LH Terakhir (${latest_lh:,.2f})! "
+                            f"Seller kehilangan kendali, struktur berubah dari TURUN jadi NAIK ➔ Cari Higher Low (HL) untuk Buy."
+                        ),
+                    )
+                    return event, 0, True
+
+        # 2. Cek Break of Structure (BOS) (Searah Tren ➔ Lanjut!)
+        # Bullish BOS di Uptrend: Close di atas Swing High sebelumnya
+        if (regime == "UPTREND" or regime == "RANGE_SIDEWAYS") and latest_sh > 0:
+            for i in range(n - 1, max(-1, n - 4), -1):
+                if closes[i] > latest_sh:
+                    event = StructureBreakEvent(
+                        event_type="BULLISH_BOS",
+                        level_broken=latest_sh,
+                        broken_swing_label="HH",
+                        broken_swing_kind="HIGH",
+                        break_close_price=closes[i],
+                        is_confirmed_by_close=True,
+                        direction_meaning="CONTINUATION",
+                        details=(
+                            f"BOS (BREAK OF STRUCTURE) BULLISH: Candle berhasil CLOSE di atas Swing High (${latest_sh:,.2f})! "
+                            f"Struktur uptrend berlanjut. Tunggu pullback untuk membentuk Higher Low (HL) baru."
+                        ),
+                    )
+                    return event, 1, False
+
+        # Bearish BOS di Downtrend: Close di bawah Swing Low sebelumnya
+        if (regime == "DOWNTREND" or regime == "RANGE_SIDEWAYS") and latest_sl > 0:
+            for i in range(n - 1, max(-1, n - 4), -1):
+                if closes[i] < latest_sl:
+                    event = StructureBreakEvent(
+                        event_type="BEARISH_BOS",
+                        level_broken=latest_sl,
+                        broken_swing_label="LL",
+                        broken_swing_kind="LOW",
+                        break_close_price=closes[i],
+                        is_confirmed_by_close=True,
+                        direction_meaning="CONTINUATION",
+                        details=(
+                            f"BOS (BREAK OF STRUCTURE) BEARISH: Candle berhasil CLOSE di bawah Swing Low (${latest_sl:,.2f})! "
+                            f"Struktur downtrend berlanjut. Tunggu pullback untuk membentuk Lower High (LH) baru."
+                        ),
+                    )
+                    return event, 1, False
+
+        return None, 0, False

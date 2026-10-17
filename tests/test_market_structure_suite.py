@@ -226,3 +226,61 @@ def test_pullback_health_unhealthy_when_hl_broken():
     assert "1. KARAKTER GELOMBANG:" in pb_dump.three_golden_rules
     assert "2. TUNGGU PULLBACK:" in pb_dump.three_golden_rules
     assert "3. KESEHATAN PULLBACK:" in pb_dump.three_golden_rules
+
+
+def test_bullish_bos_continuation():
+    """Verify Bullish BOS: Price breaks above previous Swing High and candle body closes above level."""
+    wave = [100.0, 120.0, 110.0, 125.0, 115.0]
+    df_uptrend = create_zigzag_ohlcv(wave, bars_per_segment=6)
+
+    # Break above previous Swing High 125.0 with solid body close at 128.0
+    recs = df_uptrend.to_dict("records")
+    recs.append({"open": 123.0, "high": 129.0, "low": 122.0, "close": 128.0, "volume": 2000.0})
+    df_bos = pd.DataFrame(recs)
+
+    res = MarketStructureAnalyzer.analyze_structure(df_bos, symbol="XAUUSD", timeframe="5m", window=2)
+    assert res.latest_structure_event is not None
+    assert res.latest_structure_event.event_type == "BULLISH_BOS"
+    assert res.latest_structure_event.direction_meaning == "CONTINUATION"
+    assert res.latest_structure_event.is_confirmed_by_close is True
+    assert "BOS (BREAK OF STRUCTURE) BULLISH" in res.latest_structure_event.details
+
+
+def test_bearish_mss_reversal():
+    """Verify Bearish MSS: Price dumps and candle body closes BELOW the latest Higher Low (HL)."""
+    # Uptrend structure: Base 100 -> High 130 -> HL 120 -> High 135 -> HL 125 -> High 140
+    wave = [100.0, 130.0, 120.0, 135.0, 125.0, 140.0]
+    df_uptrend = create_zigzag_ohlcv(wave, bars_per_segment=6)
+
+    # Price fails to make new high, then dumps and CLOSES below HL 125.0 (close at 121.0)
+    recs = df_uptrend.to_dict("records")
+    recs.append({"open": 130.0, "high": 131.0, "low": 120.0, "close": 121.0, "volume": 5000.0})
+    df_mss = pd.DataFrame(recs)
+
+    res = MarketStructureAnalyzer.analyze_structure(df_mss, symbol="XAUUSD", timeframe="5m", window=2)
+    assert res.latest_structure_event is not None
+    assert res.latest_structure_event.event_type == "BEARISH_MSS"
+    assert res.latest_structure_event.direction_meaning == "REVERSAL"
+    assert res.regime == "DOWNTREND"  # Structure flipped!
+    assert res.structural_bias == "SELL"
+    assert "MSS (MARKET STRUCTURE SHIFT) BEARISH" in res.latest_structure_event.details
+
+
+def test_bullish_mss_reversal():
+    """Verify Bullish MSS: Price rallies and candle body closes ABOVE the latest Lower High (LH)."""
+    # Downtrend structure: Base 200 -> Low 170 -> LH 185 -> Low 160 -> LH 175 -> Low 150
+    wave = [200.0, 170.0, 185.0, 160.0, 175.0, 150.0]
+    df_downtrend = create_zigzag_ohlcv(wave, bars_per_segment=6)
+
+    # Price rallies and CLOSES above LH 175.0 (close at 180.0)
+    recs = df_downtrend.to_dict("records")
+    recs.append({"open": 165.0, "high": 182.0, "low": 164.0, "close": 180.0, "volume": 5000.0})
+    df_mss_bull = pd.DataFrame(recs)
+
+    res = MarketStructureAnalyzer.analyze_structure(df_mss_bull, symbol="XAUUSD", timeframe="5m", window=2)
+    assert res.latest_structure_event is not None
+    assert res.latest_structure_event.event_type == "BULLISH_MSS"
+    assert res.latest_structure_event.direction_meaning == "REVERSAL"
+    assert res.regime == "UPTREND"  # Structure flipped!
+    assert res.structural_bias == "BUY"
+    assert "MSS (MARKET STRUCTURE SHIFT) BULLISH" in res.latest_structure_event.details
