@@ -586,7 +586,7 @@ class OHLCVPreprocessor:
     def compute_oc_signals(
         df: pd.DataFrame,
         body_len: int = 50,
-        body_mult: float = 2.0,
+        body_mult: float = 1.5,
         vol_mult: float = 0.0,
         sl_mode: str = "Candle wick",
         tp_rmult: float = 2.0,
@@ -619,8 +619,8 @@ class OHLCVPreprocessor:
         eff_body_len = max(5, min(body_len, len(df)))
         avg_body = body.rolling(window=eff_body_len, min_periods=1).mean()
         avg_vol = volume.rolling(window=eff_body_len, min_periods=1).mean()
-        vol_ok = (vol_mult <= 0.0) | (volume >= avg_vol * vol_mult)
-
+        has_vol_var = bool(volume.std() > 1e-4) if len(volume) > 1 else False
+        vol_ok = (vol_mult <= 0.0) | (not has_vol_var) | (volume >= avg_vol * vol_mult)
         prev_close = close.shift(1).fillna(close)
         tr = pd.concat([
             (high - low).abs(),
@@ -829,7 +829,7 @@ class OHLCVPreprocessor:
         out["cp_hammer"] = cp_df["cp_hammer"].astype(np.float32)
         out["cp_shooting_star"] = cp_df["cp_shooting_star"].astype(np.float32)
         # OC Buy/Sell Signals (Pine Script v6)
-        oc_df = OHLCVPreprocessor.compute_oc_signals(out, body_len=50, body_mult=2.0)
+        oc_df = OHLCVPreprocessor.compute_oc_signals(out, body_len=50, body_mult=1.5)
         out["oc_signal"] = oc_df["oc_signal"].astype(np.float32)
         out["oc_entry"] = oc_df["oc_entry"].astype(np.float64)
         out["oc_sl"] = oc_df["oc_sl"].astype(np.float64)

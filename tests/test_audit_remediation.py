@@ -357,3 +357,51 @@ def test_oc_signals_pine_script_entry_sl_tp() -> None:
     assert res["oc_entry"].iloc[3] == 104.5
     assert res["oc_sl"].iloc[3] == 98.0   # wick low
     assert res["oc_tp"].iloc[3] == 117.5  # entry + (6.5 * 2.0) = 117.5
+
+
+def test_round2_oc_signals_dynamic_rrr_anchoring() -> None:
+    """Verify OC Signals dynamic RRR anchoring maintains strict 1:2 RRR even when entry price moves."""
+    cfg = Settings(_env_file=None, use_live_market_data=False)
+    agent = EnsembleDecisionAgent(settings=cfg)
+
+    indicators = {
+        "oc_signal": 1.0,
+        "oc_sl": 2635.0,
+        "oc_tp": 2650.0, # static from earlier bar
+    }
+
+    # Order enters at 2648.0 (8 dollars above original signal)
+    decision = agent.synthesize_scores(
+        s_tech=0.60,
+        s_vol=0.15,
+        s_sent=0.10,
+        entry_price=2648.0,
+        indicators=indicators,
+        event_mode=None,
+    )
+    assert decision.action == "BUY"
+    assert decision.stop_loss == 2635.0
+    # Risk distance = 2648 - 2635 = 13.0
+    # TP1 must be 2648 + (13.0 * 2.0) = 2674.0 (strictly maintaining 1:2 RRR!)
+    assert decision.take_profit_1 == 2674.0
+    assert decision.take_profit_2 == 2687.0
+
+
+def test_round2_flat_volume_tolerance() -> None:
+    """Verify flat-volume data feeds do not suppress valid breakout signals when vol_mult > 0."""
+    from data_pipeline.preprocessor_ohlcv import OHLCVPreprocessor
+
+    # Data with flat volume (all 100.0, zero variance)
+    sample_flat_vol = pd.DataFrame({
+        "open":  [100.0, 101.0, 100.0, 99.0, 104.0],
+        "high":  [101.5, 102.0, 101.0, 105.0, 105.5],
+        "low":   [99.5,  100.0,  98.5,  98.0, 103.0],
+        "close": [101.0, 100.5,  99.0, 104.5, 103.5],
+        "volume": [100.0] * 5,
+    })
+
+    res = OHLCVPreprocessor.compute_oc_signals(
+        sample_flat_vol, body_len=3, body_mult=1.2, vol_mult=1.5
+    )
+    # Flat volume must not block the breakout on bar 3
+    assert res["oc_signal"].iloc[3] == 1

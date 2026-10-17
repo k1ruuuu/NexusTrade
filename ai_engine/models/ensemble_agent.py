@@ -248,19 +248,22 @@ class EnsembleDecisionAgent:
         oc_sig_val = int(indicators.get("oc_signal", 0)) if indicators else 0
         oc_sl_val = float(indicators.get("oc_sl", 0.0)) if indicators else 0.0
         oc_tp_val = float(indicators.get("oc_tp", 0.0)) if indicators else 0.0
-        if not event_mode and oc_sig_val != 0 and oc_sl_val > 0 and oc_tp_val > 0 and (
+        if not event_mode and oc_sig_val != 0 and oc_sl_val > 0 and (
             (raw_action == "BUY" and oc_sig_val == 1) or (raw_action == "SELL" and oc_sig_val == -1)
         ):
-            # Recommend Entry, SL, and TP levels directly from OC Buy/Sell Signals
+            # Dynamic RRR anchoring: Calibrate Stop Loss and Take Profit to current entry_price maintaining strict 1:2 RRR
+            risk_dist = max(abs(entry_price - oc_sl_val), entry_price * 0.001)
+            dyn_tp1 = entry_price + (risk_dist * 2.0) if raw_action == "BUY" else max(entry_price * 0.01, entry_price - (risk_dist * 2.0))
+            dyn_tp2 = entry_price + (risk_dist * 3.0) if raw_action == "BUY" else max(entry_price * 0.01, entry_price - (risk_dist * 3.0))
             targets = StopLossTargets(
                 action=raw_action,
                 entry_price=round(entry_price, 4),
                 atr_14=round(effective_atr, 4),
                 stop_loss=round(oc_sl_val, 4),
-                take_profit_1=round(oc_tp_val, 4),
-                take_profit_2=round(oc_tp_val * 1.05 if raw_action == "BUY" else oc_tp_val * 0.95, 4),
-                trailing_stop_distance=round(abs(entry_price - oc_sl_val) * 0.60, 4),
-                risk_per_unit=round(abs(entry_price - oc_sl_val), 4),
+                take_profit_1=round(dyn_tp1, 4),
+                take_profit_2=round(dyn_tp2, 4),
+                trailing_stop_distance=round(risk_dist * 0.60, 4),
+                risk_per_unit=round(risk_dist, 4),
                 reward_risk_ratio_1=2.0,
                 reward_risk_ratio_2=3.0,
             )
@@ -740,23 +743,23 @@ class EnsembleDecisionAgent:
         is_dual_sell = (ut_recent_sell or ut_trend_dir == -1) and (st_recent_sell or st_dir == -1)
 
         if is_dual_buy and dom_sign > 0 and not is_market_chop:
-            act_5m_tag = f"🟢 {pat_prefix}UT BOT + SUPERTREND BUY (ST: ${st_level:,.2f} | UT: ${ut_ts_level:,.2f})"
+            act_5m_tag = f"🟢 {pat_prefix}UT BOT + SUPERTREND BUY (ST: ${st_level:,.2f} | UT: ${ut_ts_level:,.2f}){oc_tag}"
             if blended_s_tech < 0.28 and dom_sign > 0:
                 blended_s_tech = max(0.32, blended_s_tech + 0.40)
             if cp_score > 0:
                 blended_s_tech = min(0.96, blended_s_tech + 0.10)
         elif is_dual_sell and dom_sign < 0 and not is_market_chop:
-            act_5m_tag = f"🔴 {pat_prefix}UT BOT + SUPERTREND SELL (ST: ${st_level:,.2f} | UT: ${ut_ts_level:,.2f})"
+            act_5m_tag = f"🔴 {pat_prefix}UT BOT + SUPERTREND SELL (ST: ${st_level:,.2f} | UT: ${ut_ts_level:,.2f}){oc_tag}"
             if blended_s_tech > -0.28 and dom_sign < 0:
                 blended_s_tech = min(-0.32, blended_s_tech - 0.40)
             if cp_score < 0:
                 blended_s_tech = max(-0.96, blended_s_tech - 0.10)
         elif ut_recent_buy or (ut_trend_dir == 1 and dom_sign > 0 and not is_market_chop):
-            act_5m_tag = f"🟢 {pat_prefix}UT BOT BUY (Trailing Stop: ${ut_ts_level:,.2f})"
+            act_5m_tag = f"🟢 {pat_prefix}UT BOT BUY (Trailing Stop: ${ut_ts_level:,.2f}){oc_tag}"
             if blended_s_tech < 0.25 and dom_sign > 0:
                 blended_s_tech = max(0.28, blended_s_tech + 0.35)
         elif ut_recent_sell or (ut_trend_dir == -1 and dom_sign < 0 and not is_market_chop):
-            act_5m_tag = f"🔴 {pat_prefix}UT BOT SELL (Trailing Stop: ${ut_ts_level:,.2f})"
+            act_5m_tag = f"🔴 {pat_prefix}UT BOT SELL (Trailing Stop: ${ut_ts_level:,.2f}){oc_tag}"
             if blended_s_tech > -0.25 and dom_sign < 0:
                 blended_s_tech = min(-0.28, blended_s_tech - 0.35)
         elif is_market_chop:
@@ -769,7 +772,7 @@ class EnsembleDecisionAgent:
             blended_s_tech *= 0.45
             act_5m_tag = f"⏳ TUNGGU LONJAKAN 5M REDA ({s_5m:+.2f})"
         else:
-            act_5m_tag = f"⚡ {pat_prefix}UT: ${ut_ts_level:,.2f} | ST: ${st_level:,.2f} ({lbl_5m})"
+            act_5m_tag = f"⚡ {pat_prefix}UT: ${ut_ts_level:,.2f} | ST: ${st_level:,.2f} ({lbl_5m}){oc_tag}"
         sr_levels = self.sr_detector.detect_levels(
             df_15m if (df_15m is not None and len(df_15m) >= 20) else df_1h,
             current_price=entry_px_5m,
