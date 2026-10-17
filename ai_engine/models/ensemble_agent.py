@@ -34,6 +34,7 @@ from config.settings import Settings, get_settings
 from data_pipeline.market_symbols import normalize_symbol
 from data_pipeline.preprocessor_ohlcv import OHLCVPreprocessor
 from data_pipeline.candlestick_reader import CandlestickReader
+from data_pipeline.market_structure_analyzer import MarketStructureAnalyzer, MarketStructureResult
 from src.features.structure_extractor import CandleStructuralExtractor
 from src.models.macro_regime import MacroRegimeDetector
 from ai_engine.models.meta_label_engine import (
@@ -729,6 +730,9 @@ class EnsembleDecisionAgent:
         # Candlestick Pattern Identification & 3-Pillar Price Action on 5M Timeframe
         cp_5m_df = self.ohlcv_preprocessor.identify_candlestick_patterns(ut_source_df.tail(40), trend_bars=5)
         cs_analysis = CandlestickReader.analyze_series_and_swings(ut_source_df.tail(40))
+        struct_res = MarketStructureAnalyzer.analyze_structure(
+            ut_source_df.tail(60), symbol=clean_sym, timeframe="5m"
+        )
         last_cp = cp_5m_df.iloc[-1]
         active_pattern = str(last_cp.get("cp_pattern_name", "")).strip() or cs_analysis.latest_candle.pattern_label
         cp_score = float(last_cp.get("cp_score", 0.0))
@@ -823,6 +827,12 @@ class EnsembleDecisionAgent:
                 "candle_swing_high": cs_analysis.latest_swing_high,
                 "candle_swing_low": cs_analysis.latest_swing_low,
                 "candle_three_pillars": cs_analysis.three_pillars_summary,
+                "market_structure_label": struct_res.pattern_label,
+                "market_structure_guardian": f"{struct_res.guardian_swing_kind} @ ${struct_res.guardian_price_level:,.2f}",
+                "market_structure_detail": struct_res.trend_status_detail,
+                "market_structure_3checks": struct_res.three_checks_display,
+                "latest_swing_high": struct_res.latest_swing_high,
+                "latest_swing_low": struct_res.latest_swing_low,
             },
             headlines=[h.headline for h in sent_90d.headline_scores],
             newly_learned_headlines=sent_90d.newly_learned_count,

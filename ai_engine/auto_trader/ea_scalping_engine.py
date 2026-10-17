@@ -37,6 +37,8 @@ from ai_engine.auto_trader.mt5_symbols import (
     get_mt5_pip_size,
 )
 from data_pipeline.market_symbols import normalize_symbol
+from data_pipeline.candlestick_reader import CandlestickReader, SingleCandleAnatomy
+from data_pipeline.market_structure_analyzer import MarketStructureAnalyzer, MarketStructureResult
 
 
 @dataclass
@@ -249,6 +251,13 @@ class EAScalpingEngine:
 
         # 2. Analisa Tren Pasar Multi-Timeframe (H1 & M5 Utama)
         mtf_trend, h1_desc, m5_desc = cls.read_mtf_trend(h1_df=h1_df, m5_df=m5_df, d1_df=d1_df, m15_df=m15_df)
+
+        # 3. Analisa Struktur Pasar (Market Structure HH, HL, LH, LL & 3 Checklist Wajib)
+        struct_res = MarketStructureAnalyzer.analyze_structure(
+            m5_df if (m5_df is not None and len(m5_df) >= 20) else m1_df,
+            symbol=clean_sym,
+            timeframe="5m" if (m5_df is not None and len(m5_df) >= 20) else "1m",
+        )
 
         # 3. Pembacaan Karakter Candlestick M1
         candle_pattern, candle_bias, candle_strength = cls.read_candlestick_character(m1_df)

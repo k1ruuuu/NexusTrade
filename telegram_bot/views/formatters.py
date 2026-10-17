@@ -172,6 +172,14 @@ def format_signal_card(decision: SignalDecision) -> str:
         c_line = f"• <b>Anatomi Lilin:</b> {color_badge} | <i>{html.escape(c_win)}</i>\n• <b>Penolakan Sumbu:</b> <i>{html.escape(c_rej)}</i>{sw_text}\n"
     else:
         c_line = ""
+    ms_lbl = str(decision.indicators.get("market_structure_label", "")).strip()
+    ms_guard = str(decision.indicators.get("market_structure_guardian", "")).strip()
+    ms_detail = str(decision.indicators.get("market_structure_detail", "")).strip()
+    if ms_lbl:
+        ms_badge = "📈 UPTREND (HH-HL)" if ms_lbl == "HH-HL" else ("📉 DOWNTREND (LH-LL)" if ms_lbl == "LH-LL" else "↔️ RANGE / SIDEWAYS")
+        ms_line = f"• <b>Struktur Pasar:</b> {ms_badge}\n• <b>Penjaga Tren:</b> 🛡️ <i>{html.escape(ms_guard)}</i>\n"
+    else:
+        ms_line = ""
     oc_sig = int(decision.indicators.get("oc_signal", 0))
     oc_entry = decision.indicators.get("oc_entry", 0.0)
     oc_sl = decision.indicators.get("oc_sl", 0.0)
@@ -199,7 +207,8 @@ def format_signal_card(decision: SignalDecision) -> str:
         f"• <b>Resistance Atas (R1 | R2):</b> <code>{format_price(decision.resistance_1)}</code> (<code>{r1_pct}</code>) | <code>{format_price(decision.resistance_2)}</code>\n"
         f"• <b>Support Bawah (S1 | S2):</b> <code>{format_price(decision.support_1)}</code> (<code>{s1_pct}</code>) | <code>{format_price(decision.support_2)}</code>\n"
         f"• <b>Posisi S/R:</b> <i>{html.escape(decision.sr_status)}</i>\n"
-        f"• <b>Struktur (ADX):</b> <i>{html.escape(decision.market_structure_status)}</i>\n\n"
+        f"{ms_line}"
+        f"• <b>Kondisi Tren:</b> <i>{html.escape(decision.market_structure_status)}</i>\n\n"
         f"<b>🧠 Analisis 6 Pilar:</b>\n"
         f"• <b>Teknikal &amp; CVD:</b> <code>{decision.s_tech:+.2f}</code> | <i>{html.escape(decision.cvd_status)}</i> (RVOL <code>{decision.relative_volume:.1f}x</code>)\n"
         f"• <b>Sentimen &amp; Vol:</b> <code>{decision.s_sent:+.2f}</code> ({sent_desc}) | Vol <code>{decision.s_vol:.2f}</code>\n"
