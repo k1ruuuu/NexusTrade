@@ -548,12 +548,12 @@ class EnsembleDecisionAgent:
                 + (1.0 if ema20 > ema50 else -1.0) * 0.35
                 + (1.0 if ema50 > ema200 else -1.0) * 0.25
             )
-            mom_score = (
-                float(np.tanh((rsi14 - 50.0) / 14.0)) * 0.55
-                + (0.45 if macd_h > 0 else (-0.45 if macd_h < 0 else 0.0))
-            )
-            flow_score = float(np.clip(cvd20 * 2.5, -1.0, 1.0))
-            score = float(np.clip(0.50 * ema_score + 0.35 * mom_score + 0.15 * flow_score, -1.0, 1.0))
+            ut_trend = float(last.get("ut_trend", 0.0))
+            ut_buy = bool(last.get("ut_buy", False))
+            ut_sell = bool(last.get("ut_sell", False))
+            ut_score = 0.85 if ut_buy else (-0.85 if ut_sell else (0.50 * ut_trend))
+
+            score = float(np.clip(0.35 * ema_score + 0.35 * ut_score + 0.20 * mom_score + 0.10 * flow_score, -1.0, 1.0))
             lbl = "🟢 BULL" if score >= 0.12 else ("🔴 BEAR" if score <= -0.12 else "🟡 FLAT")
             return round(score, 3), max(atr14, close_p * 0.0015), lbl
         except Exception:
@@ -650,13 +650,36 @@ class EnsembleDecisionAgent:
         )
         blended_atr = raw_robust_atr
 
+        # UT Bot Alerts Strategy on 5M Execution Timeframe
+        ut_source_df = df_5m if (df_5m is not None and len(df_5m) >= 10) else (df_15m if df_15m is not None else df_1d)
+        ut_5m_df = self.ohlcv_preprocessor.compute_ut_bot_indicators(ut_source_df.tail(40), key_value=1.0, atr_period=10)
+        last_ut = ut_5m_df.iloc[-1]
+        ut_ts_level = float(last_ut.get("ut_trailing_stop", 0.0))
+        ut_trend_dir = int(last_ut.get("ut_trend", 0))
+        ut_buy_trigger = bool(last_ut.get("ut_buy", False))
+        ut_sell_trigger = bool(last_ut.get("ut_sell", False))
+
+        prev_ut = ut_5m_df.iloc[-2] if len(ut_5m_df) >= 2 else last_ut
+        ut_recent_buy = ut_buy_trigger or bool(prev_ut.get("ut_buy", False))
+        ut_recent_sell = ut_sell_trigger or bool(prev_ut.get("ut_sell", False))
+
         # Market Chop filter only triggers when higher timeframes lack a clear trend (aligned_count < 3)
         has_htf_trend = (aligned_count >= 3) or (htf_bull_locked or htf_bear_locked)
         is_market_chop = bool(
             not has_htf_trend
             and (base_15m.is_sideways or (abs(s_1h) < 0.08 and abs(s_15m) < 0.08 and abs(s_5m) < 0.08))
         )
-        if is_market_chop:
+
+        # UT Bot Strategy Acuan Eksekusi:
+        if ut_recent_buy or (ut_trend_dir == 1 and dom_sign > 0 and not is_market_chop):
+            act_5m_tag = f"🟢 UT BOT BUY (Trailing Stop: ${ut_ts_level:,.2f})"
+            if blended_s_tech < 0.25 and dom_sign > 0:
+                blended_s_tech = max(0.28, blended_s_tech + 0.35)
+        elif ut_recent_sell or (ut_trend_dir == -1 and dom_sign < 0 and not is_market_chop):
+            act_5m_tag = f"🔴 UT BOT SELL (Trailing Stop: ${ut_ts_level:,.2f})"
+            if blended_s_tech > -0.25 and dom_sign < 0:
+                blended_s_tech = min(-0.28, blended_s_tech - 0.35)
+        elif is_market_chop:
             blended_s_tech *= 0.35
             act_5m_tag = "⏳ PASAR SIDEWAYS / CHOP (Rawan Fakeout • Tahan Entri)"
         elif blended_s_tech > 0.15 and s_5m < -0.25:
@@ -666,8 +689,7 @@ class EnsembleDecisionAgent:
             blended_s_tech *= 0.45
             act_5m_tag = f"⏳ TUNGGU LONJAKAN 5M REDA ({s_5m:+.2f})"
         else:
-            act_5m_tag = f"⚡ TRIGGER 5M SIAP ({lbl_5m} {s_5m:+.2f})"
-
+            act_5m_tag = f"⚡ UT BOT TRAILING ${ut_ts_level:,.2f} ({lbl_5m})"
         sr_levels = self.sr_detector.detect_levels(
             df_15m if (df_15m is not None and len(df_15m) >= 20) else df_1h,
             current_price=entry_px_5m,
@@ -681,7 +703,13 @@ class EnsembleDecisionAgent:
             timeframe="5m",
             entry_price=entry_px_5m,
             atr_14=blended_atr,
-            indicators=base_15m.indicators,
+            indicators={
+                **dict(base_15m.indicators),
+                "ut_trailing_stop": round(ut_ts_level, 4),
+                "ut_trend": float(ut_trend_dir),
+                "ut_buy": 1.0 if ut_recent_buy else 0.0,
+                "ut_sell": 1.0 if ut_recent_sell else 0.0,
+            },
             headlines=[h.headline for h in sent_90d.headline_scores],
             newly_learned_headlines=sent_90d.newly_learned_count,
             total_corpus_size=sent_90d.total_corpus_size,

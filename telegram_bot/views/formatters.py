@@ -144,6 +144,11 @@ def format_signal_card(decision: SignalDecision) -> str:
     else:
         tp_block = "• <b>Take Profit (TP):</b> <i>Dihapus / Tanpa Batas (Runner Mode)</i>\n"
 
+    ut_ts = decision.indicators.get("ut_trailing_stop", 0.0)
+    ut_trend = decision.indicators.get("ut_trend", 0.0)
+    ut_badge = "🟢 BUY" if ut_trend > 0 else ("🔴 SELL" if ut_trend < 0 else "⚪ —")
+    ut_line = f"• <b>Strategi UT Bot:</b> {ut_badge} (Trailing: <code>{format_price(ut_ts)}</code>)\n" if ut_ts > 0 else ""
+
     return (
         f"📡 <b>SINYAL AI NEXUSTRADE — {sym} ({tf})</b>\n"
         f"━━━━━━━━━━━━━━━━\n"
@@ -154,6 +159,7 @@ def format_signal_card(decision: SignalDecision) -> str:
         f"• <b>Entry Price:</b> <code>{format_price(decision.entry_price)}</code>\n"
         f"• <b>Stop Loss (2xATR):</b> <code>{format_price(decision.stop_loss)}</code> (<code>{sl_pct}</code>)\n"
         f"{tp_block}"
+        f"{ut_line}"
         f"• <b>Resistance Atas (R1 | R2):</b> <code>{format_price(decision.resistance_1)}</code> (<code>{r1_pct}</code>) | <code>{format_price(decision.resistance_2)}</code>\n"
         f"• <b>Support Bawah (S1 | S2):</b> <code>{format_price(decision.support_1)}</code> (<code>{s1_pct}</code>) | <code>{format_price(decision.support_2)}</code>\n"
         f"• <b>Posisi S/R:</b> <i>{html.escape(decision.sr_status)}</i>\n"

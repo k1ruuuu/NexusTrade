@@ -240,3 +240,33 @@ def test_finding_10_anti_mc_sl_bounds_on_micro_account() -> None:
     loss = (2650.0 - t_micro.stop_loss) * 0.05 * 100.0
     # Must never risk more than 5% of balance ($2.50)
     assert loss <= 2.50 + 1e-4
+
+
+# -----------------------------------------------------------------------------
+# UT Bot Alerts Strategy Indicators & Triggers
+# -----------------------------------------------------------------------------
+def test_ut_bot_alerts_strategy_indicators_and_triggers() -> None:
+    from data_pipeline.preprocessor_ohlcv import OHLCVPreprocessor
+
+    sample_df = pd.DataFrame({
+        "open": [100.0, 101.0, 103.0, 102.0, 99.0, 97.0, 95.0, 98.0, 101.0],
+        "high": [101.5, 103.5, 104.0, 102.5, 99.5, 97.5, 96.0, 99.0, 102.0],
+        "low": [99.5, 100.5, 102.0, 98.5, 96.5, 94.5, 94.0, 95.0, 98.0],
+        "close": [101.0, 103.0, 102.0, 99.0, 97.0, 95.0, 95.5, 98.5, 101.5],
+        "volume": [100.0] * 9,
+    })
+
+    ut_df = OHLCVPreprocessor.compute_ut_bot_indicators(sample_df, key_value=1.0, atr_period=3)
+    assert "ut_trailing_stop" in ut_df.columns
+    assert "ut_pos" in ut_df.columns
+    assert "ut_buy" in ut_df.columns
+    assert "ut_sell" in ut_df.columns
+    assert "ut_trend" in ut_df.columns
+
+    # Bar 3 drops to 99.0 below trailing stop -> ut_sell must be True
+    assert ut_df["ut_sell"].iloc[3] is True or ut_df["ut_sell"].iloc[3] == 1
+    assert ut_df["ut_pos"].iloc[3] == -1
+
+    # Bar 7 crosses back up to 98.5 above trailing stop -> ut_buy must be True
+    assert ut_df["ut_buy"].iloc[7] is True or ut_df["ut_buy"].iloc[7] == 1
+    assert ut_df["ut_pos"].iloc[7] == 1

@@ -59,8 +59,11 @@ class OHLCVPreprocessor:
         "rel_spread",
         "score_pinbar",
         "score_engulf",
+        "ut_trailing_stop",
+        "ut_trend",
+        "ut_buy",
+        "ut_sell",
     )
-
     def __init__(
         self,
         settings: Optional[Settings] = None,
@@ -170,6 +173,90 @@ class OHLCVPreprocessor:
         resampled["symbol"] = inferred_symbol.upper()
         resampled["timeframe"] = target_timeframe
         return resampled
+
+    @staticmethod
+    def compute_ut_bot_indicators(
+        df: pd.DataFrame,
+        key_value: float = 1.0,
+        atr_period: int = 10,
+        use_heikin_ashi: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Algorithmic implementation of the 'UT Bot Alerts' Pine Script indicator:
+          a = key_value (sensitivity multiplier, default=1.0)
+          c = atr_period (ATR length, default=10)
+          xATR = atr(c)
+          nLoss = a * xATR
+          src = close (or Heikin-Ashi close)
+          xATRTrailingStop tracking
+          crossover(src, xATRTrailingStop) -> Buy Alert
+          crossunder(src, xATRTrailingStop) -> Sell Alert
+        """
+        out = df.copy()
+        high = pd.to_numeric(out["high"], errors="coerce").astype(np.float64)
+        low = pd.to_numeric(out["low"], errors="coerce").astype(np.float64)
+        close = pd.to_numeric(out["close"], errors="coerce").astype(np.float64)
+        open_p = pd.to_numeric(out["open"], errors="coerce").astype(np.float64)
+
+        src = (open_p + high + low + close) / 4.0 if use_heikin_ashi else close
+
+        prev_close = close.shift(1).fillna(close)
+        tr = pd.concat([
+            (high - low).abs(),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ], axis=1).max(axis=1)
+        x_atr = tr.ewm(alpha=1.0 / max(atr_period, 1), adjust=False).mean()
+        n_loss = float(key_value) * x_atr
+
+        n = len(src)
+        src_vals = src.to_numpy()
+        n_loss_vals = n_loss.to_numpy()
+
+        trailing_stop = np.zeros(n, dtype=np.float64)
+        pos = np.zeros(n, dtype=np.int32)
+
+        if n > 0:
+            trailing_stop[0] = src_vals[0] - n_loss_vals[0]
+            pos[0] = 1
+
+        for t in range(1, n):
+            prev_ts = trailing_stop[t - 1]
+            curr_src = src_vals[t]
+            prev_src = src_vals[t - 1]
+            loss = n_loss_vals[t]
+
+            if curr_src > prev_ts and prev_src > prev_ts:
+                ts = max(prev_ts, curr_src - loss)
+            elif curr_src < prev_ts and prev_src < prev_ts:
+                ts = min(prev_ts, curr_src + loss)
+            elif curr_src > prev_ts:
+                ts = curr_src - loss
+            else:
+                ts = curr_src + loss
+            trailing_stop[t] = ts
+
+            if prev_src < prev_ts and curr_src > prev_ts:
+                curr_pos = 1
+            elif prev_src > prev_ts and curr_src < prev_ts:
+                curr_pos = -1
+            else:
+                curr_pos = pos[t - 1]
+            pos[t] = curr_pos
+
+        out["ut_trailing_stop"] = pd.Series(trailing_stop, index=out.index)
+        out["ut_pos"] = pd.Series(pos, index=out.index)
+
+        prev_src_s = src.shift(1).fillna(src)
+        prev_ts_s = out["ut_trailing_stop"].shift(1).fillna(out["ut_trailing_stop"])
+
+        crossover = (prev_src_s <= prev_ts_s) & (src > out["ut_trailing_stop"])
+        crossunder = (prev_src_s >= prev_ts_s) & (src < out["ut_trailing_stop"])
+
+        out["ut_buy"] = (src > out["ut_trailing_stop"]) & crossover
+        out["ut_sell"] = (src < out["ut_trailing_stop"]) & crossunder
+        out["ut_trend"] = np.where(src > out["ut_trailing_stop"], 1, -1)
+        return out
 
     @staticmethod
     def compute_raw_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -284,6 +371,12 @@ class OHLCVPreprocessor:
             & (low <= prev_low)
         )
         out["score_engulf"] = np.where(engulf_cond, ((body - prev_body) / atr_safe).fillna(0.0), 0.0)
+        # UT Bot Alerts Indicators
+        ut_df = OHLCVPreprocessor.compute_ut_bot_indicators(out, key_value=1.0, atr_period=10)
+        out["ut_trailing_stop"] = ut_df["ut_trailing_stop"]
+        out["ut_trend"] = ut_df["ut_trend"].astype(np.float32)
+        out["ut_buy"] = ut_df["ut_buy"].astype(np.float32)
+        out["ut_sell"] = ut_df["ut_sell"].astype(np.float32)
 
         return out
 

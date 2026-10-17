@@ -423,12 +423,13 @@ class SmartAutoTraderEngine:
                     f"Menunggu Breakout Valid ({decision.mtf_summary})"
                 )
             elif conf_ok:
+                ut_ts = float(decision.indicators.get("ut_trailing_stop", 0.0))
+                ut_info = f" • UT Bot Trailing: ${ut_ts:,.2f}" if ut_ts > 0 else ""
                 tech_detail = (
-                    f"Sinyal {decision.badge} Kuat (Keyakinan {decision.confidence * 100:.1f}%, "
-                    f"MTF [{decision.mtf_aligned_count}/4 Selaras]: {decision.mtf_summary}, "
+                    f"Strategi UT Bot Alerts & Sinyal {decision.badge} Kuat (Keyakinan {decision.confidence * 100:.1f}%, "
+                    f"MTF [{decision.mtf_aligned_count}/4 Selaras]: {decision.mtf_summary}{ut_info}, "
                     f"Struktur: {decision.market_structure_status}, Konfluensi {decision.confluence_pillars}/6 Pilar)"
                 )
-            else:
                 tech_detail = (
                     f"DITOLAK: Keyakinan {decision.confidence * 100:.1f}% (Min {min_conf * 100:.0f}%), "
                     f"MTF [{decision.mtf_aligned_count}/4]: {decision.mtf_summary}, "
@@ -437,7 +438,7 @@ class SmartAutoTraderEngine:
         gates.append(
             AutoTradeGateCheck(
                 gate_number=3,
-                name="Tren Multi-Timeframe (1D•1H•15M•5M) ➔ Eksekusi 1M & Anti-Sideways",
+                name="Strategi UT Bot Alerts & Tren Multi-Timeframe (1D•1H•15M•5M ➔ 1M)",
                 passed=conf_ok,
                 detail=tech_detail,
             )
