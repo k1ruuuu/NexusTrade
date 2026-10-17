@@ -515,3 +515,169 @@ async def test_trade_mode_4_indicators_confluence_logic(tmp_path: Path) -> None:
     assert g3_pass.passed
     assert "💎 4 INDIKATOR MURNI TERKONFIRMASI" in g3_pass.detail
     assert rep_pass.trade_mode is True
+
+
+def test_finding_01_event_mode_targets_not_clobbered() -> None:
+    """Verify event_mode targets (runner mode TP=0.0 and anti-MC SL) are strictly preserved and not clobbered."""
+    cfg = Settings(_env_file=None, use_live_market_data=False)
+    agent = EnsembleDecisionAgent(settings=cfg)
+
+    dec = agent.synthesize_scores(
+        s_tech=0.6,
+        s_vol=0.1,
+        s_sent=0.2,
+        entry_price=2650.0,
+        symbol="XAUUSD",
+        event_mode="CPI",
+    )
+    assert dec.take_profit_1 == 0.0
+    assert dec.take_profit_2 == 0.0
+    assert dec.stop_loss < 2650.0
+
+
+@pytest.mark.asyncio
+async def test_finding_02_gate_4_breakout_above_r1_passed(tmp_path: Path) -> None:
+    """Verify Gate 4 passes when price breaks out above Resistance R1 with room towards R2."""
+    db_p = tmp_path / "test_g4.db"
+    cfg = Settings(_env_file=None, user_vault_db_path=str(db_p), use_live_market_data=False)
+    vault = UserVault(settings=cfg, db_path=str(db_p))
+    vault.save_user_credentials(
+        user_id=777,
+        api_key="12345",
+        api_secret="secret",
+        username="Trader777",
+        server_name="Exness-MT5Trial7",
+        testnet=True,
+        verified_usdt_balance=1000.0,
+        autotrade_enabled=True,
+    )
+    engine = SmartAutoTraderEngine(settings=cfg, user_vault=vault)
+
+    # Price at 2652.0 is ABOVE R1 (2650.0), with R2 at 2670.0 (room = +0.68% >= 0.15%)
+    mock_dec = SignalDecision(
+        symbol="XAUUSD",
+        timeframe="15m",
+        action="BUY",
+        badge="STRONG BUY",
+        confidence=0.85,
+        s_tech=0.45,
+        s_vol=0.10,
+        s_sent=0.20,
+        risk_multiplier=1.0,
+        entry_price=2652.0,
+        stop_loss=2640.0,
+        take_profit_1=2670.0,
+        take_profit_2=2680.0,
+        expectancy_r=1.5,
+        confluence_pillars=4,
+        is_sideways=False,
+        dist_to_r1_pct=-0.08,  # negative because price broke above R1!
+        dist_to_s1_pct=-0.64,
+        resistance_1=2650.0,
+        resistance_2=2670.0,
+        support_1=2635.0,
+        support_2=2620.0,
+        indicators={"ut_trend": 1.0, "supertrend_dir": 1.0, "oc_signal": 1.0},
+    )
+
+    report = await engine.evaluate_and_execute(
+        user_id=777,
+        symbol="XAUUSD",
+        decision_override=mock_dec,
+    )
+    g4 = next(g for g in report.gates if g.gate_number == 4)
+    assert g4.passed
+    assert "Breakout R1 Terkonfirmasi" in g4.detail
+
+
+@pytest.mark.asyncio
+async def test_findings_03_04_05_06_flow_and_reporting_remediation(tmp_path: Path) -> None:
+    """Verify Findings 3, 4, 5, 6: symbol extraction, sideways reporting, layer notification, and micro CB."""
+    db_p = tmp_path / "test_flow.db"
+    cfg = Settings(_env_file=None, user_vault_db_path=str(db_p), use_live_market_data=False)
+    vault = UserVault(settings=cfg, db_path=str(db_p))
+    engine = SmartAutoTraderEngine(settings=cfg, user_vault=vault)
+
+    # Finding 3: creds is None -> evaluate_and_execute called with requested symbol
+    rep_unreg = await engine.evaluate_and_execute(user_id=9999, symbol="XAUUSD", trade_mode=True)
+    assert rep_unreg.symbol == "XAUUSD"
+    assert rep_unreg.trade_mode is True
+    vault.save_user_credentials(
+        user_id=888,
+        api_key="12345",
+        api_secret="secret",
+        username="Trader888",
+        server_name="Exness-MT5Trial7",
+        testnet=True,
+        verified_usdt_balance=1000.0,
+        autotrade_enabled=True,
+    )
+    # Finding 4: /trade Gate 3 reports sideways instead of confidence
+    mock_sideways = SignalDecision(
+        symbol="XAUUSD",
+        timeframe="15m",
+        action="BUY",
+        badge="NEUTRAL",
+        confidence=0.88,  # high confidence!
+        s_tech=0.45,
+        s_vol=0.10,
+        s_sent=0.20,
+        risk_multiplier=1.0,
+        entry_price=2650.0,
+        stop_loss=2640.0,
+        take_profit_1=2670.0,
+        take_profit_2=2680.0,
+        expectancy_r=1.5,
+        confluence_pillars=4,
+        is_sideways=True,  # Sideways chop!
+        market_structure_status="Sideways Chop (ADX 15.0)",
+        dist_to_r1_pct=0.50,
+        dist_to_s1_pct=0.50,
+        resistance_1=2670.0,
+        support_1=2630.0,
+        indicators={"ut_trend": 1.0, "supertrend_dir": 1.0, "oc_signal": 1.0, "candlestick_score": 0.0},
+    )
+    rep_side = await engine.evaluate_and_execute(user_id=888, symbol="XAUUSD", decision_override=mock_sideways, trade_mode=True)
+    g3 = next(g for g in rep_side.gates if g.gate_number == 3)
+    assert not g3.passed
+    assert "Pasar Sedang Sideways" in g3.detail
+    assert "Keyakinan 88.0% < 65%" not in g3.detail
+
+    # Finding 6: Micro account circuit breaker reports 20.0% limit
+    vault.save_user_credentials(
+        user_id=555,
+        api_key="12345",
+        api_secret="secret",
+        username="Trader555",
+        server_name="Exness-MT5Trial7",
+        testnet=True,
+        verified_usdt_balance=50.0,  # Micro account (<$100)
+        autotrade_enabled=True,
+    )
+    mock_normal = SignalDecision(
+        symbol="BTCUSDT",
+        timeframe="15m",
+        action="BUY",
+        badge="STRONG BUY",
+        confidence=0.85,
+        s_tech=0.45,
+        s_vol=0.10,
+        s_sent=0.20,
+        risk_multiplier=1.0,
+        entry_price=90000.0,
+        stop_loss=89500.0,
+        take_profit_1=91000.0,
+        take_profit_2=92000.0,
+        expectancy_r=1.5,
+        confluence_pillars=4,
+        is_sideways=False,
+        dist_to_r1_pct=0.50,
+        dist_to_s1_pct=0.50,
+        resistance_1=95000.0,
+        support_1=85000.0,
+    )
+    with patch.object(vault, "get_user_daily_drawdown", return_value=(0.25, 50.0, 37.5)):
+        rep_cb = await engine.evaluate_and_execute(user_id=555, symbol="BTCUSDT", decision_override=mock_normal)
+        g5 = next(g for g in rep_cb.gates if g.gate_number == 5)
+        assert not g5.passed
+        assert "batas 20.0%" in g5.detail

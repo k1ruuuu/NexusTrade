@@ -236,6 +236,9 @@ class EnsembleDecisionAgent:
         resolved_sr = sr_levels or self.sr_detector.detect_levels(
             None, current_price=entry_price, atr_14=effective_atr
         )
+        oc_sig_val = int(indicators.get("oc_signal", 0)) if indicators else 0
+        oc_sl_val = float(indicators.get("oc_sl", 0.0)) if indicators else 0.0
+        oc_tp_val = float(indicators.get("oc_tp", 0.0)) if indicators else 0.0
         if event_mode:
             targets: StopLossTargets = self.stop_loss_manager.calculate_event_mode_targets(
                 entry_price=entry_price,
@@ -245,10 +248,7 @@ class EnsembleDecisionAgent:
                 symbol=symbol,
                 risk_pct=self.settings.max_account_risk_per_trade,
             )
-        oc_sig_val = int(indicators.get("oc_signal", 0)) if indicators else 0
-        oc_sl_val = float(indicators.get("oc_sl", 0.0)) if indicators else 0.0
-        oc_tp_val = float(indicators.get("oc_tp", 0.0)) if indicators else 0.0
-        if not event_mode and oc_sig_val != 0 and oc_sl_val > 0 and (
+        elif oc_sig_val != 0 and oc_sl_val > 0 and (
             (raw_action == "BUY" and oc_sig_val == 1) or (raw_action == "SELL" and oc_sig_val == -1)
         ):
             # Dynamic RRR anchoring: Calibrate Stop Loss and Take Profit to current entry_price maintaining strict 1:2 RRR

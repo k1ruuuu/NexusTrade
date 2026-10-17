@@ -123,11 +123,19 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
     user_id, user_name = extract_user_identity(message, default_name="Trader")
     cmd_token = (message.text or "").strip().split()[0].lower() if message.text else "/autotrade"
     is_trade_mode = cmd_token.startswith("/trade")
+    args = parse_command_args(message.text)
+    sub = args[0].lower() if args else "status"
+    raw_tokens = args[1:] if sub == "scan" else args
+    req_symbol = (
+        normalize_symbol(raw_tokens[0])
+        if (len(raw_tokens) >= 1 and raw_tokens[0].lower() not in ("on", "off", "stop", "status"))
+        else "BTCUSDT"
+    )
     creds = vault.resolve_credentials(user_id)
 
     if creds is None:
         report = await auto_trader.evaluate_and_execute(
-            user_id=user_id, symbol="BTCUSDT", trade_mode=is_trade_mode
+            user_id=user_id, symbol=req_symbol, trade_mode=is_trade_mode
         )
         await message.answer(
             format_autotrade_report_card(report),
@@ -135,9 +143,6 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
             reply_markup=build_setup_keyboard(has_creds=False),
         )
         return
-
-    args = parse_command_args(message.text)
-    sub = args[0].lower() if args else "status"
 
     if sub == "on":
         vault.set_autotrade_enabled(user_id, True)

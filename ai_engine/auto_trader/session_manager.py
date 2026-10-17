@@ -262,9 +262,10 @@ class AutoTradeSessionManager(PositionMonitorMixin):
                 )
                 if notify_callback is not None:
                     tp_str = "Dihapus (Runner)" if report.position_record.take_profit_1 <= 0 else f"${report.position_record.take_profit_1:,.2f}"
+                    hdr = f"ALGO-TRADE [ID #{sess.short_id}] (4 INDIKATOR)" if sess.is_trade_mode else f"AUTO-TRADE [ID #{sess.short_id}]"
                     await notify_callback(
                         sess.user_id,
-                        f"🚀 <b>AUTO-TRADE [ID #{sess.short_id}] MEMBUKA LAYER BARU ({curr_layer}/{sess.max_positions}) — {sess.symbol}</b>\n"
+                        f"🚀 <b>{hdr} MEMBUKA LAYER BARU ({curr_layer}/{sess.max_positions}) — {sess.symbol}</b>\n"
                         f"• <b>Aksi &amp; Lot:</b> <b>{report.order_result.side} {report.order_result.symbol} ({report.order_result.executed_qty} Lot)</b>\n"
                         f"• <b>Harga Masuk (1m):</b> <code>${report.order_result.avg_price:,.2f}</code>\n"
                         f"• <b>Stop Loss:</b> <code>${report.position_record.stop_loss:,.2f}</code> | "

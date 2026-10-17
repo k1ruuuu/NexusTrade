@@ -443,6 +443,15 @@ class SmartAutoTraderEngine:
                     f"💎 4 INDIKATOR MURNI TERKONFIRMASI ({pat_str}{decision.badge}) ➔ "
                     f"UT TS: ${ut_ts:,.2f} | ST: ${st_val:,.2f}{oc_info} (Keyakinan {decision.confidence * 100:.1f}%)"
                 )
+            elif decision.is_sideways:
+                tech_detail = (
+                    f"DITOLAK (/trade): Pasar Sedang Sideways / Konsolidasi ({decision.market_structure_status}) — "
+                    f"Menunggu Konfirmasi Arah Tren ({decision.mtf_summary})"
+                )
+            elif not tech_aligned:
+                tech_detail = f"DITOLAK (/trade): Sinyal Teknis Belum Selaras (S_tech={decision.s_tech:+.2f})"
+            elif decision.expectancy_r <= 0.0:
+                tech_detail = f"DITOLAK (/trade): Ekspektansi Nilai R Negatif ({decision.expectancy_r:+.2f}R)"
             else:
                 tech_detail = f"DITOLAK (/trade): Keyakinan {decision.confidence * 100:.1f}% < {min_conf * 100:.0f}%"
         elif is_event_sniper:
@@ -501,19 +510,39 @@ class SmartAutoTraderEngine:
 
         # Gate 4: Support & Resistance Structural Room Check
         if decision.action == "BUY":
-            sr_ok = decision.dist_to_r1_pct >= 0.15
-            sr_detail = (
-                f"Ruang Naik ke Resistance R1 ({decision.resistance_1:,.2f}) masih lega (+{decision.dist_to_r1_pct:.2f}%)"
-                if sr_ok
-                else f"DITOLAK: Harga terlalu mepet atap Resistance R1 ({decision.resistance_1:,.2f}, sisa +{decision.dist_to_r1_pct:.2f}%)"
-            )
+            if decision.resistance_1 > 0 and decision.entry_price >= decision.resistance_1:
+                # Bullish Breakout above R1: Measure room towards Resistance R2
+                dist_to_r2_pct = ((decision.resistance_2 - decision.entry_price) / max(decision.entry_price, 1e-6)) * 100.0
+                sr_ok = dist_to_r2_pct >= 0.15
+                sr_detail = (
+                    f"Breakout R1 Terkonfirmasi: Ruang naik ke Resistance R2 ({decision.resistance_2:,.2f}) terbuka lega (+{dist_to_r2_pct:.2f}%)"
+                    if sr_ok
+                    else f"DITOLAK: Breakout R1 tapi terlalu mepet atap Resistance R2 ({decision.resistance_2:,.2f}, sisa +{dist_to_r2_pct:.2f}%)"
+                )
+            else:
+                sr_ok = decision.dist_to_r1_pct >= 0.15
+                sr_detail = (
+                    f"Ruang Naik ke Resistance R1 ({decision.resistance_1:,.2f}) masih lega (+{decision.dist_to_r1_pct:.2f}%)"
+                    if sr_ok
+                    else f"DITOLAK: Harga terlalu mepet atap Resistance R1 ({decision.resistance_1:,.2f}, sisa +{decision.dist_to_r1_pct:.2f}%)"
+                )
         elif decision.action == "SELL":
-            sr_ok = abs(decision.dist_to_s1_pct) >= 0.15
-            sr_detail = (
-                f"Ruang Turun ke Support S1 ({decision.support_1:,.2f}) masih lega ({decision.dist_to_s1_pct:.2f}%)"
-                if sr_ok
-                else f"DITOLAK: Harga terlalu mepet lantai Support S1 ({decision.support_1:,.2f}, sisa {decision.dist_to_s1_pct:.2f}%)"
-            )
+            if decision.support_1 > 0 and decision.entry_price <= decision.support_1:
+                # Bearish Breakdown below S1: Measure room towards Support S2
+                dist_to_s2_pct = ((decision.entry_price - decision.support_2) / max(decision.entry_price, 1e-6)) * 100.0
+                sr_ok = dist_to_s2_pct >= 0.15
+                sr_detail = (
+                    f"Breakdown S1 Terkonfirmasi: Ruang turun ke Support S2 ({decision.support_2:,.2f}) terbuka lega (-{dist_to_s2_pct:.2f}%)"
+                    if sr_ok
+                    else f"DITOLAK: Breakdown S1 tapi terlalu mepet lantai Support S2 ({decision.support_2:,.2f}, sisa -{dist_to_s2_pct:.2f}%)"
+                )
+            else:
+                sr_ok = abs(decision.dist_to_s1_pct) >= 0.15
+                sr_detail = (
+                    f"Ruang Turun ke Support S1 ({decision.support_1:,.2f}) masih lega ({decision.dist_to_s1_pct:.2f}%)"
+                    if sr_ok
+                    else f"DITOLAK: Harga terlalu mepet lantai Support S1 ({decision.support_1:,.2f}, sisa {decision.dist_to_s1_pct:.2f}%)"
+                )
         else:
             sr_ok = False
             sr_detail = f"Menunggu sinyal arah di antara Support S1 ({decision.support_1:,.2f}) & Resistance R1 ({decision.resistance_1:,.2f})"
@@ -562,7 +591,7 @@ class SmartAutoTraderEngine:
             elif cb_tripped:
                 risk_detail = (
                     f"DITOLAK: Circuit Breaker Rugi Harian aktif "
-                    f"(Drawdown {eff_dd * 100:.2f}% >= batas {self.settings.max_daily_drawdown_limit * 100:.1f}%)"
+                    f"(Drawdown {eff_dd * 100:.2f}% >= batas {eff_dd_limit * 100:.1f}%)"
                 )
             elif not decision.approved or decision.volatility_regime == "EXTREME":
                 risk_detail = f"DITOLAK: {decision.rejection_reason or 'Volatilitas pasar terlalu ekstrem'}"
