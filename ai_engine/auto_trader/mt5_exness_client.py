@@ -19,6 +19,7 @@ from ai_engine.auto_trader.mt5_symbols import (
 )
 from config.logging_config import get_logger
 from config.settings import get_settings
+from data_pipeline.market_symbols import normalize_symbol
 
 logger = get_logger("nexustrade.auto_trader.mt5_exness")
 

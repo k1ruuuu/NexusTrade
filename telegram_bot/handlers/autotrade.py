@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 from typing import Any, Optional
 
 from aiogram import F, Router
@@ -13,6 +14,9 @@ from aiogram.types import (
 
 from ai_engine.auto_trader.mt5_exness_client import MT5ExnessClient
 from ai_engine.auto_trader.engine import SmartAutoTraderEngine
+from ai_engine.auto_trader.user_vault import UserVault
+from ai_engine.models.ensemble_agent import EnsembleDecisionAgent
+from config.settings import Settings, get_settings
 from ai_engine.auto_trader.session_manager import (
     format_position_closed_notification,
 )

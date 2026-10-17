@@ -63,7 +63,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         """Stop a specific active autotrade session by short_id (e.g. '1', '2') or session_id or symbol."""
         uid = int(user_id)
         raw_id = str(target_id).strip()
-        cleaned_id = raw_id.upper().lstrip("#").strip()
+        cleaned_id = raw_id.upper().strip("{}# ").strip()
         if cleaned_id.startswith("AT-"):
             cleaned_id = cleaned_id.split("-", 1)[1].strip()
 
@@ -73,8 +73,11 @@ class AutoTradeSessionManager(PositionMonitorMixin):
                     sess.short_id == raw_id
                     or sess.short_id == cleaned_id
                     or sess.session_id.upper() == raw_id.upper()
+                    or sess.session_id.upper() == cleaned_id
                     or sess.symbol.upper() == raw_id.upper()
+                    or sess.symbol.upper() == cleaned_id
                     or f"AT-{sess.short_id}".upper() == raw_id.upper()
+                    or f"AT-{sess.short_id}".upper() == cleaned_id
                 ):
                     sess.status = "STOPPED"
                     if sess.task is not None and not sess.task.done():
