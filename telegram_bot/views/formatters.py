@@ -191,6 +191,20 @@ def format_signal_card(decision: SignalDecision) -> str:
         liq_line = f"• <b>Peta Likuiditas:</b> 🧲 BSL (Atas) <code>${bsl_val:,.2f}</code> | SSL (Bawah) <code>${ssl_val:,.2f}</code>{sweep_tag}\n"
     else:
         liq_line = ""
+    svb_verdict = str(decision.indicators.get("sweep_vs_breakout_verdict", "")).strip()
+    if svb_verdict and svb_verdict not in ("", "BELUM_TEMBUS", "NORMAL_BELUM_TEMBUS"):
+        svb_badge = (
+            "🎯 SWEEP JEBAKAN (Wick Tembus, Balik Cepat)"
+            if svb_verdict == "SWEEP_JEBAKAN"
+            else (
+                "🚀 BREAKOUT ASLI (Body Tembus, Retest Bertahan)"
+                if "BREAK" in svb_verdict
+                else "⏳ MENUNGGU RETEST (Tunggu Retest Selesai)"
+            )
+        )
+        svb_line = f"• <b>Sweep vs Breakout:</b> {svb_badge}\n"
+    else:
+        svb_line = ""
     htf_inst = str(decision.indicators.get("htf_macro_instruction", "")).strip()
     htf_verdict = str(decision.indicators.get("htf_ltf_verdict", "")).strip()
     htf_line = f"• <b>Tren Utama (HTF):</b> {html.escape(htf_inst)}\n• <b>Keselarasan LTF:</b> {html.escape(htf_verdict)}\n" if htf_inst else ""
@@ -223,6 +237,7 @@ def format_signal_card(decision: SignalDecision) -> str:
         f"• <b>Posisi S/R:</b> <i>{html.escape(decision.sr_status)}</i>\n"
         f"{ms_line}"
         f"{liq_line}"
+        f"{svb_line}"
         f"• <b>Kondisi Tren:</b> <i>{html.escape(decision.market_structure_status)}</i>\n\n"
         f"<b>🧠 Analisis 6 Pilar:</b>\n"
         f"{htf_line}"

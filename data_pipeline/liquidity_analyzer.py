@@ -50,6 +50,19 @@ class LiquiditySweepEvent:
 
 
 @dataclass
+class SweepVsBreakoutAssessment:
+    """Hasil diagnosis perbandingan mendalam antara Sweep (Jebakan) vs Breakout Asli."""
+    level: float
+    level_type: Literal["RESISTANCE_EQH", "SUPPORT_EQL", "KEY_HIGH", "KEY_LOW"]
+    verdict: Literal["SWEEP_JEBAKAN", "BREAKOUT_ASLI", "BREAKDOWN_ASLI", "MENUNGGU_RETEST", "BELUM_TEMBUS"]
+    pierce_type: Literal["WICK", "BODY", "BELUM_TEMBUS"]
+    close_position: Literal["DI_DALAM_LEVEL", "DI_LUAR_LEVEL", "BELUM_TEMBUS"]
+    retest_status: Literal["BERTAHAN_FLIP_SR", "GAGAL_BALIK_ARAH", "SEDANG_RETEST", "BELUM_RETEST"]
+    retest_held: bool
+    details: str
+    three_checks_display: str
+
+@dataclass
 class LiquidityAnalysisResult:
     """Hasil diagnosis komprehensif peta likuiditas sebelum entry."""
     symbol: str
@@ -68,6 +81,7 @@ class LiquidityAnalysisResult:
     rule_3_sl_placement_guide: str = ""                # Rekomendasi penempatan SL aman dari perburuan
     smart_entry_bias: Literal["BUY", "SELL", "WAIT"] = "WAIT"
     three_rules_display: str = ""
+    sweep_vs_breakout: Optional[SweepVsBreakoutAssessment] = None
 
 
 class LiquidityAnalyzer:
@@ -241,6 +255,197 @@ class LiquidityAnalyzer:
                     )
 
         return None
+    @classmethod
+    def evaluate_sweep_vs_breakout(
+        cls,
+        df: pd.DataFrame,
+        resistance_level: Optional[float] = None,
+        support_level: Optional[float] = None,
+        lookback_bars: int = 8,
+    ) -> Optional[SweepVsBreakoutAssessment]:
+        """
+        Membedakan Sweep vs Breakout Asli berdasarkan 3 Checklist:
+        1. Tembus pakai wick atau body?
+        2. Candle nya close di mana? (Di luar atau di dalam level?)
+        3. Saat retest, bertahan atau balik?
+
+        Aturan Emas:
+        - Jangan bereaksi saat harga baru menembus.
+        - Tunggu candle nya close dulu, lalu lihat retest-nya!
+        """
+        if len(df) < lookback_bars:
+            return None
+
+        subset = df.tail(lookback_bars)
+        opens = pd.to_numeric(subset["open"], errors="coerce").astype(np.float64).values
+        highs = pd.to_numeric(subset["high"], errors="coerce").astype(np.float64).values
+        lows = pd.to_numeric(subset["low"], errors="coerce").astype(np.float64).values
+        closes = pd.to_numeric(subset["close"], errors="coerce").astype(np.float64).values
+        n = len(subset)
+
+        # 1. Evaluasi Penembusan Resistance (Equal Highs / BSL)
+        if resistance_level is not None and resistance_level > 0:
+            r = resistance_level
+            breach_idx = -1
+            for i in range(n):
+                if highs[i] > r:
+                    breach_idx = i
+                    break
+
+            if breach_idx != -1:
+                b_open, b_high, b_low, b_close = opens[breach_idx], highs[breach_idx], lows[breach_idx], closes[breach_idx]
+                b_range = max(b_high - b_low, 1e-6)
+                b_body = abs(b_close - b_open)
+                upper_wick = max(0.0, b_high - max(b_open, b_close))
+
+                # Skenario 1: SWEEP pada Resistance
+                # Tembus hanya dengan sumbu (wick), candle close kembali di bawah level
+                if b_close <= r:
+                    pierce_type = "WICK"
+                    close_pos = "DI_DALAM_LEVEL"
+                    retest_st = "GAGAL_BALIK_ARAH"
+                    verdict = "SWEEP_JEBAKAN"
+                    detail = (
+                        f"SWEEP JEBAKAN: Harga menembus Resistance (${r:,.2f}) hanya dengan sumbu (High ${b_high:,.2f}), "
+                        f"tetapi candle CLOSE DI BAWAH (${b_close:,.2f}). Stop-Loss seller sudah diambil, breakout trader "
+                        f"terjebak ➔ Waspada Berbalik Turun Cepat!"
+                    )
+                    held = False
+                # Skenario 2: BREAKOUT pada Resistance
+                # Body besar, close jelas di atas level
+                else:
+                    pierce_type = "BODY"
+                    close_pos = "DI_LUAR_LEVEL"
+                    # Cek retest pada candle setelah penembusan
+                    post_bars_lows = lows[breach_idx + 1:] if breach_idx < n - 1 else []
+                    post_bars_closes = closes[breach_idx + 1:] if breach_idx < n - 1 else []
+
+                    if len(post_bars_lows) > 0:
+                        # Apakah ada candle yang menguji kembali level resistance (retest)
+                        retest_occurred = any(l <= r * 1.0015 for l in post_bars_lows)
+                        retest_failed = any(c < r * 0.9995 for c in post_bars_closes)
+
+                        if retest_occurred and not retest_failed:
+                            verdict = "BREAKOUT_ASLI"
+                            retest_st = "BERTAHAN_FLIP_SR"
+                            detail = (
+                                f"BREAKOUT ASLI: Candle tembus pakai BODY (Close ${b_close:,.2f} di atas Resistance ${r:,.2f}), "
+                                f"kemudian retest berhasil BERTAHAN (Resistance berubah fungsi menjadi Support) ➔ Siap Lanjut Naik!"
+                            )
+                            held = True
+                        elif retest_failed:
+                            verdict = "SWEEP_JEBAKAN"
+                            retest_st = "GAGAL_BALIK_ARAH"
+                            detail = f"BREAKOUT GAGAL (FAKE BREAKOUT): Sempat close di atas, namun saat retest gagal bertahan dan jatuh kembali di bawah ${r:,.2f}."
+                            held = False
+                        else:
+                            verdict = "MENUNGGU_RETEST"
+                            retest_st = "BELUM_RETEST"
+                            detail = f"CANDLE CLOSE DI ATAS RESISTANCE: Tanda buyer serius. JANGAN LANGSUNG FOMO! Tunggu retest ke level ${r:,.2f} dan pastikan bertahan."
+                            held = False
+                    else:
+                        verdict = "MENUNGGU_RETEST"
+                        retest_st = "BELUM_RETEST"
+                        detail = f"Candle baru saja close di atas ${r:,.2f}. Tunggu candle berikutnya melakukan retest."
+                        held = False
+
+                checks = (
+                    f"1. 🔍 TEMBUS PAKAI: {pierce_type}\n"
+                    f"2. 🚪 CANDLE CLOSE: {close_pos} (Level ${r:,.2f})\n"
+                    f"3. 🔄 STATUS RETEST: {retest_st} (Bertahan: {held})"
+                )
+                return SweepVsBreakoutAssessment(
+                    level=r,
+                    level_type="RESISTANCE_EQH",
+                    verdict=verdict,
+                    pierce_type=pierce_type,
+                    close_position=close_pos,
+                    retest_status=retest_st,
+                    retest_held=held,
+                    details=detail,
+                    three_checks_display=checks,
+                )
+
+        # 2. Evaluasi Penembusan Support (Equal Lows / SSL)
+        if support_level is not None and support_level > 0:
+            s = support_level
+            breach_idx = -1
+            for i in range(n):
+                if lows[i] < s:
+                    breach_idx = i
+                    break
+
+            if breach_idx != -1:
+                b_open, b_high, b_low, b_close = opens[breach_idx], highs[breach_idx], lows[breach_idx], closes[breach_idx]
+
+                # Skenario 1: SWEEP pada Support
+                # Tembus hanya dengan sumbu, candle close kembali di atas level
+                if b_close >= s:
+                    pierce_type = "WICK"
+                    close_pos = "DI_DALAM_LEVEL"
+                    retest_st = "GAGAL_BALIK_ARAH"
+                    verdict = "SWEEP_JEBAKAN"
+                    detail = (
+                        f"SWEEP JEBAKAN: Harga menembus Support (${s:,.2f}) hanya dengan sumbu (Low ${b_low:,.2f}), "
+                        f"tetapi candle CLOSE DI ATAS (${b_close:,.2f}). Stop-Loss buyer sudah diambil, breakdown trader "
+                        f"terjebak ➔ Waspada Berbalik Naik Cepat!"
+                    )
+                    held = False
+                # Skenario 2: BREAKDOWN pada Support
+                # Body besar, close jelas di bawah level
+                else:
+                    pierce_type = "BODY"
+                    close_pos = "DI_LUAR_LEVEL"
+                    post_bars_highs = highs[breach_idx + 1:] if breach_idx < n - 1 else []
+                    post_bars_closes = closes[breach_idx + 1:] if breach_idx < n - 1 else []
+
+                    if len(post_bars_highs) > 0:
+                        retest_occurred = any(h >= s * 0.9985 for h in post_bars_highs)
+                        retest_failed = any(c > s * 1.0005 for c in post_bars_closes)
+
+                        if retest_occurred and not retest_failed:
+                            verdict = "BREAKDOWN_ASLI"
+                            retest_st = "BERTAHAN_FLIP_SR"
+                            detail = (
+                                f"BREAKDOWN ASLI: Candle tembus pakai BODY (Close ${b_close:,.2f} di bawah Support ${s:,.2f}), "
+                                f"kemudian retest berhasil BERTAHAN di bawah level (Support berubah fungsi jadi Resistance) ➔ Siap Lanjut Turun!"
+                            )
+                            held = True
+                        elif retest_failed:
+                            verdict = "SWEEP_JEBAKAN"
+                            retest_st = "GAGAL_BALIK_ARAH"
+                            detail = f"BREAKDOWN GAGAL (FAKE BREAKDOWN): Sempat close di bawah, namun saat retest melonjak kembali di atas ${s:,.2f}."
+                            held = False
+                        else:
+                            verdict = "MENUNGGU_RETEST"
+                            retest_st = "BELUM_RETEST"
+                            detail = f"CANDLE CLOSE DI BAWAH SUPPORT: Tanda seller serius. JANGAN LANGSUNG FOMO! Tunggu retest ke level ${s:,.2f} dan pastikan bertahan."
+                            held = False
+                    else:
+                        verdict = "MENUNGGU_RETEST"
+                        retest_st = "BELUM_RETEST"
+                        detail = f"Candle baru saja close di bawah ${s:,.2f}. Tunggu candle berikutnya melakukan retest."
+                        held = False
+
+                checks = (
+                    f"1. 🔍 TEMBUS PAKAI: {pierce_type}\n"
+                    f"2. 🚪 CANDLE CLOSE: {close_pos} (Level ${s:,.2f})\n"
+                    f"3. 🔄 STATUS RETEST: {retest_st} (Bertahan: {held})"
+                )
+                return SweepVsBreakoutAssessment(
+                    level=s,
+                    level_type="SUPPORT_EQL",
+                    verdict=verdict,
+                    pierce_type=pierce_type,
+                    close_position=close_pos,
+                    retest_status=retest_st,
+                    retest_held=held,
+                    details=detail,
+                    three_checks_display=checks,
+                )
+
+        return None
+
 
     @classmethod
     def analyze_liquidity(
@@ -287,6 +492,14 @@ class LiquidityAnalyzer:
             lookback_bars=6,
         )
 
+        # Evaluasi Mendalam: Sweep (Jebakan) vs Breakout Asli
+        svb_assessment = cls.evaluate_sweep_vs_breakout(
+            df=df,
+            resistance_level=nearest_bsl if nearest_bsl > 0 else None,
+            support_level=nearest_ssl if nearest_ssl > 0 else None,
+            lookback_bars=8,
+        )
+
         # Susun Ringkasan Aturan 1
         if eq_highs and eq_lows:
             r1_text = f"Terdeteksi {len(eq_highs)} Equal Highs (${eq_highs[0].price_level:,.2f}) & {len(eq_lows)} Equal Lows (${eq_lows[0].price_level:,.2f})"
@@ -327,8 +540,10 @@ class LiquidityAnalyzer:
             f"1. 🎯 EQUAL HIGHS & LOWS: {r1_text}\n"
             f"2. 🧲 PETA LIKUIDITAS: {r2_text}\n"
             f"3. 🛡️ PENEMPATAN SL CERDAS: {r3_text}\n"
-            f"4. ⚡ STATUS SAPUAN (SWEEP): {sweep_event.details if sweep_event else 'Tidak ada sapuan instan dalam 3 bar terakhir'}"
+            f"4. ⚡ STATUS SAPUAN (SWEEP): {sweep_event.details if sweep_event else (svb_assessment.details if svb_assessment else 'Tidak ada sapuan instan dalam 3 bar terakhir')}"
         )
+        if svb_assessment is not None:
+            three_rules_card += f"\n5. ⚖️ EVALUASI TEMBUSAN: {svb_assessment.verdict}\n{svb_assessment.three_checks_display}"
 
         all_pools = eq_highs + eq_lows
 
@@ -346,5 +561,6 @@ class LiquidityAnalyzer:
             rule_2_bsl_ssl_summary=r2_text,
             rule_3_sl_placement_guide=r3_text,
             smart_entry_bias=smart_bias,
+            sweep_vs_breakout=svb_assessment,
             three_rules_display=three_rules_card,
         )

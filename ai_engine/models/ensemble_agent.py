@@ -755,6 +755,21 @@ class EnsembleDecisionAgent:
                 blended_s_tech = min(0.96, blended_s_tech + 0.15)
             elif liq_res.recent_sweep.sweep_type == "BEARISH_BSL_SWEEP":
                 blended_s_tech = max(-0.96, blended_s_tech - 0.15)
+        if liq_res.sweep_vs_breakout is not None:
+            svb = liq_res.sweep_vs_breakout
+            if svb.verdict == "BREAKOUT_ASLI":
+                blended_s_tech = max(0.35, blended_s_tech + 0.20)
+            elif svb.verdict == "BREAKDOWN_ASLI":
+                blended_s_tech = min(-0.35, blended_s_tech - 0.20)
+            elif svb.verdict == "SWEEP_JEBAKAN":
+                if svb.level_type == "RESISTANCE_EQH":
+                    blended_s_tech = min(-0.25, blended_s_tech - 0.25)
+                elif svb.level_type == "SUPPORT_EQL":
+                    blended_s_tech = max(0.25, blended_s_tech + 0.25)
+            elif svb.verdict == "MENUNGGU_RETEST":
+                # Jangan langsung FOMO saat baru tembus: tunggu retest selesai!
+                blended_s_tech = round(blended_s_tech * 0.75, 4)
+
 
         last_cp = cp_5m_df.iloc[-1]
         active_pattern = str(last_cp.get("cp_pattern_name", "")).strip() or cs_analysis.latest_candle.pattern_label
@@ -867,6 +882,9 @@ class EnsembleDecisionAgent:
                 "liquidity_eq_summary": liq_res.rule_1_eq_summary,
                 "liquidity_sweep_desc": liq_res.recent_sweep.details if liq_res.recent_sweep else "Tidak ada sapuan instan",
                 "liquidity_sl_guide": liq_res.rule_3_sl_placement_guide,
+                "sweep_vs_breakout_verdict": liq_res.sweep_vs_breakout.verdict if liq_res.sweep_vs_breakout else "BELUM_TEMBUS",
+                "sweep_vs_breakout_detail": liq_res.sweep_vs_breakout.details if liq_res.sweep_vs_breakout else "",
+                "sweep_vs_breakout_3checks": liq_res.sweep_vs_breakout.three_checks_display if liq_res.sweep_vs_breakout else "",
             },
             headlines=[h.headline for h in sent_90d.headline_scores],
             newly_learned_headlines=sent_90d.newly_learned_count,

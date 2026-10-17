@@ -161,3 +161,76 @@ def test_rule_3_anti_stop_hunt_sl_placement():
     # Verify 1:2 RRR is preserved based on the new safe SL distance
     risk_1r = entry - targets_safe.stop_loss
     assert abs((targets_safe.take_profit_1 - entry) - (2.0 * risk_1r)) <= 0.05
+
+
+def test_sweep_vs_breakout_resistance_sweep():
+    """Verify Scenario 1: Resistance Sweep (Tembus wick, close di bawah, balik cepat)."""
+    r_level = 120.0
+    records = [
+        {"open": 110.0, "high": 115.0, "low": 109.0, "close": 114.0},
+        {"open": 114.0, "high": 123.0, "low": 112.0, "close": 118.0},  # Wick breaches 120, but closes at 118 (below)
+    ]
+    df = create_candle_df(records)
+
+    assessment = LiquidityAnalyzer.evaluate_sweep_vs_breakout(
+        df=df,
+        resistance_level=r_level,
+        lookback_bars=2,
+    )
+    assert assessment is not None
+    assert assessment.verdict == "SWEEP_JEBAKAN"
+    assert assessment.pierce_type == "WICK"
+    assert assessment.close_position == "DI_DALAM_LEVEL"
+    assert assessment.retest_status == "GAGAL_BALIK_ARAH"
+    assert assessment.retest_held is False
+    assert "1. 🔍 TEMBUS PAKAI: WICK" in assessment.three_checks_display
+    assert "2. 🚪 CANDLE CLOSE: DI_DALAM_LEVEL" in assessment.three_checks_display
+
+
+def test_sweep_vs_breakout_resistance_true_breakout():
+    """Verify Scenario 2: True Breakout (Body besar close di atas, retest bertahan)."""
+    r_level = 120.0
+    records = [
+        {"open": 112.0, "high": 116.0, "low": 111.0, "close": 115.0},
+        # Bar 1: Strong body breakout closing at 124.0 (clearly above 120.0)
+        {"open": 115.0, "high": 125.0, "low": 114.5, "close": 124.0},
+        # Bar 2: Retest pulling back to test 120.1 and closing back up at 122.5 (holds as new support)
+        {"open": 124.0, "high": 124.5, "low": 120.1, "close": 122.5},
+    ]
+    df = create_candle_df(records)
+
+    assessment = LiquidityAnalyzer.evaluate_sweep_vs_breakout(
+        df=df,
+        resistance_level=r_level,
+        lookback_bars=3,
+    )
+    assert assessment is not None
+    assert assessment.verdict == "BREAKOUT_ASLI"
+    assert assessment.pierce_type == "BODY"
+    assert assessment.close_position == "DI_LUAR_LEVEL"
+    assert assessment.retest_status == "BERTAHAN_FLIP_SR"
+    assert assessment.retest_held is True
+    assert "Resistance berubah fungsi menjadi Support" in assessment.details
+
+
+def test_sweep_vs_breakout_support_sweep():
+    """Verify Support Sweep: Equal Lows swept by wick, candle closes above support."""
+    s_level = 100.0
+    records = [
+        {"open": 105.0, "high": 108.0, "low": 104.0, "close": 106.0},
+        # Wick dips down to 96.0, but closes at 101.5 (above support)
+        {"open": 106.0, "high": 107.0, "low": 96.0, "close": 101.5},
+    ]
+    df = create_candle_df(records)
+
+    assessment = LiquidityAnalyzer.evaluate_sweep_vs_breakout(
+        df=df,
+        support_level=s_level,
+        lookback_bars=2,
+    )
+    assert assessment is not None
+    assert assessment.verdict == "SWEEP_JEBAKAN"
+    assert assessment.pierce_type == "WICK"
+    assert assessment.close_position == "DI_DALAM_LEVEL"
+    assert assessment.retest_held is False
+    assert "Waspada Berbalik Naik Cepat" in assessment.details
