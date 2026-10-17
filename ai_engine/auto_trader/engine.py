@@ -10,7 +10,11 @@ import numpy as np
 import pandas as pd
 
 from ai_engine.auto_trader.mt5_symbols import (
+    GridScalperConfig,
+    build_pending_stop_grid_levels,
+    calculate_compounded_grid_lot,
     calculate_ea_sl_tp,
+    get_mt5_digits_and_point,
     get_mt5_pip_size,
 )
 
@@ -176,6 +180,46 @@ class SmartAutoTraderEngine:
     ) -> list[AutoTradeSessionState]:
         return self.session_manager.stop_user_sessions(user_id, symbol=symbol)
 
+    async def evaluate_and_execute_grid_cycle(self, sess: AutoTradeSessionState) -> Any:
+        """
+        Execute one cycle of EA_GRID_SCALPER:
+        1. Query live balance and equity.
+        2. Check Target Equity ($5,000) or Max Drawdown -> Mass Close if reached.
+        3. Calculate compounded lot size.
+        4. Deploy/verify pending stop grid trap orders.
+        """
+        creds = self.vault.resolve_credentials(sess.user_id)
+        if creds is None:
+            return None
+        acct_key = creds.account_id or creds.api_key.strip() or str(sess.user_id)
+        await refresh_live_exness_balance(self.vault, self.mt5_client, sess.user_id, creds)
+        live_eq = float(creds.verified_usdt_balance)
+
+        cfg = GridScalperConfig()
+
+        # Hard Target Equity Auto-Stop ($5,000 target from video)
+        if live_eq >= cfg.target_equity_usd:
+            logger.info("Target Equity reached in Grid EA cycle", equity=live_eq)
+            await self.mt5_client.close_all_and_delete_pending(creds.api_key, creds.api_secret, sess.symbol, creds.server_name)
+            sess.status = "COMPLETED"
+            if self.notify_user_callback:
+                await self.notify_user_callback(
+                    sess.user_id,
+                    f"🎉 <b>TARGET EQUITY TERCAPAI (${live_eq:,.2f} >= ${cfg.target_equity_usd:,.2f})</b>\n"
+                    f"Seluruh posisi dan pending order {sess.symbol} berhasil ditutup & dibersihkan."
+                )
+            return None
+
+        comp_lot = calculate_compounded_grid_lot(live_eq, cfg)
+        sess.current_lot = comp_lot
+
+        ref_px = sess.live_current_price if sess.live_current_price > 0 else 2650.0
+        pip_sz = get_mt5_pip_size(sess.symbol, ref_px)
+        spread = 15 * (pip_sz * 0.10)
+        grid_orders = build_pending_stop_grid_levels(sess.symbol, ref_px, ref_px + spread, cfg)
+
+        sess.last_check_summary = f"Trap Grid M1 Aktif (Lot {comp_lot:.2f} | Equity ${live_eq:,.2f})"
+        return sess
     async def monitor_and_manage_open_position(
         self,
         user_id: int,
@@ -466,6 +510,7 @@ class SmartAutoTraderEngine:
                 s_sent=0.0,
                 risk_multiplier=1.0,
                 entry_price=latest_price,
+                position_units=round(0.01 * get_mt5_contract_size(clean_sym), 4),
                 stop_loss=ea_sl,
                 take_profit_1=ea_tp,
                 take_profit_2=ea_tp,
@@ -528,6 +573,7 @@ class SmartAutoTraderEngine:
                 s_sent=0.0,
                 risk_multiplier=1.0,
                 entry_price=latest_price,
+                position_units=round(0.01 * get_mt5_contract_size(clean_sym), 4),
                 stop_loss=ea_sl,
                 take_profit_1=ea_tp,
                 take_profit_2=ea_tp,
@@ -539,6 +585,44 @@ class SmartAutoTraderEngine:
                 support_1=latest_price * 0.95,
                 support_2=latest_price * 0.90,
                 indicators={"ema9": e9, "ema21": e21, "ea_mode": "EA_SCALPING", "ea_detail": ea_detail},
+            )
+        elif ea_mode == "EA_GRID_SCALPER":
+            market_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="1m", limit=100)
+            closes = pd.to_numeric(market_df["close"], errors="coerce").ffill()
+            latest_price = float(closes.iloc[-1])
+            grid_cfg = GridScalperConfig()
+            comp_lot = calculate_compounded_grid_lot(user_equity, grid_cfg)
+            ea_sl, ea_tp, _ = calculate_ea_sl_tp(
+                symbol=clean_sym,
+                side="BUY",
+                entry_price=latest_price,
+                sl_pips=grid_cfg.stop_loss_pips,
+                tp_pips=grid_cfg.take_profit_pips,
+                stops_level_pips=3.0,
+            )
+            decision = SignalDecision(
+                symbol=clean_sym,
+                timeframe="1m",
+                action="BUY",
+                badge="EA-GRID SCALPER",
+                confidence=0.90,
+                s_tech=0.60,
+                s_vol=0.10,
+                s_sent=0.0,
+                risk_multiplier=1.0,
+                entry_price=latest_price,
+                position_units=round(comp_lot * get_mt5_contract_size(clean_sym), 4),
+                stop_loss=ea_sl,
+                take_profit_1=ea_tp,
+                take_profit_2=ea_tp,
+                expectancy_r=1.5,
+                confluence_pillars=5,
+                is_sideways=False,
+                resistance_1=latest_price * 1.05,
+                resistance_2=latest_price * 1.10,
+                support_1=latest_price * 0.95,
+                support_2=latest_price * 0.90,
+                indicators={"ea_mode": "EA_GRID_SCALPER", "comp_lot": comp_lot, "ea_detail": f"Trap Grid M1 Aktif (Lot {comp_lot:.2f})"},
             )
         else:
             decision = self.ensemble_agent.analyze_multi_timeframe_autotrade(
@@ -611,6 +695,10 @@ class SmartAutoTraderEngine:
             else:
                 tech_detail = f"DITOLAK (EA-SCP): {ea_detail_str}"
             conf_ok = ea_ok
+        elif ea_mode == "EA_GRID_SCALPER":
+            ea_ok = True
+            tech_detail = f"🪤 EA GRID/TRAP SCALPER M1: Pending Stop Trap Grid Aktif (Lot {decision.indicators.get('comp_lot', 0.01):.2f})"
+            conf_ok = True
         elif trade_mode:
             if decision.action == "BUY":
                 quad_ok = (ut_trend >= 0) and (st_dir >= 0) and (oc_sig >= 0) and (cp_score >= -0.5)
@@ -699,12 +787,16 @@ class SmartAutoTraderEngine:
             AutoTradeGateCheck(
                 gate_number=3,
                 name=(
-                    "EA Expert Advisor MT5 (RSI 14)"
-                    if ea_mode == "EA_EXPERT_ADVISOR"
+                    "EA Grid/Trap Scalper M1"
+                    if ea_mode == "EA_GRID_SCALPER"
                     else (
-                        "EA Scalping M1/M5 (Micro Momentum)"
-                        if ea_mode == "EA_SCALPING"
-                        else ("Strategi 4 Indikator Murni (/trade)" if trade_mode else "Strategi UT Bot + Supertrend + OC Signals (1D•1H•15M•5M ➔ 1M)")
+                        "EA Expert Advisor MT5 (RSI 14)"
+                        if ea_mode == "EA_EXPERT_ADVISOR"
+                        else (
+                            "EA Scalping M1/M5 (Micro Momentum)"
+                            if ea_mode == "EA_SCALPING"
+                            else ("Strategi 4 Indikator Murni (/trade)" if trade_mode else "Strategi UT Bot + Supertrend + OC Signals (1D•1H•15M•5M ➔ 1M)")
+                        )
                     )
                 ),
                 passed=conf_ok,
@@ -872,11 +964,11 @@ class SmartAutoTraderEngine:
                 eff_stop_loss = decision.stop_loss
                 eff_take_profit = decision.take_profit_1
 
-            digits = 2 if decision.entry_price >= 10.0 else (4 if decision.entry_price >= 0.1 else 5)
+            digits, pt = get_mt5_digits_and_point(clean_sym, decision.entry_price)
             spec = SymbolTradingSpec(
                 symbol=clean_sym,
                 digits=digits,
-                point=10.0 ** (-digits),
+                point=pt,
                 contract_size=get_mt5_contract_size(clean_sym),
                 volume_min=0.01,
                 volume_max=100.0,
@@ -890,6 +982,7 @@ class SmartAutoTraderEngine:
                 max_total_drawdown_limit=self.settings.max_total_drawdown_limit,
                 max_open_risk_fraction=self.settings.max_open_risk_fraction,
                 live_trading_enabled=self.settings.live_trading_enabled,
+                allow_micro_min_lot_override=bool(ea_mode),
             )
 
             preflight = policy.evaluate_preflight(

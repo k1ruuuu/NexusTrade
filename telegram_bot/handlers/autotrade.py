@@ -88,6 +88,14 @@ def build_setup_keyboard(has_creds: bool = False, autotrade_on: bool = False) ->
         )
         rows.append(
             [
+                InlineKeyboardButton(
+                    text="🛑 Tutup Semua Posisi & Hapus Pending",
+                    callback_data="autotrade:panic",
+                ),
+            ]
+        )
+        rows.append(
+            [
                 InlineKeyboardButton(text="👤 Akun Saya", callback_data="setup:myaccount"),
                 InlineKeyboardButton(text="🗑️ Putuskan Akun (/unlink)", callback_data="setup:unlink"),
             ]
@@ -113,6 +121,10 @@ def build_setup_keyboard(has_creds: bool = False, autotrade_on: bool = False) ->
         "ea-ea",
         "ea_ea",
         "eaea",
+        "ea_grid",
+        "ea-grid",
+        "eagrid",
+        "grid",
         ignore_case=True,
     )
 )
@@ -138,8 +150,17 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
     is_trade_mode = cmd_token.startswith("/trade")
     is_ea_scp = any(cmd_token.startswith(p) for p in ("/ea-scp", "/ea_scp", "/eascp"))
     is_ea_ea = any(cmd_token.startswith(p) for p in ("/ea-ea", "/ea_ea", "/eaea"))
-    ea_mode: Optional[str] = "EA_SCALPING" if is_ea_scp else ("EA_EXPERT_ADVISOR" if is_ea_ea else None)
-    cmd_name = "/ea-scp" if is_ea_scp else ("/ea-EA" if is_ea_ea else ("/trade" if is_trade_mode else "/autotrade"))
+    is_ea_grid = any(cmd_token.startswith(p) for p in ("/ea_grid", "/ea-grid", "/eagrid", "/grid"))
+    ea_mode: Optional[str] = (
+        "EA_GRID_SCALPER"
+        if is_ea_grid
+        else ("EA_SCALPING" if is_ea_scp else ("EA_EXPERT_ADVISOR" if is_ea_ea else None))
+    )
+    cmd_name = (
+        "/ea_grid"
+        if is_ea_grid
+        else ("/ea-scp" if is_ea_scp else ("/ea-EA" if is_ea_ea else ("/trade" if is_trade_mode else "/autotrade")))
+    )
     args = parse_command_args(message.text)
     sub = args[0].lower() if args else "status"
     raw_tokens = args[1:] if sub == "scan" else args
@@ -166,7 +187,13 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         await auto_trader.sync_live_mt5_positions(user_id)
         updated = vault.resolve_credentials(user_id)
         positions = vault.get_open_positions(user_id)
-        if is_ea_ea:
+        if is_ea_grid:
+            on_title = (
+                "🟢 <b>Mode EA Grid/Trap Scalper M1 Diaktifkan!</b>\n"
+                "Eksekusi trap stop ganda (BUY_STOP &amp; SELL_STOP) pada M1 dengan auto-compounding lot ($10 ➔ 0.01 lot), "
+                "target profit $5,000, dan pembersihan posisi massal.\n\n"
+            )
+        elif is_ea_ea:
             on_title = (
                 "🟢 <b>Mode EA Expert Advisor MT5 Diaktifkan!</b>\n"
                 "Eksekusi otomatis berbasis <b>RSI 14</b> (RSI >= 70 SELL, RSI <= 30 BUY), "
@@ -409,6 +436,30 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
 
     user_id, user_name = extract_user_identity(callback, default_name="Trader")
     cb_data = callback.data or ""
+
+    if cb_data.startswith("autotrade:close_all_grid:") or cb_data == "autotrade:panic":
+        parts = cb_data.split(":")
+        target_sym = parts[2] if len(parts) > 2 else "XAUUSD"
+        creds = vault.resolve_credentials(user_id)
+        if creds:
+            res = await auto_trader.mt5_client.close_all_and_delete_pending(
+                account_id_or_login=creds.api_key,
+                token_or_password=creds.api_secret,
+                symbol=target_sym,
+                server_name=creds.server_name,
+            )
+            await msg.answer(
+                f"🛑 <b>MASS CLEANUP BERHASIL — {target_sym}</b>\n"
+                f"• Posisi Pasar Ditutup: <b>{res.get('positions_closed', 0)} posisi</b>\n"
+                f"• Pending Trap Dihapus: <b>{res.get('pending_deleted', 0)} order</b>\n\n"
+                f"<i>Seluruh order dan pending trap pada {target_sym} telah dibersihkan.</i>",
+                parse_mode="HTML",
+                reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=False),
+            )
+            await _safe_answer_callback(callback, "Semua posisi & pending order dibersihkan!")
+        else:
+            await _safe_answer_callback(callback, "Akun belum terhubung (/setup)")
+        return
 
     if cb_data in ("setup:mode:exness_trial", "setup:mode:testnet"):
         _PENDING_ADMIN_ACTION.pop(user_id, None)

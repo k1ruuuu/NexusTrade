@@ -127,6 +127,11 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         clean_sym = normalize_symbol(symbol)
         clean_tf = normalize_timeframe(timeframe) if timeframe != "1m" else "1m"
         dur_secs, dur_label = parse_session_duration(duration_code)
+        # Stop any existing running session for this (uid, clean_sym) to prevent duplicates
+        for existing_sess in self.get_user_sessions(uid):
+            if existing_sess.symbol == clean_sym:
+                self.stop_session_by_id(uid, existing_sess.session_id)
+
         # Determine sequential short_id for this user
         active = self.get_user_sessions(uid)
         used_ids = {int(s.short_id) for s in active if s.short_id.isdigit()}
@@ -237,6 +242,9 @@ class AutoTradeSessionManager(PositionMonitorMixin):
             # Re-query open positions after monitoring
             open_positions = self.engine.vault.get_open_positions(sess.user_id, symbol=sess.symbol)
 
+        if sess.ea_mode == "EA_GRID_SCALPER":
+            await self.engine.evaluate_and_execute_grid_cycle(sess)
+
         # Check if more concurrent layers can be opened up to sess.max_positions
         if len(open_positions) < sess.max_positions:
             report = await self.engine.evaluate_and_execute(
@@ -265,7 +273,9 @@ class AutoTradeSessionManager(PositionMonitorMixin):
                 )
                 if notify_callback is not None:
                     tp_str = "Dihapus (Runner)" if report.position_record.take_profit_1 <= 0 else f"${report.position_record.take_profit_1:,.2f}"
-                    if sess.ea_mode == "EA_EXPERT_ADVISOR":
+                    if sess.ea_mode == "EA_GRID_SCALPER":
+                        hdr = f"EA GRID/TRAP [ID #{sess.short_id}] (M1)"
+                    elif sess.ea_mode == "EA_EXPERT_ADVISOR":
                         hdr = f"EA EXPERT ADVISOR [ID #{sess.short_id}] (RSI 14)"
                     elif sess.ea_mode == "EA_SCALPING":
                         hdr = f"EA SCALPING [ID #{sess.short_id}] (M1 MOMENTUM)"
@@ -420,7 +430,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
                     notify_callback=notify_callback,
                 )
                 sess.status = "COMPLETED"
-                self._sessions.pop((sess.user_id, sess.symbol), None)
+                self._sessions.pop(sess.session_id, None)
                 if notify_callback is not None:
                     await notify_callback(
                         sess.user_id,
@@ -432,9 +442,9 @@ class AutoTradeSessionManager(PositionMonitorMixin):
                     )
         except asyncio.CancelledError:
             sess.status = "STOPPED"
-            self._sessions.pop((sess.user_id, sess.symbol), None)
+            self._sessions.pop(sess.session_id, None)
             return
         except Exception as exc:
             sess.status = "STOPPED"
-            self._sessions.pop((sess.user_id, sess.symbol), None)
+            self._sessions.pop(sess.session_id, None)
             logger.warning("Timed auto-trade session loop error", session_id=sess.session_id, error=str(exc))

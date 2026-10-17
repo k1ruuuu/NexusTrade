@@ -210,6 +210,7 @@ class MT5ExnessClient:
                 usdt_free=10000.0,
                 usdt_locked=0.0,
                 total_usdt=10000.0,
+                balance_usdt=10000.0,
                 asset_count=5,
                 account_type=f"EXNESS_GO_MT5_SANDBOX ({server_name})",
                 testnet=True,
@@ -266,9 +267,9 @@ class MT5ExnessClient:
                         usdt_free=round(free_margin, 2),
                         usdt_locked=round(margin_used, 2),
                         total_usdt=round(equity, 2),
+                        balance_usdt=round(balance, 2),
                         asset_count=1,
                         account_type=f"EXNESS_MT5_INVESTOR ({server_name})",
-                        testnet=testnet,
                         error_message="Akun terhubung dengan Investor Password (Read-Only). Gunakan Master Trading Password agar bisa Auto-Trade.",
                     )
 
@@ -278,9 +279,9 @@ class MT5ExnessClient:
                     usdt_free=round(free_margin, 2),
                     usdt_locked=round(margin_used, 2),
                     total_usdt=round(equity, 2),
+                    balance_usdt=round(balance, 2),
                     asset_count=5,
                     account_type=f"EXNESS_GO_MT5 ({server_name} • {acc_type} 1:{leverage})",
-                    testnet=testnet,
                 )
         except Exception as exc:
             err_msg = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
@@ -453,7 +454,7 @@ class MT5ExnessClient:
             lots = round(max(0.01, min(float(custom_lot), 50.0)), 2)
         else:
             lots = calculate_mt5_lots(symbol, quantity, reference_price)
-        est_notional = round(quantity * reference_price, 2)
+        est_notional = round(lots * get_mt5_contract_size(symbol) * reference_price, 2)
         if self._is_exness_trial_demo(account_id_or_login, testnet):
             order_id = f"MT5-{int(time.time() * 1000)}"
             return BinanceOrderResult(
@@ -673,7 +674,7 @@ class MT5ExnessClient:
                                 side=side,
                                 executed_qty=exec_lots,
                                 avg_price=round(open_px, decimals),
-                                notional_usdt=round(quantity * open_px, 2),
+                                notional_usdt=round(exec_lots * get_mt5_contract_size(candidate_sym) * open_px, 2),
                                 testnet=testnet,
                                 status=f"FILLED ({server_name} • Ticket #{ticket_int} • {exec_lots} Lot)",
                             )
@@ -695,24 +696,33 @@ class MT5ExnessClient:
             )
         except Exception as exc:
             logger.warning("MT5/Exness order execution failed; initiating reconciliation", symbol=mt5_symbol_m, error=str(exc))
-            # NT-05 / R-07: Query live open orders to reconcile if broker actually filled despite transport timeout
+            # NT-05 / R-07 / Fix 3: Reconcile live orders handling orderType and openPrice without crashing
             try:
-                live_orders = await self.get_live_open_orders(account_id_or_login, token_or_password, server_name)
-                for cand in live_orders:
-                    if cand.get("symbol") in (mt5_symbol_m, mt5_symbol_raw) and cand.get("side") == side:
-                        cand_time = float(cand.get("time_setup") or cand.get("time") or time.time())
-                        if abs(time.time() - cand_time) < 60.0:
-                            logger.info("Reconciled filled order after transport timeout", ticket=cand.get("ticket"))
+                live_orders = await self.get_live_open_orders(
+                    account_id_or_login, token_or_password, server_name
+                )
+                for cand in (live_orders or []):
+                    if not isinstance(cand, dict):
+                        continue
+                    cand_sym = str(cand.get("symbol") or "").strip()
+                    raw_type = str(cand.get("orderType") or cand.get("type") or cand.get("side") or "").upper()
+                    cand_side = "BUY" if ("BUY" in raw_type or raw_type == "0") else ("SELL" if ("SELL" in raw_type or raw_type == "1") else "")
+                    if cand_sym in (mt5_symbol_m, mt5_symbol_raw) and cand_side == side:
+                        ticket_str = str(cand.get("ticket") or cand.get("order") or "")
+                        open_px = float(cand.get("openPrice") or cand.get("price_open") or reference_price)
+                        exec_lots = float(cand.get("lots") or lots)
+                        if ticket_str:
+                            logger.info("Reconciled filled order after transport timeout", ticket=ticket_str)
                             return BinanceOrderResult(
                                 executed=True,
-                                order_id=str(cand.get("ticket")),
-                                symbol=cand.get("symbol", mt5_symbol_m),
+                                order_id=ticket_str,
+                                symbol=cand_sym or mt5_symbol_m,
                                 side=side,
-                                executed_qty=float(cand.get("lots", lots)),
-                                avg_price=float(cand.get("price_open", reference_price)),
-                                notional_usdt=round(quantity * reference_price, 2),
+                                executed_qty=exec_lots,
+                                avg_price=open_px,
+                                notional_usdt=round(exec_lots * get_mt5_contract_size(cand_sym or symbol) * open_px, 2),
                                 testnet=testnet,
-                                status=f"RECONCILED_FILLED (Ticket #{cand.get('ticket')})",
+                                status=f"RECONCILED_FILLED (Ticket #{ticket_str})",
                             )
             except Exception as rec_err:
                 logger.debug("Reconciliation query after timeout failed", error=str(rec_err))
@@ -728,3 +738,173 @@ class MT5ExnessClient:
                 status="MT5_TIMEOUT_UNCONFIRMED",
                 error_message=f"Transport timeout ke Exness/MT5 ({type(exc).__name__}); rekonsiliasi tidak menemukan tiket baru.",
             )
+
+    async def place_pending_stop_order(
+        self,
+        account_id_or_login: str,
+        token_or_password: str,
+        symbol: str,
+        order_type: Literal["BUY_STOP", "SELL_STOP"],
+        price: float,
+        lots: float,
+        stop_loss: float = 0.0,
+        take_profit: float = 0.0,
+        server_name: str = "Exness-MT5Trial7",
+        comment: str = "NexusTrade Grid Trap",
+    ) -> BinanceOrderResult:
+        """Place a BUY_STOP or SELL_STOP pending order on MetaTrader 5 / Exness."""
+        clean_sym = resolve_mt5_symbol(symbol, standard_suffix="m")
+        if self._is_exness_trial_demo(account_id_or_login, True):
+            order_id = f"PEND-{int(time.time() * 1000)}"
+            return BinanceOrderResult(
+                executed=True,
+                order_id=order_id,
+                symbol=clean_sym,
+                side="BUY" if order_type == "BUY_STOP" else "SELL",
+                executed_qty=lots,
+                avg_price=price,
+                notional_usdt=round(lots * get_mt5_contract_size(clean_sym) * price, 2),
+                testnet=True,
+                status=f"PLACED ({order_type} @ {price:,.2f})",
+            )
+
+        op_code = 4 if order_type == "BUY_STOP" else 5
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                tok, conn_err = await self._get_or_connect_session_token(
+                    client, account_id_or_login, token_or_password, server_name
+                )
+                if not tok:
+                    return BinanceOrderResult(
+                        executed=False,
+                        order_id="",
+                        symbol=clean_sym,
+                        side="BUY" if order_type == "BUY_STOP" else "SELL",
+                        executed_qty=lots,
+                        avg_price=price,
+                        notional_usdt=0.0,
+                        testnet=False,
+                        status="REJECTED_LOGIN_FAILED",
+                        error_message=conn_err or "Koneksi ke Exness gagal",
+                    )
+                resp = await client.get(
+                    f"{MT5_REST_DIRECT_URL}/OrderSendSafe",
+                    params={
+                        "id": tok,
+                        "symbol": clean_sym,
+                        "operation": op_code,
+                        "volume": round(lots, 2),
+                        "price": round(price, 4),
+                        "stoploss": round(stop_loss, 4),
+                        "takeprofit": round(take_profit, 4),
+                        "comment": comment,
+                    },
+                )
+                if resp.status_code == 200:
+                    data = resp.json() if resp.text.startswith("{") else {}
+                    tkt = str(data.get("ticket") or data.get("order") or int(time.time() * 1000))
+                    return BinanceOrderResult(
+                        executed=True,
+                        order_id=tkt,
+                        symbol=clean_sym,
+                        side="BUY" if order_type == "BUY_STOP" else "SELL",
+                        executed_qty=lots,
+                        avg_price=price,
+                        notional_usdt=round(lots * get_mt5_contract_size(clean_sym) * price, 2),
+                        testnet=False,
+                        status=f"PLACED ({order_type} @ {price:,.2f})",
+                    )
+        except Exception as exc:
+            logger.warning("Error placing pending stop order", error=str(exc))
+        return BinanceOrderResult(
+            executed=False,
+            order_id="",
+            symbol=clean_sym,
+            side="BUY" if order_type == "BUY_STOP" else "SELL",
+            executed_qty=lots,
+            avg_price=price,
+            notional_usdt=0.0,
+            testnet=False,
+            status="REJECTED_EXCEPTION",
+        )
+
+    async def delete_pending_order(
+        self,
+        account_id_or_login: str,
+        token_or_password: str,
+        ticket: str,
+        server_name: str = "Exness-MT5Trial7",
+    ) -> bool:
+        """Cancel/delete an untriggered pending order via `/OrderDelete`."""
+        if self._is_exness_trial_demo(account_id_or_login, True):
+            return True
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                tok, _ = await self._get_or_connect_session_token(
+                    client, account_id_or_login, token_or_password, server_name
+                )
+                if not tok:
+                    return False
+                resp = await client.get(
+                    f"{MT5_REST_DIRECT_URL}/OrderDeleteSafe",
+                    params={"id": tok, "ticket": int(ticket)},
+                )
+                return resp.status_code == 200
+        except Exception:
+            return False
+
+    async def close_all_and_delete_pending(
+        self,
+        account_id_or_login: str,
+        token_or_password: str,
+        symbol: str = "XAUUSD",
+        server_name: str = "Exness-MT5Trial7",
+    ) -> dict[str, Any]:
+        """
+        Replicate the video's mass operations:
+        - 'Tutup Semua Posisi' (Close all open market positions).
+        - 'Hapus Semua Order' (Delete all untriggered pending trap orders).
+        """
+        clean_sym = normalize_symbol(symbol)
+        closed_positions = 0
+        deleted_orders = 0
+
+        if self._is_exness_trial_demo(account_id_or_login, True):
+            return {
+                "success": True,
+                "positions_closed": 1,
+                "pending_deleted": 10,
+                "symbol": clean_sym,
+                "message": f"Seluruh posisi dan pending order {clean_sym} berhasil dibersihkan.",
+            }
+
+        try:
+            opened = await self.get_live_open_orders(account_id_or_login, token_or_password, server_name)
+            for ord_data in (opened or []):
+                o_sym = str(ord_data.get("symbol") or "")
+                tkt = str(ord_data.get("ticket") or "")
+                if not tkt or (clean_sym not in o_sym.upper()):
+                    continue
+                raw_type = str(ord_data.get("orderType") or ord_data.get("type") or "").upper()
+                lots = float(ord_data.get("lots") or 0.01)
+
+                if "STOP" in raw_type or "LIMIT" in raw_type:
+                    # Pending order -> delete
+                    ok = await self.delete_pending_order(account_id_or_login, token_or_password, tkt, server_name)
+                    if ok:
+                        deleted_orders += 1
+                else:
+                    # Market position -> close
+                    ok = await self.close_mt5_ticket(account_id_or_login, token_or_password, tkt, lots, server_name)
+                    if ok:
+                        closed_positions += 1
+        except Exception as exc:
+            logger.warning("Error during close_all_and_delete_pending", error=str(exc))
+
+        return {
+            "success": True,
+            "positions_closed": closed_positions,
+            "pending_deleted": deleted_orders,
+            "symbol": clean_sym,
+            "message": f"Selesai: {closed_positions} posisi ditutup, {deleted_orders} pending order dihapus.",
+        }

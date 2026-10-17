@@ -267,7 +267,13 @@ def format_timed_session_started_card(
         if session.macro_event_mode
         else ""
     )
-    if session.ea_mode == "EA_EXPERT_ADVISOR":
+    if session.ea_mode == "EA_GRID_SCALPER":
+        hdr_title = "EA GRID/TRAP SCALPER M1 (COMPOUNDING) —"
+        sub_title = "SESI M1 PENDING STOP TRAP ($10 ➔ 0.01 / $2000 ➔ 2.00)"
+        cmd_prefix = "/ea_grid"
+        strat_line = "🪤 <b>Layered BUY_STOP &amp; SELL_STOP ($1.00 Step, Target $5,000)</b>"
+        mode_line = f"🟢 <b>EA Grid Scalper</b> (<code>{html.escape(session.remaining_human)}</code>)"
+    elif session.ea_mode == "EA_EXPERT_ADVISOR":
         hdr_title = "EA EXPERT ADVISOR MT5 (RSI 14) —"
         sub_title = "SESI EA MT5 (RSI 14 | SL 50 PIPS | TP 150 PIPS)"
         cmd_prefix = "/ea-EA"
@@ -379,7 +385,10 @@ def format_autotrade_report_card(report: AutoTradeExecutionReport) -> str:
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
         )
 
-    if getattr(report, "ea_mode", None) == "EA_EXPERT_ADVISOR":
+    if getattr(report, "ea_mode", None) == "EA_GRID_SCALPER":
+        header_name = "EA GRID/TRAP SCALPER M1 (PENDING TRAP)"
+        sub_rule = "🪤 <i>Layered BUY_STOP &amp; SELL_STOP Grid Trap • Target $5,000 USD Mass Close</i>\n"
+    elif getattr(report, "ea_mode", None) == "EA_EXPERT_ADVISOR":
         header_name = "EA EXPERT ADVISOR MT5 (RSI 14)"
         sub_rule = "🤖 <i>Open BUY jika RSI 14 ≤ 30, Open SELL jika RSI 14 ≥ 70 • SL 50 Pips / TP 150 Pips</i>\n"
     elif getattr(report, "ea_mode", None) == "EA_SCALPING":

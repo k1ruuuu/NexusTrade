@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional
-
+import math
+from typing import Any, Literal, Optional
 from data_pipeline.market_symbols import normalize_symbol
 
 
@@ -18,8 +18,8 @@ class BinanceAccountVerification:
     asset_count: int
     account_type: str
     testnet: bool
+    balance_usdt: float = 0.0
     error_message: Optional[str] = None
-
 
 @dataclass
 class BinanceOrderResult:
@@ -240,11 +240,37 @@ def get_mt5_pip_size(symbol: str, price: float = 0.0) -> float:
         return 0.10
     return 0.0001
 
+def get_mt5_digits_and_point(symbol: str, price: float = 0.0) -> tuple[int, float]:
+    """
+    Return standard MetaTrader 5 (digits, point) tuple for any supported instrument:
+    - Gold (XAUUSD), Indices, Crypto, Oil: digits = 2, point = 0.01
+    - Silver (XAGUSD): digits = 3, point = 0.001
+    - 6-letter FX ending in JPY (USDJPY, EURJPY): digits = 3, point = 0.001
+    - Standard 6-letter FX (EURUSD, GBPUSD): digits = 5, point = 0.00001
+    """
+    sym = normalize_symbol(symbol, strip_hyphen=True).upper()
+    if sym.endswith("M") and len(sym) > 4 and symbol.endswith("m"):
+        sym = sym[:-1]
+    if any(k in sym for k in ("XAU", "GOLD", "BTC", "ETH", "SOL", "US30", "US500", "USTEC", "SPX", "NDX", "DJI", "USOIL", "UKOIL", "WTI", "BRENT")):
+        return 2, 0.01
+    if any(k in sym for k in ("XAG", "SILVER")):
+        return 3, 0.001
+    if len(sym) == 6 and sym.endswith("JPY"):
+        return 3, 0.001
+    if len(sym) == 6 and any(c in sym for c in ("EUR", "GBP", "AUD", "NZD", "CAD", "CHF")):
+        return 5, 0.00001
+    if price >= 1000.0:
+        return 2, 0.01
+    if price >= 20.0:
+        return 3, 0.001
+    if price >= 0.1:
+        return 4, 0.0001
+    return 5, 0.00001
+
 
 def get_mt5_point_size(symbol: str, price: float = 0.0) -> float:
-    """Return 1.0 point size (1/10th of a pip on 5-digit pricing)."""
-    return get_mt5_pip_size(symbol, price) * 0.10
-
+    """Return 1.0 point size."""
+    return get_mt5_digits_and_point(symbol, price)[1]
 
 def calculate_ea_sl_tp(
     symbol: str,
@@ -274,3 +300,91 @@ def calculate_ea_sl_tp(
         sl = round(entry_price + sl_dist, decimals)
         tp = round(max(entry_price * 0.01, entry_price - tp_dist), decimals)
     return sl, tp, decimals
+
+
+@dataclass
+class GridScalperConfig:
+    """Configuration for High-Frequency M1 Pending Stop Grid EA (Video Mode)."""
+    layers_per_side: int = 5              # 5 Buy Stops + 5 Sell Stops per cycle
+    first_offset_pips: float = 10.0       # Distance from current Bid/Ask to Layer 1 ($1.00 on Gold)
+    grid_step_pips: float = 10.0          # Distance between consecutive stop layers ($1.00 on Gold)
+    take_profit_pips: float = 15.0        # Tight scalping TP per pending order ($1.50 on Gold)
+    stop_loss_pips: float = 25.0          # Protective SL per pending order ($2.50 on Gold)
+    base_lot: float = 0.01
+    max_lot: float = 2.00                 # Video caps at 2.00 lots per order
+    compounding_enabled: bool = True
+    equity_per_001_lot: float = 15.0      # Dynamic compounding: $10->$0.01, $45->0.03, $120->0.08, $1500->1.00, $3000+->2.00
+    target_equity_usd: float = 5000.0     # Auto-stop & close all when equity target is reached
+    max_equity_drawdown_pct: float = 0.35 # Emergency basket equity stop
+
+
+def calculate_compounded_grid_lot(
+    equity_usd: float,
+    cfg: Optional[GridScalperConfig] = None,
+    volume_min: float = 0.01,
+    volume_step: float = 0.01,
+) -> float:
+    """
+    Replicate the video's aggressive equity-based lot compounding progression:
+    - Equity $10 - $29     -> 0.01 lot
+    - Equity $30 - $60     -> 0.03 lot
+    - Equity $120 - $250   -> 0.08 lot
+    - Equity $1,000+       -> 1.00 lot
+    - Equity $3,000+       -> 2.00 lot
+    """
+    config = cfg or GridScalperConfig()
+    if not config.compounding_enabled or equity_usd <= 20.0:
+        return config.base_lot
+    raw_lot = (equity_usd / max(config.equity_per_001_lot, 1.0)) * 0.01
+    stepped = math.floor((raw_lot + 1e-9) / volume_step) * volume_step
+    return round(max(volume_min, min(stepped, config.max_lot)), 2)
+
+
+def build_pending_stop_grid_levels(
+    symbol: str,
+    bid_price: float,
+    ask_price: float,
+    cfg: Optional[GridScalperConfig] = None,
+) -> list[dict[str, Any]]:
+    """
+    Generate symmetric BUY_STOP (above Ask) and SELL_STOP (below Bid) trap levels
+    normalized for any MT5 instrument (XAUUSD, BTCUSD, US30, EURUSD, etc.).
+    """
+    config = cfg or GridScalperConfig()
+    pip_sz = get_mt5_pip_size(symbol, ask_price)
+    _, point_sz = get_mt5_digits_and_point(symbol, ask_price)
+    decimals = 2 if point_sz >= 0.01 else (3 if point_sz >= 0.001 else 5)
+
+    first_dist = max(config.first_offset_pips * pip_sz, 3.0 * pip_sz)
+    step_dist = max(config.grid_step_pips * pip_sz, 2.0 * pip_sz)
+    tp_dist = config.take_profit_pips * pip_sz
+    sl_dist = config.stop_loss_pips * pip_sz
+
+    orders: list[dict[str, Any]] = []
+    for i in range(config.layers_per_side):
+        # BUY_STOP above current Ask
+        buy_entry = round(ask_price + first_dist + (i * step_dist), decimals)
+        buy_tp = round(buy_entry + tp_dist, decimals) if tp_dist > 0 else 0.0
+        buy_sl = round(buy_entry - sl_dist, decimals) if sl_dist > 0 else 0.0
+        orders.append({
+            "side": "BUY_STOP",
+            "op_code": 4,  # MT5 OP_BUYSTOP / ORDER_TYPE_BUY_STOP
+            "layer": i + 1,
+            "price": buy_entry,
+            "stop_loss": buy_sl,
+            "take_profit": buy_tp,
+        })
+
+        # SELL_STOP below current Bid
+        sell_entry = round(bid_price - first_dist - (i * step_dist), decimals)
+        sell_tp = round(sell_entry - tp_dist, decimals) if tp_dist > 0 else 0.0
+        sell_sl = round(sell_entry + sl_dist, decimals) if sl_dist > 0 else 0.0
+        orders.append({
+            "side": "SELL_STOP",
+            "op_code": 5,  # MT5 OP_SELLSTOP / ORDER_TYPE_SELL_STOP
+            "layer": i + 1,
+            "price": sell_entry,
+            "stop_loss": sell_sl,
+            "take_profit": sell_tp,
+        })
+    return orders

@@ -78,6 +78,9 @@ class RiskPolicy:
         max_symbol_exposure_fraction: float = 0.03,
         max_spread_points: float = 40.0,
         live_trading_enabled: bool = False,
+        allow_micro_min_lot_override: bool = True,
+        micro_account_ceiling_usd: float = 250.0,
+        micro_max_lot_risk_fraction: float = 0.50,
     ) -> None:
         self.max_risk_per_trade_pct = float(max_risk_per_trade_pct)
         self.max_daily_drawdown_limit = float(max_daily_drawdown_limit)
@@ -86,6 +89,9 @@ class RiskPolicy:
         self.max_symbol_exposure_fraction = float(max_symbol_exposure_fraction)
         self.max_spread_points = float(max_spread_points)
         self.live_trading_enabled = bool(live_trading_enabled)
+        self.allow_micro_min_lot_override = bool(allow_micro_min_lot_override)
+        self.micro_account_ceiling_usd = float(micro_account_ceiling_usd)
+        self.micro_max_lot_risk_fraction = float(micro_max_lot_risk_fraction)
 
     @staticmethod
     def floor_to_broker_step(
@@ -321,18 +327,26 @@ class RiskPolicy:
         )
         if floored_lots < spec.volume_min:
             min_lot_loss = self.calculate_worst_case_loss(spec, side, entry_price, stop_loss, spec.volume_min)
-            return PreflightRiskResult(
-                approved=False,
-                rejection_code="MIN_LOT_EXCEEDS_RISK",
-                rejection_reason=(
-                    f"Risiko lot minimum broker ({spec.volume_min:.2f} Lot = ${min_lot_loss:,.2f}) "
-                    f"melampaui anggaran risiko efektif (${effective_max_risk:,.2f})."
-                ),
-                trade_budget_usd=round(trade_budget, 2),
-                daily_headroom_usd=round(daily_headroom, 2),
-                total_headroom_usd=round(total_headroom, 2),
-            )
-
+            # Fix 4: Allow micro accounts (< $250 USD) to trade broker minimum lot if risk is within micro_max_lot_risk_fraction
+            if (
+                self.allow_micro_min_lot_override
+                and eq < self.micro_account_ceiling_usd
+                and min_lot_loss <= (eq * self.micro_max_lot_risk_fraction)
+            ):
+                floored_lots = spec.volume_min
+                effective_max_risk = max(effective_max_risk, min_lot_loss)
+            else:
+                return PreflightRiskResult(
+                    approved=False,
+                    rejection_code="MIN_LOT_EXCEEDS_RISK",
+                    rejection_reason=(
+                        f"Risiko lot minimum broker ({spec.volume_min:.2f} Lot = ${min_lot_loss:,.2f}) "
+                        f"melampaui anggaran risiko efektif (${effective_max_risk:,.2f})."
+                    ),
+                    trade_budget_usd=round(trade_budget, 2),
+                    daily_headroom_usd=round(daily_headroom, 2),
+                    total_headroom_usd=round(total_headroom, 2),
+                )
         estimated_risk = self.calculate_worst_case_loss(spec, side, entry_price, stop_loss, floored_lots)
 
         # NT-02: Non-bypassable hard cap check!
@@ -350,14 +364,19 @@ class RiskPolicy:
 
         # 7. Total Open Portfolio Risk Cap Check (NT-11)
         total_open_risk_with_trade = account.open_positions_loss_at_stop + account.in_flight_reserved_risk + estimated_risk
-        max_portfolio_risk_allowed = eq * self.max_open_risk_fraction
+        eff_portfolio_cap = (
+            max(self.max_open_risk_fraction, self.micro_max_lot_risk_fraction)
+            if (self.allow_micro_min_lot_override and eq < self.micro_account_ceiling_usd)
+            else self.max_open_risk_fraction
+        )
+        max_portfolio_risk_allowed = eq * eff_portfolio_cap
         if total_open_risk_with_trade > max_portfolio_risk_allowed + 1e-6:
             return PreflightRiskResult(
                 approved=False,
                 rejection_code="PORTFOLIO_RISK_CAP_EXCEEDED",
                 rejection_reason=(
                     f"Total risiko portofolio (${total_open_risk_with_trade:,.2f}) melebihi "
-                    f"batas agregat ({self.max_open_risk_fraction * 100:.1f}% = ${max_portfolio_risk_allowed:,.2f})."
+                    f"batas agregat ({eff_portfolio_cap * 100:.1f}% = ${max_portfolio_risk_allowed:,.2f})."
                 ),
                 allowed_lots=floored_lots,
                 estimated_risk_usd=estimated_risk,

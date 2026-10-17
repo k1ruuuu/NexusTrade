@@ -210,7 +210,7 @@ class AutoTradeSessionState:
     short_id: str = ""
     max_positions: int = 1
     is_trade_mode: bool = False
-    ea_mode: Optional[Literal["EA_SCALPING", "EA_EXPERT_ADVISOR"]] = None
+    ea_mode: Optional[Literal["EA_SCALPING", "EA_EXPERT_ADVISOR", "EA_GRID_SCALPER"]] = None
     last_broker_req_ts: float = 0.0
     min_step_points: float = 10.0
     stops_level_pips: float = 3.0

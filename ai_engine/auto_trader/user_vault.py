@@ -664,17 +664,19 @@ class UserVault:
         account_id: str,
         user_id: int,
         live_balance: float,
+        live_equity: Optional[float] = None,
     ) -> Any:
         """
         Fetch or initialize persistent AccountRiskSnapshot for `account_id`:
-        - Automatically resets start_of_day_equity on new UTC date.
+        - Automatically resets start_of_day_equity to realized live_balance on new UTC date.
         - Preserves circuit_breaker_latched and kill_switch_active across worker restarts.
-        - Tracks all-time high-water equity.
+        - Tracks all-time high-water equity based on live_equity.
         """
         from ai_engine.risk_management.risk_policy import AccountRiskSnapshot
         today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         eff_bal = max(0.0, float(live_balance))
+        eff_eq = max(0.0, float(live_equity)) if live_equity is not None and live_equity > 0 else eff_bal
 
         with self._connect() as conn:
             row = conn.execute(
@@ -690,16 +692,41 @@ class UserVault:
                         latched_reason, latched_at, last_reset_utc
                     ) VALUES (?, ?, ?, ?, ?, 0, 0, '', '', ?)
                     """,
-                    (account_id, user_id, eff_bal, eff_bal, eff_bal, today_utc),
+                    (account_id, user_id, eff_bal, max(eff_bal, eff_eq), eff_eq, today_utc),
                 )
                 conn.commit()
                 sod_eq = eff_bal
-                hw_eq = eff_bal
+                hw_eq = max(eff_bal, eff_eq)
                 latched = False
                 kill = False
             else:
                 sod_eq = float(row["start_of_day_equity"])
-                hw_eq = max(float(row["high_water_equity"]), eff_bal)
+                hw_eq = max(float(row["high_water_equity"]), eff_eq)
+                latched = bool(row["circuit_breaker_latched"])
+                kill = bool(row["kill_switch_active"])
+                last_utc = str(row["last_reset_utc"])
+
+                # Daily rollover check
+                if last_utc != today_utc:
+                    sod_eq = eff_bal  # Anchor daily baseline to realized balance
+                    conn.execute(
+                        """
+                        UPDATE account_risk_state
+                        SET start_of_day_equity = ?, current_equity = ?, high_water_equity = ?, last_reset_utc = ?
+                        WHERE account_id = ?
+                        """,
+                        (sod_eq, eff_eq, hw_eq, today_utc, account_id),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE account_risk_state
+                        SET current_equity = ?, high_water_equity = ?
+                        WHERE account_id = ?
+                        """,
+                        (eff_eq, hw_eq, account_id),
+                    )
+                conn.commit()
                 latched = bool(row["circuit_breaker_latched"])
                 kill = bool(row["kill_switch_active"])
                 last_utc = str(row["last_reset_utc"])
@@ -733,8 +760,8 @@ class UserVault:
         return AccountRiskSnapshot(
             account_id=account_id,
             balance=eff_bal,
-            equity=eff_bal,
-            free_margin=eff_bal,
+            equity=eff_eq,
+            free_margin=eff_eq,
             start_of_day_equity=sod_eq,
             high_water_equity=hw_eq,
             open_positions_loss_at_stop=open_loss,

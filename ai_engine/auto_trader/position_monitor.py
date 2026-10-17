@@ -230,6 +230,7 @@ class PositionMonitorMixin:
                     "BUY", bar_high, candidate_sl, trail_dist
                 )
                 candidate_sl = max(candidate_sl, trailed)
+            if candidate_sl > pos.stop_loss + 1e-6:
                 return await self._apply_trailing_stop_update(
                     pos, candidate_sl, curr_price, unr_pnl, unr_pct
                 )
@@ -275,7 +276,8 @@ class PositionMonitorMixin:
                 catalyst_label="Berita Positif Kuat",
             )
 
-        candidate_sl = pos.stop_loss
+        initial_stop_dist = max(0.65 * est_atr, pos.entry_price * 0.005)
+        candidate_sl = pos.stop_loss if pos.stop_loss > 0.0 else round(pos.entry_price + initial_stop_dist, 4)
         if news_s_sent is not None and 0.18 <= news_s_sent < 0.30:
             if curr_price <= pos.entry_price - 0.30 * est_atr:
                 candidate_sl = min(candidate_sl, round(pos.entry_price, 4))
@@ -294,7 +296,7 @@ class PositionMonitorMixin:
                 "SELL", bar_low, candidate_sl, trail_dist
             )
             candidate_sl = min(candidate_sl, trailed)
-        if candidate_sl < pos.stop_loss - 1e-6:
+        if pos.stop_loss <= 0.0 or candidate_sl < pos.stop_loss - 1e-6:
             return await self._apply_trailing_stop_update(
                 pos, candidate_sl, curr_price, unr_pnl, unr_pct
             )
@@ -553,18 +555,59 @@ class PositionMonitorMixin:
                 resistance_1=sr_levels.resistance_1,
                 resistance_2=sr_levels.resistance_2,
             )
+            from ai_engine.risk_management.risk_policy import RiskPolicy, SymbolTradingSpec
+            from ai_engine.auto_trader.mt5_symbols import get_mt5_contract_size, get_mt5_digits_and_point
+
+            acct_key = creds.account_id or creds.api_key.strip() or str(closed_pos.user_id)
+            user_equity = float(creds.verified_usdt_balance)
+            acct_snapshot = self.engine.vault.get_account_risk_snapshot(
+                account_id=acct_key, user_id=closed_pos.user_id, live_balance=user_equity
+            )
+
+            digits, pt = get_mt5_digits_and_point(closed_pos.symbol, curr_price)
+            spec = SymbolTradingSpec(
+                symbol=closed_pos.symbol,
+                digits=digits,
+                point=pt,
+                contract_size=get_mt5_contract_size(closed_pos.symbol),
+                volume_min=0.01,
+                volume_max=100.0,
+                volume_step=0.01,
+            )
+            policy = RiskPolicy(
+                max_risk_per_trade_pct=float(creds.risk_per_trade_pct or self.engine.settings.max_account_risk_per_trade),
+                max_daily_drawdown_limit=self.engine.settings.max_daily_drawdown_limit,
+                max_total_drawdown_limit=self.engine.settings.max_total_drawdown_limit,
+                max_open_risk_fraction=self.engine.settings.max_open_risk_fraction,
+                live_trading_enabled=self.engine.settings.live_trading_enabled,
+            )
+            preflight = policy.evaluate_preflight(
+                spec=spec,
+                account=acct_snapshot,
+                side=new_side,
+                entry_price=curr_price,
+                stop_loss=targets.stop_loss,
+                take_profit=targets.take_profit_1,
+                requested_lots=closed_pos.quantity,
+                is_live_account=not creds.testnet,
+            )
+            if not preflight.approved:
+                logger.info("Blocked news auto-reverse due to RiskPolicy preflight rejection", reason=preflight.rejection_reason)
+                return None
+
+            rev_lots = preflight.allowed_lots
             order_res = await self.engine.mt5_client.place_market_order(
                 account_id_or_login=creds.api_key,
                 token_or_password=creds.api_secret,
                 symbol=closed_pos.symbol,
                 side=new_side,
-                quantity=closed_pos.quantity,
+                quantity=rev_lots,
                 reference_price=curr_price,
                 stop_loss=targets.stop_loss,
                 take_profit=targets.take_profit_1,
                 server_name=creds.server_name,
                 testnet=creds.testnet,
-                custom_lot=closed_pos.quantity,
+                custom_lot=rev_lots,
             )
             if not order_res.executed:
                 return None

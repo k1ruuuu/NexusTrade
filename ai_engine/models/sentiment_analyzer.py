@@ -463,12 +463,6 @@ class FinancialSentimentAnalyzer:
                 )
                 for item, w in zip(live_items, eff_weights)
             ]
-            if composite_sentiment is not None and len(scored_items) > 0:
-                # Blend provider composite sentiment (65%) with FinBERT scored headlines (35%)
-                total_weight = sum(item.weight for item in scored_items) or 1.0
-                fb_mean = sum(item.polarity * item.weight for item in scored_items) / total_weight
-                blended_sent = 0.65 * composite_sentiment + 0.35 * fb_mean
-                s_sent = float(np.clip(blended_sent, -1.0, 1.0))
         else:
             if headlines is not None:
                 effective_headlines = list(headlines)
@@ -504,8 +498,11 @@ class FinancialSentimentAnalyzer:
 
         total_weight = sum(item.weight for item in scored_items) or 1.0
         weighted_polarity = sum(item.polarity * item.weight for item in scored_items) / total_weight
-        s_sent = float(np.clip(weighted_polarity, -1.0, 1.0))
-
+        if live_used and composite_sentiment is not None and len(scored_items) > 0:
+            blended_sent = 0.65 * float(composite_sentiment) + 0.35 * weighted_polarity
+            s_sent = float(np.clip(blended_sent, -1.0, 1.0))
+        else:
+            s_sent = float(np.clip(weighted_polarity, -1.0, 1.0))
         n_items = len(scored_items)
         bullish_ratio = sum(1 for item in scored_items if item.label == "POSITIVE") / n_items
         bearish_ratio = sum(1 for item in scored_items if item.label == "NEGATIVE") / n_items

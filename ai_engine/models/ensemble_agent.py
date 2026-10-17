@@ -565,6 +565,11 @@ class EnsembleDecisionAgent:
             atr14 = float(last["atr_14"])
             cvd20 = float(last.get("cvd_norm_20", 0.0))
 
+            # Define momentum and order-flow scores before blending
+            rsi_comp = np.tanh((rsi14 - 50.0) / 15.0)
+            macd_comp = np.sign(macd_h) * min(1.0, abs(macd_h) / max(atr14 * 0.25, 1e-6))
+            mom_score = float(np.clip(0.60 * rsi_comp + 0.40 * macd_comp, -1.0, 1.0))
+            flow_score = float(np.clip(cvd20 * 4.0, -1.0, 1.0))
             ema_score = (
                 (1.0 if close_p > ema20 else -1.0) * 0.40
                 + (1.0 if ema20 > ema50 else -1.0) * 0.35
