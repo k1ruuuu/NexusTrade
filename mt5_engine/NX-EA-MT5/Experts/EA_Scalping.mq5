@@ -5,8 +5,8 @@
 //+------------------------------------------------------------------+
 #property copyright "NexusTrade AI Quantitative Team"
 #property link      "https://nexustrade.ai"
-#property version   "2.00"
-#property description "EA Scalping MT5: Membaca arah trend, membaca candlestick, memprediksi pergerakan market ke depan, entry SL & TP berdekatan, serta auto re-entry seketika pada TP maupun SL."
+#property version   "3.00"
+#property description "EA Scalping MT5 (5-MA & MTF H1/M5): Action murni pada 1M/M1, analisa tren H1 & M5, 5 MA (Biru cross Hijau ke atas curam BUY, Biru cross Merah ke bawah curam SELL), SL/TP saling berdekatan, & auto re-entry seketika."
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -22,11 +22,18 @@ input double   InpTakeProfitPips      = 14.0;      // Take Profit (Pips - Berdek
 input ulong    InpMagicNumber         = 20261017;  // Magic Number EA Scalping
 input ulong    InpSlippage            = 10;        // Max Slippage (Points)
 
-input group "=== Parameter Analisa Tren ==="
-input int      InpFastEMA             = 9;         // Periode EMA Cepat
-input int      InpMidEMA              = 21;        // Periode EMA Sedang
-input int      InpSlowEMA             = 50;        // Periode EMA Lambat
-input ENUM_TIMEFRAMES InpTimeframe    = PERIOD_M1; // Timeframe Analisa Scalping
+input group "=== 5 Jenis MA pada M1 (Action Chart) ==="
+input int      InpMABlue              = 5;         // MA 1: Biru (EMA Cepat Signal)
+input int      InpMAGreen             = 8;         // MA 2: Hijau (EMA Target Bullish Cross)
+input int      InpMARed               = 13;        // MA 3: Merah (EMA Target Bearish Cross)
+input int      InpMAYellow            = 34;        // MA 4: Kuning (Mid Baseline)
+input int      InpMAPurple            = 55;        // MA 5: Ungu (Major Baseline)
+
+input group "=== Analisa Tren Multi-Timeframe (H1 & M5 Utama) ==="
+input int      InpH1FastEMA           = 20;        // H1 Fast EMA
+input int      InpH1SlowEMA           = 50;        // H1 Slow EMA
+input int      InpM5FastEMA           = 9;         // M5 Fast EMA
+input int      InpM5SlowEMA           = 21;        // M5 Slow EMA
 
 input group "=== Parameter Candlestick & Rejection ==="
 input double   InpMinWickRatio        = 0.40;      // Rasio Minimum Sumbu Pinbar (40%)
@@ -35,7 +42,6 @@ input double   InpMinBodyRatio        = 0.50;      // Rasio Minimum Bodi Momentu
 input group "=== Siklus Re-Entry Otomatis ==="
 input bool     InpAutoReentryOnTP     = true;      // Auto Re-Entry Seketika Jika Kena TP
 input bool     InpAutoReentryOnSL     = true;      // Auto Re-Entry Seketika Jika Kena SL
-input int      InpCooldownTicks       = 1;         // Jeda Tick Sebelum Re-Entry (1 Tick = Instan)
 
 //--- Global Objects & Handles
 CTrade         m_trade;
@@ -43,13 +49,18 @@ CSymbolInfo    m_symbol;
 CPositionInfo  m_position;
 CAccountInfo   m_account;
 
-int            m_handle_fast_ema      = INVALID_HANDLE;
-int            m_handle_mid_ema       = INVALID_HANDLE;
-int            m_handle_slow_ema      = INVALID_HANDLE;
+// Handles 5 MA M1
+int            m_handle_blue          = INVALID_HANDLE;
+int            m_handle_green         = INVALID_HANDLE;
+int            m_handle_red           = INVALID_HANDLE;
+int            m_handle_yellow        = INVALID_HANDLE;
+int            m_handle_purple        = INVALID_HANDLE;
 
-datetime       m_last_bar_time        = 0;
-datetime       m_last_exit_time       = 0;
-string         m_last_exit_reason     = "";
+// Handles MTF Trend
+int            m_handle_h1_fast       = INVALID_HANDLE;
+int            m_handle_h1_slow       = INVALID_HANDLE;
+int            m_handle_m5_fast       = INVALID_HANDLE;
+int            m_handle_m5_slow       = INVALID_HANDLE;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -67,19 +78,21 @@ int OnInit()
    m_trade.SetDeviationInPoints(InpSlippage);
    m_trade.SetTypeFillingBySymbol(_Symbol);
 
-   // Inisialisasi Indikator Tren
-   m_handle_fast_ema = iMA(_Symbol, InpTimeframe, InpFastEMA, 0, MODE_EMA, PRICE_CLOSE);
-   m_handle_mid_ema  = iMA(_Symbol, InpTimeframe, InpMidEMA,  0, MODE_EMA, PRICE_CLOSE);
-   m_handle_slow_ema = iMA(_Symbol, InpTimeframe, InpSlowEMA, 0, MODE_EMA, PRICE_CLOSE);
+   // Inisialisasi 5 MA pada M1
+   m_handle_blue   = iMA(_Symbol, PERIOD_M1, InpMABlue,   0, MODE_EMA, PRICE_CLOSE);
+   m_handle_green  = iMA(_Symbol, PERIOD_M1, InpMAGreen,  0, MODE_EMA, PRICE_CLOSE);
+   m_handle_red    = iMA(_Symbol, PERIOD_M1, InpMARed,    0, MODE_EMA, PRICE_CLOSE);
+   m_handle_yellow = iMA(_Symbol, PERIOD_M1, InpMAYellow, 0, MODE_EMA, PRICE_CLOSE);
+   m_handle_purple = iMA(_Symbol, PERIOD_M1, InpMAPurple, 0, MODE_EMA, PRICE_CLOSE);
 
-   if(m_handle_fast_ema == INVALID_HANDLE || m_handle_mid_ema == INVALID_HANDLE || m_handle_slow_ema == INVALID_HANDLE)
-   {
-      Print("Gagal membuat handle indikator EMA.");
-      return INIT_FAILED;
-   }
+   // Inisialisasi Tren H1 & M5
+   m_handle_h1_fast = iMA(_Symbol, PERIOD_H1, InpH1FastEMA, 0, MODE_EMA, PRICE_CLOSE);
+   m_handle_h1_slow = iMA(_Symbol, PERIOD_H1, InpH1SlowEMA, 0, MODE_EMA, PRICE_CLOSE);
+   m_handle_m5_fast = iMA(_Symbol, PERIOD_M5, InpM5FastEMA, 0, MODE_EMA, PRICE_CLOSE);
+   m_handle_m5_slow = iMA(_Symbol, PERIOD_M5, InpM5SlowEMA, 0, MODE_EMA, PRICE_CLOSE);
 
-   PrintFormat("EA Scalping Berhasil Dimuat pada %s (%s). SL=%.1f pips, TP=%.1f pips (Saling Berdekatan).",
-               _Symbol, EnumToString(InpTimeframe), InpStopLossPips, InpTakeProfitPips);
+   PrintFormat("EA Scalping 5-MA Berhasil Dimuat pada %s (M1). SL=%.1f pips, TP=%.1f pips (Saling Berdekatan).",
+               _Symbol, InpStopLossPips, InpTakeProfitPips);
    return INIT_SUCCEEDED;
 }
 
@@ -88,9 +101,16 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   IndicatorRelease(m_handle_fast_ema);
-   IndicatorRelease(m_handle_mid_ema);
-   IndicatorRelease(m_handle_slow_ema);
+   IndicatorRelease(m_handle_blue);
+   IndicatorRelease(m_handle_green);
+   IndicatorRelease(m_handle_red);
+   IndicatorRelease(m_handle_yellow);
+   IndicatorRelease(m_handle_purple);
+
+   IndicatorRelease(m_handle_h1_fast);
+   IndicatorRelease(m_handle_h1_slow);
+   IndicatorRelease(m_handle_m5_fast);
+   IndicatorRelease(m_handle_m5_slow);
    Print("EA Scalping dinonaktifkan. Reason: ", reason);
 }
 
@@ -107,35 +127,34 @@ double GetPipSize()
 }
 
 //+------------------------------------------------------------------+
-//| Membaca Arah Tren (Trend Reading)                                |
+//| Membaca Tren Multi-Timeframe (H1 & M5 Utama)                     |
 //+------------------------------------------------------------------+
-int ReadTrendDirection(double &e9_val, double &e21_val, double &e50_val)
+int ReadMTFTrend()
 {
-   double fast[2], mid[2], slow[2];
-   if(CopyBuffer(m_handle_fast_ema, 0, 0, 2, fast) < 2) return 0;
-   if(CopyBuffer(m_handle_mid_ema,  0, 0, 2, mid)  < 2) return 0;
-   if(CopyBuffer(m_handle_slow_ema, 0, 0, 2, slow) < 2) return 0;
+   double h1_f[1], h1_s[1];
+   double m5_f[1], m5_s[1];
 
-   e9_val  = fast[1];
-   e21_val = mid[1];
-   e50_val = slow[1];
+   if(CopyBuffer(m_handle_h1_fast, 0, 0, 1, h1_f) < 1) return 0;
+   if(CopyBuffer(m_handle_h1_slow, 0, 0, 1, h1_s) < 1) return 0;
+   if(CopyBuffer(m_handle_m5_fast, 0, 0, 1, m5_f) < 1) return 0;
+   if(CopyBuffer(m_handle_m5_slow, 0, 0, 1, m5_s) < 1) return 0;
 
-   bool bull = (fast[1] >= mid[1] && (fast[1] - fast[0]) >= 0);
-   bool bear = (fast[1] <= mid[1] && (fast[1] - fast[0]) <= 0);
+   int h1_bias = (h1_f[0] >= h1_s[0]) ? 1 : -1;
+   int m5_bias = (m5_f[0] >= m5_s[0]) ? 1 : -1;
 
-   if(bull) return 1;   // BULLISH
-   if(bear) return -1;  // BEARISH
-   return 0;            // NEUTRAL
+   if(h1_bias > 0 && m5_bias > 0) return 1;   // Strong Bullish
+   if(h1_bias < 0 && m5_bias < 0) return -1;  // Strong Bearish
+   return m5_bias;                             // Mengikuti momentum jangka pendek M5
 }
 
 //+------------------------------------------------------------------+
-//| Membaca Anatomi Candlestick (Candle Reading)                     |
+//| Membaca Karakter Candlestick M1                                  |
 //+------------------------------------------------------------------+
 int ReadCandlestick(string &pattern_desc)
 {
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
-   if(CopyRates(_Symbol, InpTimeframe, 1, 2, rates) < 2) return 0;
+   if(CopyRates(_Symbol, PERIOD_M1, 1, 2, rates) < 2) return 0;
 
    double o1 = rates[0].open,  h1 = rates[0].high,  l1 = rates[0].low,  c1 = rates[0].close;
    double o2 = rates[1].open,  h2 = rates[1].high,  l2 = rates[1].low,  c2 = rates[1].close;
@@ -149,49 +168,38 @@ int ReadCandlestick(string &pattern_desc)
    double upper_wick_ratio = upper_wick / range;
    double body_ratio       = body / range;
 
-   // 1. Bullish Pinbar Rejection Bawah (Lower Wick >= 40%)
    if(lower_wick_ratio >= InpMinWickRatio && c1 >= o1)
    {
-      pattern_desc = StringFormat("BULLISH_PINBAR_REJECTION (Sumbu Bawah %.0f%%)", lower_wick_ratio * 100);
+      pattern_desc = StringFormat("PINBAR_REJECTION_BAWAH (%.0f%%)", lower_wick_ratio * 100);
       return 1;
    }
-
-   // 2. Bearish Pinbar Rejection Atas (Upper Wick >= 40%)
    if(upper_wick_ratio >= InpMinWickRatio && c1 <= o1)
    {
-      pattern_desc = StringFormat("BEARISH_PINBAR_REJECTION (Sumbu Atas %.0f%%)", upper_wick_ratio * 100);
+      pattern_desc = StringFormat("PINBAR_REJECTION_ATAS (%.0f%%)", upper_wick_ratio * 100);
       return -1;
    }
-
-   // 3. Bullish Engulfing
    if(c1 > o1 && c2 < o2 && c1 >= o2 && o1 <= c2)
    {
       pattern_desc = "BULLISH_ENGULFING";
       return 1;
    }
-
-   // 4. Bearish Engulfing
    if(c1 < o1 && c2 > o2 && c1 <= o2 && o1 >= c2)
    {
       pattern_desc = "BEARISH_ENGULFING";
       return -1;
    }
-
-   // 5. Bullish Momentum Body
    if(c1 > o1 && body_ratio >= InpMinBodyRatio)
    {
-      pattern_desc = StringFormat("BULLISH_MOMENTUM_BODY (Bodi %.0f%%)", body_ratio * 100);
+      pattern_desc = StringFormat("MOMENTUM_SOLID_HIJAU (%.0f%%)", body_ratio * 100);
       return 1;
    }
-
-   // 6. Bearish Momentum Body
    if(c1 < o1 && body_ratio >= InpMinBodyRatio)
    {
-      pattern_desc = StringFormat("BEARISH_MOMENTUM_BODY (Bodi %.0f%%)", body_ratio * 100);
+      pattern_desc = StringFormat("MOMENTUM_SOLID_MERAH (%.0f%%)", body_ratio * 100);
       return -1;
    }
 
-   pattern_desc = "NORMAL_CANDLE";
+   pattern_desc = "LILIN_NORMAL";
    return 0;
 }
 
@@ -265,43 +273,61 @@ void OnTick()
 {
    if(!m_symbol.RefreshRates()) return;
 
-   // Pastikan hanya 1 posisi scalping aktif dalam satu waktu
+   // 1 Posisi aktif dalam satu waktu
    if(CountOpenPositions() > 0) return;
 
-   // 1. Membaca Arah Trend
-   double e9, e21, e50;
-   int trend = ReadTrendDirection(e9, e21, e50);
+   // 1. Membaca Nilai 5 MA pada M1
+   double b[2], g[2], r[2], y[1], p[1];
+   if(CopyBuffer(m_handle_blue,   0, 0, 2, b) < 2) return;
+   if(CopyBuffer(m_handle_green,  0, 0, 2, g) < 2) return;
+   if(CopyBuffer(m_handle_red,    0, 0, 2, r) < 2) return;
+   if(CopyBuffer(m_handle_yellow, 0, 0, 1, y) < 1) return;
+   if(CopyBuffer(m_handle_purple, 0, 0, 1, p) < 1) return;
 
-   // 2. Membaca Candlestick
+   double blue_slope = b[1] - b[0];
+   double pip = GetPipSize();
+
+   // 2. Analisa Tren Pasar Multi-Timeframe (H1 & M5)
+   int mtf_trend = ReadMTFTrend();
+
+   // 3. Membaca Karakter Candlestick M1
    string pattern_desc = "";
    int candle_bias = ReadCandlestick(pattern_desc);
 
-   // 3. Memprediksi Pergerakan Market Kedepannya & Menentukan Arah Entry
+   // 4. Deteksi Cross Curam:
+   // BUY: MA Biru cross MA Hijau ke atas secara curam
+   bool bull_cross_up = (b[0] <= g[0] && b[1] > g[1]) && (blue_slope > 0);
+   bool bull_steep_exp = (b[1] > g[1]) && (blue_slope >= 0.10 * pip);
+
+   // SELL: MA Biru cross MA Merah ke bawah secara curam
+   bool bear_cross_down = (b[0] >= r[0] && b[1] < r[1]) && (blue_slope < 0);
+   bool bear_steep_exp = (b[1] < r[1]) && (blue_slope <= -0.10 * pip);
+
    int entry_side = 0;
    string decision_reason = "";
 
-   if(trend > 0 && candle_bias >= 0)
+   if((bull_cross_up || (bull_steep_exp && candle_bias >= 0)) && mtf_trend >= 0)
    {
       entry_side = 1;
-      decision_reason = StringFormat("Tren Bullish + Lilin %s ➔ Prediksi Lanjutan Naik", pattern_desc);
+      decision_reason = StringFormat("MA Biru Cross MA Hijau Naik Curam + Lilin %s + Tren MTF Bullish", pattern_desc);
    }
-   else if(trend < 0 && candle_bias <= 0)
+   else if((bear_cross_down || (bear_steep_exp && candle_bias <= 0)) && mtf_trend <= 0)
    {
       entry_side = -1;
-      decision_reason = StringFormat("Tren Bearish + Lilin %s ➔ Prediksi Lanjutan Turun", pattern_desc);
+      decision_reason = StringFormat("MA Biru Cross MA Merah Turun Curam + Lilin %s + Tren MTF Bearish", pattern_desc);
    }
-   else if(candle_bias > 0)
+   else if(candle_bias > 0 && b[1] >= g[1])
    {
       entry_side = 1;
-      decision_reason = StringFormat("Rejection Lilin %s ➔ Prediksi Reversal Naik", pattern_desc);
+      decision_reason = StringFormat("Rejection Lilin %s + MA Biru di Atas Hijau", pattern_desc);
    }
-   else if(candle_bias < 0)
+   else if(candle_bias < 0 && b[1] <= r[1])
    {
       entry_side = -1;
-      decision_reason = StringFormat("Rejection Lilin %s ➔ Prediksi Reversal Turun", pattern_desc);
+      decision_reason = StringFormat("Rejection Lilin %s + MA Biru di Bawah Merah", pattern_desc);
    }
 
-   // 4. Eksekusi Entry dengan SL dan TP Berdekatan
+   // 5. Eksekusi Entry dengan SL dan TP Berdekatan
    if(entry_side != 0)
    {
       ExecuteScalpingTrade(entry_side, decision_reason);
@@ -315,7 +341,6 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                          const MqlTradeRequest &request,
                          const MqlTradeResult &result)
 {
-   // Deteksi ketika deal penutupan posisi selesai
    if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
    {
       ulong deal_ticket = trans.deal;
@@ -327,18 +352,16 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          long deal_reason = HistoryDealGetInteger(deal_ticket, DEAL_REASON);
          double profit = HistoryDealGetDouble(deal_ticket, DEAL_PROFIT);
 
-         // Jika posisi milik EA Scalping ditutup
          if(deal_entry == DEAL_ENTRY_OUT && deal_magic == InpMagicNumber && deal_sym == _Symbol)
          {
             bool is_tp = (deal_reason == DEAL_REASON_TP || profit > 0);
             bool is_sl = (deal_reason == DEAL_REASON_SL || profit <= 0);
 
-            PrintFormat("🔔 [EA SCALPING EXIT] Posisi Selesai (%s | PnL: $%.2f). Menyiapkan Auto Re-Entry Seketika...",
+            PrintFormat("🔔 [EA SCALPING EXIT] Posisi Selesai (%s | PnL: $%.2f). Auto Re-Entry Seketika...",
                         (is_tp ? "TAKE PROFIT" : "STOP LOSS"), profit);
 
             if((is_tp && InpAutoReentryOnTP) || (is_sl && InpAutoReentryOnSL))
             {
-               // Langsung panggil evaluasi tren & candlestick untuk entry seketika!
                OnTick();
             }
          }

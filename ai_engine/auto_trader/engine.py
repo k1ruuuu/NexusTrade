@@ -528,12 +528,16 @@ class SmartAutoTraderEngine:
             )
         elif ea_mode == "EA_SCALPING":
             market_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="1m", limit=100)
+            h1_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="1h", limit=60)
+            m5_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="5m", limit=60)
             latest_price = float(market_df["close"].iloc[-1]) if len(market_df) > 0 else 2650.0
 
-            # Evaluasi EA Scalping: Trend reading + Candlestick reading + Forward prediction + Tight SL/TP
-            scalp_res = EAScalpingEngine.evaluate_scalping(
-                df=market_df,
+            # Pure EA Scalping: 5-MA Steep Cross (1M) + MTF Trend (H1 & M5) + Candlestick Character + Forward Prediction
+            scalp_res = EAScalpingEngine.evaluate_scalping_5ma(
+                m1_df=market_df,
                 symbol=clean_sym,
+                h1_df=h1_df,
+                m5_df=m5_df,
                 sl_pips=12.0,
                 tp_pips=14.0,
                 last_exit_reason=last_exit_reason,
@@ -541,7 +545,6 @@ class SmartAutoTraderEngine:
             ea_action = scalp_res.action
             ea_conf = scalp_res.confidence
             ea_detail = scalp_res.details
-
             decision = SignalDecision(
                 symbol=clean_sym,
                 timeframe="1m",
@@ -662,31 +665,35 @@ class SmartAutoTraderEngine:
                 symbol=clean_sym,
                 event_mode=macro_event_mode,
             )
-        # Gate 2: Berita 90 Hari & Terkini Sebagai Data Pendukung Acuan Tren
-        n_news = len(decision.headlines)
-        is_event_sniper = bool(macro_event_mode and decision.gold_action_bias in ("BUY", "SELL"))
-        if getattr(self.settings, "macro_blackout_enabled", False) and "HIGH_IMPACT_NEWS_BLACKOUT" in (decision.rejection_reason or ""):
-            news_ok = False
-            news_detail = f"DITOLAK (BLACKOUT KALENDER MAKRO): {decision.rejection_reason}"
-        elif is_event_sniper:
+        # Gate 2: Berita 90 Hari & Terkini Sebagai Data Pendukung Acuan Tren (Bypass untuk seluruh Mode EA)
+        if ea_mode is not None:
             news_ok = True
-            news_detail = (
-                f"🎯 MODE EVENT MAKRO ({macro_event_mode.upper()} SNIPER): Sikap Kebijakan {decision.macro_stance} "
-                f"(Bias Aksi: {decision.gold_action_bias} Emas) • Berita Squawk & Kalender Selaras ({n_news} berita)"
-            )
-        elif decision.action == "BUY" and decision.s_sent < -0.40:
-            news_ok = False
-            news_detail = f"DITOLAK (KONFLIK SENTIMEN EKSTREM): Berita sangat negatif ({decision.s_sent:+.2f} dari {n_news} berita), berbahaya untuk BELI"
-        elif decision.action == "SELL" and decision.s_sent > 0.40:
-            news_ok = False
-            news_detail = f"DITOLAK (KONFLIK SENTIMEN EKSTREM): Berita sangat positif ({decision.s_sent:+.2f} dari {n_news} berita), berbahaya untuk JUAL"
+            news_detail = f"Gate 2 Dilewati ({ea_mode}): Mode EA Murni (Bebas Filter Berita Kalender Makro)"
         else:
-            news_ok = True
-            bias_tag = "Netral (Aman)" if abs(decision.s_sent) <= 0.15 else ("Bullish" if decision.s_sent > 0 else "Bearish")
-            news_detail = (
-                f"Data Berita 90 Hari Terolah ({decision.s_sent:+.2f} [{bias_tag}] dari {n_news} berita) ➔ "
-                f"Data sentimen selaras sebagai acuan pendukung arah tren"
-            )
+            n_news = len(decision.headlines)
+            is_event_sniper = bool(macro_event_mode and decision.gold_action_bias in ("BUY", "SELL"))
+            if getattr(self.settings, "macro_blackout_enabled", False) and "HIGH_IMPACT_NEWS_BLACKOUT" in (decision.rejection_reason or ""):
+                news_ok = False
+                news_detail = f"DITOLAK (BLACKOUT KALENDER MAKRO): {decision.rejection_reason}"
+            elif is_event_sniper:
+                news_ok = True
+                news_detail = (
+                    f"🎯 MODE EVENT MAKRO ({macro_event_mode.upper()} SNIPER): Sikap Kebijakan {decision.macro_stance} "
+                    f"(Bias Aksi: {decision.gold_action_bias} Emas) • Berita Squawk & Kalender Selaras ({n_news} berita)"
+                )
+            elif decision.action == "BUY" and decision.s_sent < -0.40:
+                news_ok = False
+                news_detail = f"DITOLAK (KONFLIK SENTIMEN EKSTREM): Berita sangat negatif ({decision.s_sent:+.2f} dari {n_news} berita), berbahaya untuk BELI"
+            elif decision.action == "SELL" and decision.s_sent > 0.40:
+                news_ok = False
+                news_detail = f"DITOLAK (KONFLIK SENTIMEN EKSTREM): Berita sangat positif ({decision.s_sent:+.2f} dari {n_news} berita), berbahaya untuk JUAL"
+            else:
+                news_ok = True
+                bias_tag = "Netral (Aman)" if abs(decision.s_sent) <= 0.15 else ("Bullish" if decision.s_sent > 0 else "Bearish")
+                news_detail = (
+                    f"Data Berita 90 Hari Terolah ({decision.s_sent:+.2f} [{bias_tag}] dari {n_news} berita) ➔ "
+                    f"Data sentimen selaras sebagai acuan pendukung arah tren"
+                )
         gates.append(
             AutoTradeGateCheck(
                 gate_number=2,
@@ -850,7 +857,10 @@ class SmartAutoTraderEngine:
         )
 
         # Gate 4: Support & Resistance Structural Room Check
-        if decision.action == "BUY":
+        if ea_mode is not None:
+            sr_ok = True
+            sr_detail = f"Gate 4 Dilewati ({ea_mode}): Mode EA Murni (Bebas Filter Ruang Gerak S/R)"
+        elif decision.action == "BUY":
             if decision.resistance_1 > 0 and decision.entry_price >= decision.resistance_1:
                 # Bullish Breakout above R1: Measure room towards Resistance R2
                 dist_to_r2_pct = ((decision.resistance_2 - decision.entry_price) / max(decision.entry_price, 1e-6)) * 100.0
