@@ -113,6 +113,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         macro_event_mode: Optional[str] = None,
         max_positions: int = 1,
         is_trade_mode: bool = False,
+        ea_mode: Optional[Literal["EA_SCALPING", "EA_EXPERT_ADVISOR"]] = None,
     ) -> tuple[AutoTradeSessionState, Any]:
         """
         Start a 24/7 Non-Stop autonomous trading session for `(user_id, symbol)`
@@ -158,6 +159,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
             short_id=short_id,
             max_positions=max(1, int(max_positions)),
             is_trade_mode=is_trade_mode,
+            ea_mode=ea_mode,
         )
         self._sessions[sess.session_id] = sess
 
@@ -246,6 +248,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
                 macro_event_mode=sess.macro_event_mode,
                 max_positions=sess.max_positions,
                 trade_mode=sess.is_trade_mode,
+                ea_mode=sess.ea_mode,
             )
             if report.decision is not None:
                 sess.live_current_price = report.decision.entry_price
@@ -262,7 +265,14 @@ class AutoTradeSessionManager(PositionMonitorMixin):
                 )
                 if notify_callback is not None:
                     tp_str = "Dihapus (Runner)" if report.position_record.take_profit_1 <= 0 else f"${report.position_record.take_profit_1:,.2f}"
-                    hdr = f"ALGO-TRADE [ID #{sess.short_id}] (4 INDIKATOR)" if sess.is_trade_mode else f"AUTO-TRADE [ID #{sess.short_id}]"
+                    if sess.ea_mode == "EA_EXPERT_ADVISOR":
+                        hdr = f"EA EXPERT ADVISOR [ID #{sess.short_id}] (RSI 14)"
+                    elif sess.ea_mode == "EA_SCALPING":
+                        hdr = f"EA SCALPING [ID #{sess.short_id}] (M1 MOMENTUM)"
+                    elif sess.is_trade_mode:
+                        hdr = f"ALGO-TRADE [ID #{sess.short_id}] (4 INDIKATOR)"
+                    else:
+                        hdr = f"AUTO-TRADE [ID #{sess.short_id}]"
                     await notify_callback(
                         sess.user_id,
                         f"🚀 <b>{hdr} MEMBUKA LAYER BARU ({curr_layer}/{sess.max_positions}) — {sess.symbol}</b>\n"

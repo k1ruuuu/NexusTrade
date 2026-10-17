@@ -3,7 +3,16 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 import math
+import random
+import time
 from typing import Any, Optional
+import numpy as np
+import pandas as pd
+
+from ai_engine.auto_trader.mt5_symbols import (
+    calculate_ea_sl_tp,
+    get_mt5_pip_size,
+)
 
 from ai_engine.auto_trader.mt5_exness_client import (
     BinanceOrderResult,
@@ -59,7 +68,7 @@ class AutoTradeExecutionReport:
     position_record: Optional[UserPositionRecord] = None
     rejection_summary: Optional[str] = None
     trade_mode: bool = False
-
+    ea_mode: Optional[str] = None
 class SmartAutoTraderEngine:
     """
     Institutional 6-Gate Smart Auto-Trader Engine.
@@ -89,7 +98,30 @@ class SmartAutoTraderEngine:
         self._last_broker_closed: dict[tuple[int, str], PositionMonitorResult] = {}
         self._notified_closed_tickets: set[str] = set()
         self._execution_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._last_broker_request_ts: dict[str, float] = {}
         self.session_manager = AutoTradeSessionManager(self)
+
+    async def _enforce_broker_throttle(
+        self,
+        acct_key: str,
+        min_ms: int = 500,
+        max_ms: int = 1500,
+    ) -> float:
+        """
+        Anti-Broker-Ban Protection 1: Request Throttle (InpThrottleMs = 500ms to 1500ms)
+        Enforces a minimum jitter delay between outbound broker requests per account
+        to prevent overwhelming broker servers or triggering anti-bot / rate-limit bans.
+        """
+        now = time.time()
+        last_ts = self._last_broker_request_ts.get(acct_key, 0.0)
+        target_delay = random.uniform(min_ms / 1000.0, max_ms / 1000.0)
+        elapsed = now - last_ts
+        if elapsed < target_delay:
+            wait_s = target_delay - elapsed
+            await asyncio.sleep(wait_s)
+        self._last_broker_request_ts[acct_key] = time.time()
+        return target_delay
+
     async def start_timed_session(
         self,
         user_id: int,
@@ -103,6 +135,7 @@ class SmartAutoTraderEngine:
         macro_event_mode: Optional[str] = None,
         max_positions: int = 1,
         is_trade_mode: bool = False,
+        ea_mode: Optional[str] = None,
     ) -> tuple[AutoTradeSessionState, object]:
         """Start a 24/7 autonomous trading session on 1m action + 1D/1H/15M/5M analysis."""
         return await self.session_manager.start_timed_session(
@@ -117,6 +150,7 @@ class SmartAutoTraderEngine:
             macro_event_mode=macro_event_mode,
             max_positions=max_positions,
             is_trade_mode=is_trade_mode,
+            ea_mode=ea_mode,
         )
 
     def stop_session_by_id(
@@ -276,6 +310,7 @@ class SmartAutoTraderEngine:
         macro_event_mode: Optional[str] = None,
         max_positions: int = 1,
         trade_mode: bool = False,
+        ea_mode: Optional[str] = None,
     ) -> AutoTradeExecutionReport:
         """
         Run the complete 6-Gate Pre-Trade Checklist for `user_id` on `symbol` (`timeframe`)
@@ -305,6 +340,7 @@ class SmartAutoTraderEngine:
                 gates=gates,
                 rejection_summary="Wajib mengatur akun Exness Go / MT5 pribadi melalui /setup sebelum memakai fitur Auto-Trade.",
                 trade_mode=trade_mode,
+                ea_mode=ea_mode,
             )
         if require_autotrade_toggle and not creds.autotrade_enabled:
             gates.append(
@@ -325,6 +361,7 @@ class SmartAutoTraderEngine:
                 gates=gates,
                 rejection_summary="Saklar Auto-Trade sedang OFF.",
                 trade_mode=trade_mode,
+                ea_mode=ea_mode,
             )
 
         await refresh_live_exness_balance(self.vault, self.mt5_client, user_id, creds)
@@ -347,6 +384,7 @@ class SmartAutoTraderEngine:
                 gates=gates,
                 rejection_summary=f"Saldo Akun (${creds.verified_usdt_balance:,.2f}) di bawah batas minimum $10.00 USD.",
                 trade_mode=trade_mode,
+                ea_mode=ea_mode,
             )
         mode_str = f"EXNESS MT5 ({creds.server_name})"
         src_str = "Setup Pribadi" if creds.source == "user_setup" else "Admin (.env)"
@@ -360,10 +398,126 @@ class SmartAutoTraderEngine:
         )
 
         # Run Multi-Timeframe AI analysis (Trend: 1D, 1H, 15M, 5M -> Action Open Position: 1M)
-        decision = decision_override or self.ensemble_agent.analyze_multi_timeframe_autotrade(
-            symbol=clean_sym,
-            event_mode=macro_event_mode,
-        )
+        if decision_override is not None:
+            decision = decision_override
+        elif ea_mode == "EA_EXPERT_ADVISOR":
+            market_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="1m", limit=100)
+            closes = pd.to_numeric(market_df["close"], errors="coerce").ffill()
+            delta = closes.diff()
+            gain = delta.clip(lower=0.0)
+            loss = -delta.clip(upper=0.0)
+            avg_gain = gain.ewm(alpha=1.0 / 14, min_periods=14, adjust=False).mean()
+            avg_loss = loss.ewm(alpha=1.0 / 14, min_periods=14, adjust=False).mean()
+            rs = avg_gain / avg_loss.replace(0.0, np.nan)
+            rsi_series = 100.0 - (100.0 / (1.0 + rs))
+            latest_rsi = float(rsi_series.iloc[-1]) if len(rsi_series) > 0 and not np.isnan(rsi_series.iloc[-1]) else 50.0
+            latest_price = float(closes.iloc[-1])
+
+            if latest_rsi >= 70.0:
+                ea_action = "SELL"
+                ea_conf = min(0.95, 0.70 + (latest_rsi - 70.0) * 0.015)
+                ea_detail = f"RSI 14 Overbought ({latest_rsi:.1f} >= 70) ➔ Sinyal SELL (SL 50 Pips | TP 150 Pips)"
+            elif latest_rsi <= 30.0:
+                ea_action = "BUY"
+                ea_conf = min(0.95, 0.70 + (30.0 - latest_rsi) * 0.015)
+                ea_detail = f"RSI 14 Oversold ({latest_rsi:.1f} <= 30) ➔ Sinyal BUY (SL 50 Pips | TP 150 Pips)"
+            else:
+                ea_action = "HOLD"
+                ea_conf = 0.50
+                ea_detail = f"Menunggu RSI 14 ({latest_rsi:.1f}) mencapai Overbought (>=70) atau Oversold (<=30)"
+
+            ea_sl, ea_tp, _ = calculate_ea_sl_tp(
+                symbol=clean_sym,
+                side=ea_action if ea_action in ("BUY", "SELL") else "BUY",
+                entry_price=latest_price,
+                sl_pips=50.0,
+                tp_pips=150.0,
+                stops_level_pips=3.0,
+            )
+            decision = SignalDecision(
+                symbol=clean_sym,
+                timeframe="1m",
+                action=ea_action,
+                badge=f"EA-EA {ea_action}" if ea_action in ("BUY", "SELL") else "NEUTRAL / HOLD",
+                confidence=round(ea_conf, 4),
+                s_tech=0.60 if ea_action == "BUY" else (-0.60 if ea_action == "SELL" else 0.0),
+                s_vol=0.10,
+                s_sent=0.0,
+                risk_multiplier=1.0,
+                entry_price=latest_price,
+                stop_loss=ea_sl,
+                take_profit_1=ea_tp,
+                take_profit_2=ea_tp,
+                expectancy_r=1.5,
+                confluence_pillars=5,
+                is_sideways=False,
+                resistance_1=latest_price * 1.05,
+                resistance_2=latest_price * 1.10,
+                support_1=latest_price * 0.95,
+                support_2=latest_price * 0.90,
+                indicators={"rsi": latest_rsi, "ea_mode": "EA_EXPERT_ADVISOR", "ea_detail": ea_detail},
+            )
+        elif ea_mode == "EA_SCALPING":
+            market_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="1m", limit=100)
+            closes = pd.to_numeric(market_df["close"], errors="coerce").ffill()
+            ema9 = closes.ewm(span=9, adjust=False).mean()
+            ema21 = closes.ewm(span=21, adjust=False).mean()
+            latest_price = float(closes.iloc[-1])
+            e9 = float(ema9.iloc[-1])
+            e21 = float(ema21.iloc[-1])
+
+            bull_cross = (e9 > e21) and (latest_price >= e9 * 0.9990)
+            bear_cross = (e9 < e21) and (latest_price <= e9 * 1.0010)
+
+            if bull_cross:
+                ea_action = "BUY"
+                ea_conf = 0.85
+                ea_detail = f"EMA Ribbon Bullish (EMA9 {e9:,.2f} > EMA21 {e21:,.2f}) ➔ Scalping BUY (SL 20 Pips | TP 40 Pips)"
+            elif bear_cross:
+                ea_action = "SELL"
+                ea_conf = 0.85
+                ea_detail = f"EMA Ribbon Bearish (EMA9 {e9:,.2f} < EMA21 {e21:,.2f}) ➔ Scalping SELL (SL 20 Pips | TP 40 Pips)"
+            else:
+                ea_action = "HOLD"
+                ea_conf = 0.50
+                ea_detail = f"Menunggu Momentum Scalping M1 (EMA9: {e9:,.2f} vs EMA21: {e21:,.2f})"
+
+            ea_sl, ea_tp, _ = calculate_ea_sl_tp(
+                symbol=clean_sym,
+                side=ea_action if ea_action in ("BUY", "SELL") else "BUY",
+                entry_price=latest_price,
+                sl_pips=20.0,
+                tp_pips=40.0,
+                stops_level_pips=3.0,
+            )
+            decision = SignalDecision(
+                symbol=clean_sym,
+                timeframe="1m",
+                action=ea_action,
+                badge=f"EA-SCP {ea_action}" if ea_action in ("BUY", "SELL") else "NEUTRAL / HOLD",
+                confidence=round(ea_conf, 4),
+                s_tech=0.60 if ea_action == "BUY" else (-0.60 if ea_action == "SELL" else 0.0),
+                s_vol=0.10,
+                s_sent=0.0,
+                risk_multiplier=1.0,
+                entry_price=latest_price,
+                stop_loss=ea_sl,
+                take_profit_1=ea_tp,
+                take_profit_2=ea_tp,
+                expectancy_r=1.0,
+                confluence_pillars=5,
+                is_sideways=False,
+                resistance_1=latest_price * 1.05,
+                resistance_2=latest_price * 1.10,
+                support_1=latest_price * 0.95,
+                support_2=latest_price * 0.90,
+                indicators={"ema9": e9, "ema21": e21, "ea_mode": "EA_SCALPING", "ea_detail": ea_detail},
+            )
+        else:
+            decision = self.ensemble_agent.analyze_multi_timeframe_autotrade(
+                symbol=clean_sym,
+                event_mode=macro_event_mode,
+            )
         # Gate 2: Berita 90 Hari & Terkini Sebagai Data Pendukung Acuan Tren
         n_news = len(decision.headlines)
         is_event_sniper = bool(macro_event_mode and decision.gold_action_bias in ("BUY", "SELL"))
@@ -414,8 +568,23 @@ class SmartAutoTraderEngine:
         cp_score = float(decision.indicators.get("candlestick_score", 0.0))
         cp_pat = str(decision.indicators.get("candlestick_pattern", "")).strip()
 
-        if trade_mode:
-            # Mode /trade: Open posisi HANYA jika ke-4 Indikator Murni (UT Bot, Supertrend, Candle Pattern, OC Signals) selaras!
+        if ea_mode == "EA_EXPERT_ADVISOR":
+            ea_ok = decision.action in ("BUY", "SELL")
+            ea_detail_str = decision.indicators.get("ea_detail", "")
+            if ea_ok:
+                tech_detail = f"🤖 EA EXPERT ADVISOR MT5 (RSI 14): {ea_detail_str} • SL 50 Pips | TP 150 Pips (1:3 RRR)"
+            else:
+                tech_detail = f"DITOLAK (EA-EA): {ea_detail_str}"
+            conf_ok = ea_ok
+        elif ea_mode == "EA_SCALPING":
+            ea_ok = decision.action in ("BUY", "SELL")
+            ea_detail_str = decision.indicators.get("ea_detail", "")
+            if ea_ok:
+                tech_detail = f"⚡ EA SCALPING M1/M5: {ea_detail_str} • SL 20 Pips | TP 40 Pips (1:2 RRR)"
+            else:
+                tech_detail = f"DITOLAK (EA-SCP): {ea_detail_str}"
+            conf_ok = ea_ok
+        elif trade_mode:
             if decision.action == "BUY":
                 quad_ok = (ut_trend >= 0) and (st_dir >= 0) and (oc_sig >= 0) and (cp_score >= -0.5)
             elif decision.action == "SELL":
@@ -502,7 +671,15 @@ class SmartAutoTraderEngine:
         gates.append(
             AutoTradeGateCheck(
                 gate_number=3,
-                name="Strategi 4 Indikator Murni (/trade)" if trade_mode else "Strategi UT Bot + Supertrend + OC Signals (1D•1H•15M•5M ➔ 1M)",
+                name=(
+                    "EA Expert Advisor MT5 (RSI 14)"
+                    if ea_mode == "EA_EXPERT_ADVISOR"
+                    else (
+                        "EA Scalping M1/M5 (Micro Momentum)"
+                        if ea_mode == "EA_SCALPING"
+                        else ("Strategi 4 Indikator Murni (/trade)" if trade_mode else "Strategi UT Bot + Supertrend + OC Signals (1D•1H•15M•5M ➔ 1M)")
+                    )
+                ),
                 passed=conf_ok,
                 detail=tech_detail,
             )
@@ -624,6 +801,7 @@ class SmartAutoTraderEngine:
                     gates=gates,
                     rejection_summary=f"Gerbang {first_fail.gate_number} ({first_fail.name}) belum terpenuhi: {first_fail.detail}",
                     trade_mode=trade_mode,
+                    ea_mode=ea_mode,
                 )
 
             # Gate 6: Strict min(user_limit, global_limit) risk cap & NO SL narrowing (R01, R02, NT-02)
@@ -659,6 +837,7 @@ class SmartAutoTraderEngine:
                     gates=gates,
                     rejection_summary=user_sizing.rejection_reason or "Ditolak oleh PositionSizer.",
                     trade_mode=trade_mode,
+                    ea_mode=ea_mode,
                 )
 
             order_side = "BUY" if decision.action == "BUY" else "SELL"
@@ -668,9 +847,10 @@ class SmartAutoTraderEngine:
                 if (custom_lot is not None and custom_lot > 0)
                 else calculate_mt5_lots(clean_sym, qty, decision.entry_price)
             )
-            eff_risk_rate = min(
-                float(creds.risk_per_trade_pct),
-                float(self.settings.max_account_risk_per_trade),
+            eff_risk_rate = (
+                0.01
+                if ea_mode
+                else min(float(creds.risk_per_trade_pct), float(self.settings.max_account_risk_per_trade))
             )
             trade_budget = user_equity * eff_risk_rate
             if is_micro_account:
@@ -742,8 +922,11 @@ class SmartAutoTraderEngine:
                         gates=gates,
                         rejection_summary=f"{rej_code}: Risiko {candidate_lots:.2f} Lot (${loss_at_stop:,.2f}) > budget (${max_risk_budget:,.2f}).",
                         trade_mode=trade_mode,
+                        ea_mode=ea_mode,
                     )
 
+            # Anti-Broker-Ban Protection 1: Request Throttle (InpThrottleMs = 500ms to 1500ms)
+            await self._enforce_broker_throttle(acct_key, 500, 1500)
             order_res = await self.mt5_client.place_market_order(
                 account_id_or_login=creds.api_key,
                 token_or_password=creds.api_secret,
@@ -799,6 +982,7 @@ class SmartAutoTraderEngine:
                     position_record=unprotected_rec,
                     rejection_summary=order_res.error_message or "Eksekusi order ditolak oleh Exness MT5.",
                     trade_mode=trade_mode,
+                    ea_mode=ea_mode,
                 )
 
             anchored_sl, anchored_tp1, anchored_tp2 = anchor_targets_to_fill_price(
@@ -850,4 +1034,5 @@ class SmartAutoTraderEngine:
             order_result=order_res,
             position_record=pos_record,
             trade_mode=trade_mode,
+            ea_mode=ea_mode,
         )

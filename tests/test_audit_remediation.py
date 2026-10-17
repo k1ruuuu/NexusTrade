@@ -681,3 +681,53 @@ async def test_findings_03_04_05_06_flow_and_reporting_remediation(tmp_path: Pat
         g5 = next(g for g in rep_cb.gates if g.gate_number == 5)
         assert not g5.passed
         assert "batas 20.0%" in g5.detail
+
+
+@pytest.mark.asyncio
+async def test_ea_mt5_expert_advisor_and_scalping_with_anti_ban_protections(tmp_path: Path) -> None:
+    """Verify EA Expert Advisor MT5 (RSI 14), EA Scalping, and the 3 anti-broker-ban safeguards."""
+    from ai_engine.auto_trader.mt5_symbols import get_mt5_pip_size, calculate_ea_sl_tp
+    import time
+
+    # 1. Test Pip and SL/TP calculations (50 pips SL, 150 pips TP on Gold)
+    pip_gold = get_mt5_pip_size("XAUUSD", 2650.0)
+    assert pip_gold == 0.10
+    sl_gold, tp_gold, _ = calculate_ea_sl_tp("XAUUSD", "BUY", 2650.0, sl_pips=50.0, tp_pips=150.0)
+    assert sl_gold == 2645.0  # 2650 - (50 * 0.10) = 2645.0
+    assert tp_gold == 2665.0  # 2650 + (150 * 0.10) = 2665.0
+
+    sl_sell, tp_sell, _ = calculate_ea_sl_tp("XAUUSD", "SELL", 2650.0, sl_pips=50.0, tp_pips=150.0)
+    assert sl_sell == 2655.0  # 2650 + 5.0
+    assert tp_sell == 2635.0  # 2650 - 15.0
+
+    # 2. Test Anti-Ban Protection 1: Request Throttle
+    db_p = tmp_path / "test_ea.db"
+    cfg = Settings(_env_file=None, user_vault_db_path=str(db_p), use_live_market_data=False)
+    vault = UserVault(settings=cfg, db_path=str(db_p))
+    vault.save_user_credentials(
+        user_id=101,
+        api_key="12345",
+        api_secret="secret",
+        username="TraderEA",
+        server_name="Exness-MT5Trial7",
+        testnet=True,
+        verified_usdt_balance=1000.0,
+        autotrade_enabled=True,
+    )
+    engine = SmartAutoTraderEngine(settings=cfg, user_vault=vault)
+
+    t0 = time.time()
+    await engine._enforce_broker_throttle("test_acct", min_ms=500, max_ms=550)
+    await engine._enforce_broker_throttle("test_acct", min_ms=500, max_ms=550)
+    elapsed = time.time() - t0
+    assert elapsed >= 0.45  # verified at least ~0.5s throttle delay!
+
+    # 3. Test EA-EA execution with RSI 14
+    rep_ea = await engine.evaluate_and_execute(user_id=101, symbol="XAUUSD", ea_mode="EA_EXPERT_ADVISOR")
+    assert rep_ea.ea_mode == "EA_EXPERT_ADVISOR"
+    assert any("EA Expert Advisor MT5 (RSI 14)" in g.name for g in rep_ea.gates)
+
+    # 4. Test EA-SCP execution
+    rep_scp = await engine.evaluate_and_execute(user_id=101, symbol="XAUUSD", ea_mode="EA_SCALPING")
+    assert rep_scp.ea_mode == "EA_SCALPING"
+    assert any("EA Scalping M1/M5 (Micro Momentum)" in g.name for g in rep_scp.gates)

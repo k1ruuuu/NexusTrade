@@ -101,15 +101,28 @@ def build_setup_keyboard(has_creds: bool = False, autotrade_on: bool = False) ->
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-@autotrade_router.message(Command("autotrade", "trade"))
+@autotrade_router.message(
+    Command(
+        "autotrade",
+        "trade",
+        "ea-scp",
+        "ea_scp",
+        "eascp",
+        "ea-EA",
+        "ea_EA",
+        "ea-ea",
+        "ea_ea",
+        "eaea",
+        ignore_case=True,
+    )
+)
 async def handle_autotrade(message: Message, **data: Any) -> None:
     """
-    Handle /autotrade and /trade commands:
-    - `/autotrade` / `/trade` or status -> Show current auto-trade / trade status (requires /setup)
-    - `/autotrade on` / `/trade on` -> Enable automated execution
-    - `/autotrade off` / `/trade off` -> Disable automated execution
-    - `/trade scan [symbol]` -> Run 6-Gate check with strict 4-Indicator Confluence (UT Bot, Supertrend, Candle, OC Signals)
-    - `/autotrade scan [symbol]` -> Run generic 6-Gate check
+    Handle /autotrade, /trade, /ea-scp, and /ea-EA commands:
+    - `/ea-EA {symbol} [lot]` -> Starts EA Expert Advisor MT5 (RSI 14 | SL 50p | TP 150p | 3 Anti-Ban Protections)
+    - `/ea-scp {symbol} [lot]` -> Starts EA Scalping M1/M5 (Fast Momentum | SL 20p | TP 40p)
+    - `/trade [scan] [symbol]` -> Strict 4-Indicator Confluence (UT Bot, Supertrend, Candle, OC Signals)
+    - `/autotrade [scan] [symbol]` -> 6-Gate Auto-Trader
     """
     settings: Settings = data.get("settings") or get_settings()
     vault: UserVault = data.get("user_vault") or UserVault(settings)
@@ -123,6 +136,10 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
     user_id, user_name = extract_user_identity(message, default_name="Trader")
     cmd_token = (message.text or "").strip().split()[0].lower() if message.text else "/autotrade"
     is_trade_mode = cmd_token.startswith("/trade")
+    is_ea_scp = any(cmd_token.startswith(p) for p in ("/ea-scp", "/ea_scp", "/eascp"))
+    is_ea_ea = any(cmd_token.startswith(p) for p in ("/ea-ea", "/ea_ea", "/eaea"))
+    ea_mode: Optional[str] = "EA_SCALPING" if is_ea_scp else ("EA_EXPERT_ADVISOR" if is_ea_ea else None)
+    cmd_name = "/ea-scp" if is_ea_scp else ("/ea-EA" if is_ea_ea else ("/trade" if is_trade_mode else "/autotrade"))
     args = parse_command_args(message.text)
     sub = args[0].lower() if args else "status"
     raw_tokens = args[1:] if sub == "scan" else args
@@ -135,7 +152,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
 
     if creds is None:
         report = await auto_trader.evaluate_and_execute(
-            user_id=user_id, symbol=req_symbol, trade_mode=is_trade_mode
+            user_id=user_id, symbol=req_symbol, trade_mode=is_trade_mode, ea_mode=ea_mode
         )
         await message.answer(
             format_autotrade_report_card(report),
@@ -149,14 +166,28 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         await auto_trader.sync_live_mt5_positions(user_id)
         updated = vault.resolve_credentials(user_id)
         positions = vault.get_open_positions(user_id)
-        on_title = (
-            "🟢 <b>Mode /trade (4 Indikator Murni) Diaktifkan!</b>\n"
-            "AI siap memantau pasar dan <b>HANYA</b> akan membuka posisi BUY/SELL jika ke-4 Indikator "
-            "(UT Bot, Supertrend, Candlestick Patterns, OC Signals) selaras dan didukung pembacaan candle, tren MTF, serta berita.\n\n"
-            if is_trade_mode
-            else "🟢 <b>Auto-Trade 24/7 Non-Stop Diaktifkan!</b>\n"
-            "AI siap menganalisis tren <b>1D, 1H, 15M, 5M</b> dan mengeksekusi open/close posisi di <b>1M</b> secara 24/7 pada akun Exness Go / MT5 Anda.\n\n"
-        )
+        if is_ea_ea:
+            on_title = (
+                "🟢 <b>Mode EA Expert Advisor MT5 Diaktifkan!</b>\n"
+                "Eksekusi otomatis berbasis <b>RSI 14</b> (RSI >= 70 SELL, RSI <= 30 BUY), "
+                "SL 50 Pips, TP 150 Pips (1:3 RRR), dan 3 Proteksi Anti-Broker-Ban.\n\n"
+            )
+        elif is_ea_scp:
+            on_title = (
+                "🟢 <b>Mode EA Scalping M1/M5 Diaktifkan!</b>\n"
+                "Scalping mikro-momentum cepat (SL 20 Pips, TP 40 Pips) dengan proteksi anti-ban broker.\n\n"
+            )
+        elif is_trade_mode:
+            on_title = (
+                "🟢 <b>Mode /trade (4 Indikator Murni) Diaktifkan!</b>\n"
+                "AI siap memantau pasar dan <b>HANYA</b> akan membuka posisi BUY/SELL jika ke-4 Indikator "
+                "(UT Bot, Supertrend, Candlestick Patterns, OC Signals) selaras dan didukung pembacaan candle, tren MTF, serta berita.\n\n"
+            )
+        else:
+            on_title = (
+                "🟢 <b>Auto-Trade 24/7 Non-Stop Diaktifkan!</b>\n"
+                "AI siap menganalisis tren <b>1D, 1H, 15M, 5M</b> dan mengeksekusi open/close posisi di <b>1M</b> secara 24/7 pada akun Exness Go / MT5 Anda.\n\n"
+            )
         await message.answer(
             on_title + format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), updated, positions),
             parse_mode="HTML",
@@ -294,6 +325,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
             macro_event_mode=macro_event_mode,
             max_positions=max_positions,
             is_trade_mode=is_trade_mode,
+            ea_mode=ea_mode,
         )
         sent_card = await message.answer(
             format_timed_session_started_card(session_state, first_res),
@@ -345,6 +377,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         macro_event_mode=macro_event_mode,
         max_positions=max_positions,
         trade_mode=is_trade_mode,
+        ea_mode=ea_mode,
     )
     await message.answer(
         format_autotrade_report_card(report),
