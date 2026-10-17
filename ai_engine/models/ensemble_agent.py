@@ -269,6 +269,8 @@ class EnsembleDecisionAgent:
             )
         elif sr_levels is not None:
             targets = self.stop_loss_manager.calculate_realistic_targets(
+                entry_price=entry_price,
+                atr_14=effective_atr,
                 action=raw_action,
                 support_1=resolved_sr.support_1,
                 support_2=resolved_sr.support_2,
