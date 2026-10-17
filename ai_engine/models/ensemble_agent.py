@@ -853,8 +853,8 @@ class EnsembleDecisionAgent:
             s_vol=base_15m.s_vol,
             s_sent=sent_90d.s_sent,
             symbol=clean_sym,
-            timeframe="5m",
-            entry_price=entry_px_5m,
+            timeframe="15m",
+            entry_price=float(df_15m["close"].iloc[-1]) if (df_15m is not None and len(df_15m) > 0) else entry_px_5m,
             atr_14=blended_atr,
             indicators={
                 **dict(base_15m.indicators),

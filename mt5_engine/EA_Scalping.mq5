@@ -22,7 +22,8 @@ input double   InpTakeProfitPips      = 14.0;      // Take Profit (Pips - Berdek
 input ulong    InpMagicNumber         = 20261017;  // Magic Number EA Scalping
 input ulong    InpSlippage            = 10;        // Max Slippage (Points)
 
-input group "=== 5 Jenis MA pada M1 (Action Chart) ==="
+input group "=== Timeframe Action & 5 Jenis MA ==="
+input ENUM_TIMEFRAMES InpActionTimeframe     = PERIOD_M15;// Timeframe Action/Eksekusi (Default M15)
 input int      InpMABlue              = 5;         // MA 1: Biru (EMA Cepat Signal)
 input int      InpMAGreen             = 8;         // MA 2: Hijau (EMA Target Bullish Cross)
 input int      InpMARed               = 13;        // MA 3: Merah (EMA Target Bearish Cross)
@@ -79,11 +80,11 @@ int OnInit()
    m_trade.SetTypeFillingBySymbol(_Symbol);
 
    // Inisialisasi 5 MA pada M1
-   m_handle_blue   = iMA(_Symbol, PERIOD_M1, InpMABlue,   0, MODE_EMA, PRICE_CLOSE);
-   m_handle_green  = iMA(_Symbol, PERIOD_M1, InpMAGreen,  0, MODE_EMA, PRICE_CLOSE);
-   m_handle_red    = iMA(_Symbol, PERIOD_M1, InpMARed,    0, MODE_EMA, PRICE_CLOSE);
-   m_handle_yellow = iMA(_Symbol, PERIOD_M1, InpMAYellow, 0, MODE_EMA, PRICE_CLOSE);
-   m_handle_purple = iMA(_Symbol, PERIOD_M1, InpMAPurple, 0, MODE_EMA, PRICE_CLOSE);
+   m_handle_blue   = iMA(_Symbol, InpActionTimeframe, InpMABlue,   0, MODE_EMA, PRICE_CLOSE);
+   m_handle_green  = iMA(_Symbol, InpActionTimeframe, InpMAGreen,  0, MODE_EMA, PRICE_CLOSE);
+   m_handle_red    = iMA(_Symbol, InpActionTimeframe, InpMARed,    0, MODE_EMA, PRICE_CLOSE);
+   m_handle_yellow = iMA(_Symbol, InpActionTimeframe, InpMAYellow, 0, MODE_EMA, PRICE_CLOSE);
+   m_handle_purple = iMA(_Symbol, InpActionTimeframe, InpMAPurple, 0, MODE_EMA, PRICE_CLOSE);
 
    // Inisialisasi Tren H1 & M5
    m_handle_h1_fast = iMA(_Symbol, PERIOD_H1, InpH1FastEMA, 0, MODE_EMA, PRICE_CLOSE);
@@ -154,7 +155,7 @@ int ReadCandlestick(string &pattern_desc)
 {
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
-   if(CopyRates(_Symbol, PERIOD_M1, 1, 2, rates) < 2) return 0;
+   if(CopyRates(_Symbol, InpActionTimeframe, 1, 2, rates) < 2) return 0;
 
    double o1 = rates[0].open,  h1 = rates[0].high,  l1 = rates[0].low,  c1 = rates[0].close;
    double o2 = rates[1].open,  h2 = rates[1].high,  l2 = rates[1].low,  c2 = rates[1].close;

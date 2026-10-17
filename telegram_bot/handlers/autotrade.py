@@ -428,7 +428,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
             user_id=user_id,
             symbol=symbol,
             duration_code="24/7",
-            timeframe="1m",
+            timeframe="15m",
             notify_callback=_notify_user,
             custom_lot=custom_lot,
             live_card_callback=_update_live_card,
@@ -452,7 +452,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         mon_res = await auto_trader.monitor_and_manage_open_position(
             user_id=user_id,
             symbol=symbol,
-            timeframe="1m",
+            timeframe="15m",
         )
         p = mon_res.position or existing_open[0]
         if mon_res.action_taken in ("CLOSED_TP", "CLOSED_SL"):
@@ -482,7 +482,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
     report = await auto_trader.evaluate_and_execute(
         user_id=user_id,
         symbol=symbol,
-        timeframe="1m",
+        timeframe="15m",
         custom_lot=custom_lot,
         macro_event_mode=macro_event_mode,
         max_positions=max_positions,

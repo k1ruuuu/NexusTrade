@@ -108,7 +108,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         user_id: int,
         symbol: str,
         duration_code: str = "24/7",
-        timeframe: str = "1m",
+        timeframe: str = "15m",
         poll_interval_seconds: float = 5.0,
         notify_callback: Optional[NotifyCallback] = None,
         custom_lot: Optional[float] = None,
@@ -128,7 +128,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         """
         uid = int(user_id)
         clean_sym = normalize_symbol(symbol)
-        clean_tf = normalize_timeframe(timeframe) if timeframe != "1m" else "1m"
+        clean_tf = normalize_timeframe(timeframe)
         dur_secs, dur_label = parse_session_duration(duration_code)
         # Stop any existing running session for this (uid, clean_sym) to prevent duplicates
         for existing_sess in self.get_user_sessions(uid):
@@ -194,7 +194,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
             mon = await self.monitor_and_manage_open_position(
                 user_id=sess.user_id,
                 symbol=sess.symbol,
-                timeframe="1m",
+                timeframe="15m",
             )
             if mon.action_taken in ("CLOSED_TP", "CLOSED_SL") and mon.position is not None:
                 sess.positions_closed += 1
@@ -254,7 +254,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
             report = await self.engine.evaluate_and_execute(
                 user_id=sess.user_id,
                 symbol=sess.symbol,
-                timeframe="1m",
+                timeframe="15m",
                 require_autotrade_toggle=True,
                 custom_lot=sess.custom_lot,
                 macro_event_mode=sess.macro_event_mode,

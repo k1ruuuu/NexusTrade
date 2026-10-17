@@ -214,8 +214,8 @@ class EAScalpingEngine:
     @classmethod
     def evaluate_scalping_5ma(
         cls,
-        m1_df: pd.DataFrame,
-        symbol: str,
+        action_df: Optional[pd.DataFrame] = None,
+        symbol: str = "XAUUSD",
         h1_df: Optional[pd.DataFrame] = None,
         m5_df: Optional[pd.DataFrame] = None,
         d1_df: Optional[pd.DataFrame] = None,
@@ -223,6 +223,8 @@ class EAScalpingEngine:
         sl_pips: float = 12.0,
         tp_pips: float = 14.0,
         last_exit_reason: Optional[str] = None,
+        m1_df: Optional[pd.DataFrame] = None,
+        timeframe: str = "15m",
     ) -> EAScalpingSignal:
         """
         Alur logika lengkap EA Scalping:
@@ -236,7 +238,10 @@ class EAScalpingEngine:
         - Re-entry: Seketika saat TP maupun SL.
         """
         clean_sym = normalize_symbol(symbol)
-        closes_m1 = pd.to_numeric(m1_df["close"], errors="coerce").ffill()
+        df_action = action_df if action_df is not None else (m15_df if m15_df is not None else m1_df)
+        if df_action is None:
+            df_action = pd.DataFrame([{"close": 2650.0, "open": 2649.0, "high": 2652.0, "low": 2648.0}])
+        closes_m1 = pd.to_numeric(df_action["close"], errors="coerce").ffill()
         curr_price = float(closes_m1.iloc[-1]) if len(closes_m1) > 0 else 2650.0
 
         digits, point = get_mt5_digits_and_point(clean_sym, curr_price)
@@ -254,13 +259,13 @@ class EAScalpingEngine:
 
         # 3. Analisa Struktur Pasar (Market Structure HH, HL, LH, LL & 3 Checklist Wajib)
         struct_res = MarketStructureAnalyzer.analyze_structure(
-            m5_df if (m5_df is not None and len(m5_df) >= 20) else m1_df,
+            m5_df if (m5_df is not None and len(m5_df) >= 20) else df_action,
             symbol=clean_sym,
-            timeframe="5m" if (m5_df is not None and len(m5_df) >= 20) else "1m",
+            timeframe=timeframe,
         )
 
-        # 3. Pembacaan Karakter Candlestick M1
-        candle_pattern, candle_bias, candle_strength = cls.read_candlestick_character(m1_df)
+        # 3. Pembacaan Karakter Candlestick pada Timeframe Aksi
+        candle_pattern, candle_bias, candle_strength = cls.read_candlestick_character(df_action)
 
         # 4. Deteksi Perpotongan Curam (Steep Cross):
         # Slope ratio diukur dalam kelipatan point per candle M1

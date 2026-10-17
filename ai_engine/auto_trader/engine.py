@@ -139,7 +139,7 @@ class SmartAutoTraderEngine:
         user_id: int,
         symbol: str,
         duration_code: str = "24/7",
-        timeframe: str = "1m",
+        timeframe: str = "15m",
         poll_interval_seconds: float = 5.0,
         notify_callback: Optional[NotifyCallback] = None,
         custom_lot: Optional[float] = None,
@@ -226,7 +226,7 @@ class SmartAutoTraderEngine:
         self,
         user_id: int,
         symbol: str,
-        timeframe: str = "1m",
+        timeframe: str = "15m",
         price_override: Optional[float] = None,
         high_override: Optional[float] = None,
         low_override: Optional[float] = None,
@@ -355,7 +355,7 @@ class SmartAutoTraderEngine:
         self,
         user_id: int,
         symbol: str = "BTCUSDT",
-        timeframe: str = "1m",
+        timeframe: str = "15m",
         decision_override: Optional[SignalDecision] = None,
         require_autotrade_toggle: bool = True,
         custom_lot: Optional[float] = None,
@@ -454,7 +454,7 @@ class SmartAutoTraderEngine:
         if decision_override is not None:
             decision = decision_override
         elif ea_mode == "EA_EXPERT_ADVISOR":
-            market_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="1m", limit=100)
+            market_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="15m", limit=100)
             closes = pd.to_numeric(market_df["close"], errors="coerce").ffill()
             delta = closes.diff()
             gain = delta.clip(lower=0.0)
@@ -504,7 +504,7 @@ class SmartAutoTraderEngine:
             )
             decision = SignalDecision(
                 symbol=clean_sym,
-                timeframe="1m",
+                timeframe="15m",
                 action=ea_action,
                 badge=f"EA-EA {ea_action}" if ea_action in ("BUY", "SELL") else "NEUTRAL / HOLD",
                 confidence=round(ea_conf, 4),
@@ -527,14 +527,14 @@ class SmartAutoTraderEngine:
                 indicators={"rsi": latest_rsi, "ea_mode": "EA_EXPERT_ADVISOR", "ea_detail": ea_detail},
             )
         elif ea_mode == "EA_SCALPING":
-            market_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="1m", limit=100)
+            market_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="15m", limit=100)
             h1_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="1h", limit=60)
             m5_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="5m", limit=60)
             latest_price = float(market_df["close"].iloc[-1]) if len(market_df) > 0 else 2650.0
 
-            # Pure EA Scalping: 5-MA Steep Cross (1M) + MTF Trend (H1 & M5) + Candlestick Character + Forward Prediction
+            # Pure EA Scalping pada Timeframe Aksi M15 (5-MA & MTF Trend H1/M5)
             scalp_res = EAScalpingEngine.evaluate_scalping_5ma(
-                m1_df=market_df,
+                action_df=market_df,
                 symbol=clean_sym,
                 h1_df=h1_df,
                 m5_df=m5_df,
@@ -547,7 +547,7 @@ class SmartAutoTraderEngine:
             ea_detail = scalp_res.details
             decision = SignalDecision(
                 symbol=clean_sym,
-                timeframe="1m",
+                timeframe="15m",
                 action=ea_action,
                 badge=f"EA-SCALPING {ea_action}" if ea_action in ("BUY", "SELL") else "NEUTRAL / HOLD",
                 confidence=round(ea_conf, 4),
@@ -576,7 +576,7 @@ class SmartAutoTraderEngine:
                 },
             )
         elif ea_mode == "EA_GRID_SCALPER":
-            market_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="1m", limit=100)
+            market_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="15m", limit=100)
             closes = pd.to_numeric(market_df["close"], errors="coerce").ffill()
             latest_price = float(closes.iloc[-1])
             grid_cfg = GridScalperConfig()
@@ -591,7 +591,7 @@ class SmartAutoTraderEngine:
             )
             decision = SignalDecision(
                 symbol=clean_sym,
-                timeframe="1m",
+                timeframe="15m",
                 action="BUY",
                 badge="EA-GRID SCALPER",
                 confidence=0.90,
@@ -614,7 +614,7 @@ class SmartAutoTraderEngine:
                 indicators={"ea_mode": "EA_GRID_SCALPER", "comp_lot": comp_lot, "ea_detail": f"Trap Grid M1 Aktif (Lot {comp_lot:.2f})"},
             )
         elif ea_mode in ("EA_NX_BREAK", "EA_NX_PARSIAL", "EA_NX_REVERSE", "EA_NX_POC"):
-            market_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="1m", limit=120)
+            market_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="15m", limit=120)
             closes = pd.to_numeric(market_df["close"], errors="coerce").ffill()
             latest_price = float(closes.iloc[-1])
             if ea_mode == "EA_NX_BREAK":
@@ -633,7 +633,7 @@ class SmartAutoTraderEngine:
             tp2_val = nx_res.take_profit_levels[1] if len(nx_res.take_profit_levels) > 1 else nx_res.take_profit
             decision = SignalDecision(
                 symbol=clean_sym,
-                timeframe="1m",
+                timeframe="15m",
                 action=ea_action,
                 badge=f"{nx_res.strategy.upper()} {ea_action}" if ea_action in ("BUY", "SELL") else "NEUTRAL / HOLD",
                 confidence=ea_conf,
