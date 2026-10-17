@@ -161,6 +161,17 @@ def format_signal_card(decision: SignalDecision) -> str:
     cp_pat = str(decision.indicators.get("candlestick_pattern", "")).strip()
     cp_line = f"• <b>Pola Candlestick:</b> 🕯️ <b>{html.escape(cp_pat)}</b>\n" if cp_pat else ""
 
+    c_color = str(decision.indicators.get("candle_color", "")).strip()
+    c_win = str(decision.indicators.get("candle_winner", "")).strip()
+    c_rej = str(decision.indicators.get("candle_rejection", "")).strip()
+    sw_high = float(decision.indicators.get("candle_swing_high", 0.0))
+    sw_low = float(decision.indicators.get("candle_swing_low", 0.0))
+    if c_color:
+        color_badge = "⚪ Putih (Harga Naik)" if c_color == "PUTIH" else ("🔴 Merah (Harga Turun)" if c_color == "MERAH" else "🟡 Doji")
+        sw_text = f" • Swing: H ${sw_high:,.2f} / L ${sw_low:,.2f}" if sw_high > 0 and sw_low > 0 else ""
+        c_line = f"• <b>Anatomi Lilin:</b> {color_badge} | <i>{html.escape(c_win)}</i>\n• <b>Penolakan Sumbu:</b> <i>{html.escape(c_rej)}</i>{sw_text}\n"
+    else:
+        c_line = ""
     oc_sig = int(decision.indicators.get("oc_signal", 0))
     oc_entry = decision.indicators.get("oc_entry", 0.0)
     oc_sl = decision.indicators.get("oc_sl", 0.0)
@@ -183,6 +194,7 @@ def format_signal_card(decision: SignalDecision) -> str:
         f"{ut_line}"
         f"{st_line}"
         f"{cp_line}"
+        f"{c_line}"
         f"{oc_line}"
         f"• <b>Resistance Atas (R1 | R2):</b> <code>{format_price(decision.resistance_1)}</code> (<code>{r1_pct}</code>) | <code>{format_price(decision.resistance_2)}</code>\n"
         f"• <b>Support Bawah (S1 | S2):</b> <code>{format_price(decision.support_1)}</code> (<code>{s1_pct}</code>) | <code>{format_price(decision.support_2)}</code>\n"

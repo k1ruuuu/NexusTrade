@@ -33,6 +33,7 @@ from data_pipeline.live_market_feed import LiveMarketDataFeed
 from config.settings import Settings, get_settings
 from data_pipeline.market_symbols import normalize_symbol
 from data_pipeline.preprocessor_ohlcv import OHLCVPreprocessor
+from data_pipeline.candlestick_reader import CandlestickReader
 from src.features.structure_extractor import CandleStructuralExtractor
 from src.models.macro_regime import MacroRegimeDetector
 from ai_engine.models.meta_label_engine import (
@@ -725,11 +726,17 @@ class EnsembleDecisionAgent:
 
         oc_tag = f" • OC: {('BUY' if oc_sig == 1 else 'SELL')} (SL: ${oc_sl:,.2f} | TP: ${oc_tp:,.2f})" if oc_sig != 0 else ""
 
-        # Candlestick Pattern Identification on 5M Execution Timeframe
+        # Candlestick Pattern Identification & 3-Pillar Price Action on 5M Timeframe
         cp_5m_df = self.ohlcv_preprocessor.identify_candlestick_patterns(ut_source_df.tail(40), trend_bars=5)
+        cs_analysis = CandlestickReader.analyze_series_and_swings(ut_source_df.tail(40))
         last_cp = cp_5m_df.iloc[-1]
-        active_pattern = str(last_cp.get("cp_pattern_name", "")).strip()
+        active_pattern = str(last_cp.get("cp_pattern_name", "")).strip() or cs_analysis.latest_candle.pattern_label
         cp_score = float(last_cp.get("cp_score", 0.0))
+        if cp_score == 0.0:
+            if cs_analysis.latest_candle.color == "PUTIH":
+                cp_score = round(cs_analysis.latest_candle.body_ratio * 0.8, 2)
+            elif cs_analysis.latest_candle.color == "MERAH":
+                cp_score = round(-cs_analysis.latest_candle.body_ratio * 0.8, 2)
         if not active_pattern and len(cp_5m_df) >= 2:
             prev_cp = cp_5m_df.iloc[-2]
             prev_pname = str(prev_cp.get("cp_pattern_name", "")).strip()
@@ -809,6 +816,13 @@ class EnsembleDecisionAgent:
                 "oc_entry": round(oc_entry, 4),
                 "oc_sl": round(oc_sl, 4),
                 "oc_tp": round(oc_tp, 4),
+                "candle_color": cs_analysis.latest_candle.color,
+                "candle_winner": cs_analysis.latest_candle.winner,
+                "candle_rejection": cs_analysis.latest_candle.rejection_site,
+                "candle_trend_series": cs_analysis.trend,
+                "candle_swing_high": cs_analysis.latest_swing_high,
+                "candle_swing_low": cs_analysis.latest_swing_low,
+                "candle_three_pillars": cs_analysis.three_pillars_summary,
             },
             headlines=[h.headline for h in sent_90d.headline_scores],
             newly_learned_headlines=sent_90d.newly_learned_count,
