@@ -273,6 +273,30 @@ def format_timed_session_started_card(
         cmd_prefix = "/ea_grid"
         strat_line = "🪤 <b>Layered BUY_STOP &amp; SELL_STOP ($1.00 Step, Target $5,000)</b>"
         mode_line = f"🟢 <b>EA Grid Scalper</b> (<code>{html.escape(session.remaining_human)}</code>)"
+    elif session.ea_mode == "EA_NX_BREAK":
+        hdr_title = "NX-BREAK M1/M5 (BREAKOUT CANDLE) —"
+        sub_title = "SESI NX-BREAK (BODY ≥ 55% | 0.4-2.5 ATR | 1:1 RR)"
+        cmd_prefix = "/ea_break"
+        strat_line = "⚡ <b>Candle 2 Breakout + 0.05 ATR Buffer (SL 300pt, TP 1:1)</b>"
+        mode_line = f"🟢 <b>NX-Break EA</b> (<code>{html.escape(session.remaining_human)}</code>)"
+    elif session.ea_mode == "EA_NX_PARSIAL":
+        hdr_title = "NX-PARSIAL 3-LEG BASKET —"
+        sub_title = "SESI NX-PARSIAL (1R • 3R • 6R TARGETS)"
+        cmd_prefix = "/ea_parsial"
+        strat_line = "📦 <b>3-Leg Shared Risk Basket (TP1 1R, TP2 3R, TP3 6R)</b>"
+        mode_line = f"🟢 <b>NX-Parsial EA</b> (<code>{html.escape(session.remaining_human)}</code>)"
+    elif session.ea_mode == "EA_NX_REVERSE":
+        hdr_title = "NX-REVERSE TREND & RECOVERY —"
+        sub_title = "SESI NX-REVERSE (EMA 20/50/200 + 20-BAR SNR | 1:5 RR)"
+        cmd_prefix = "/ea_reverse"
+        strat_line = "🔄 <b>EMA 20>50>200 + Rolling SNR + 1:5 RR + SL Recovery</b>"
+        mode_line = f"🟢 <b>NX-Reverse EA</b> (<code>{html.escape(session.remaining_human)}</code>)"
+    elif session.ea_mode == "EA_NX_POC":
+        hdr_title = "NX-POC VOLUME PROFILE REJECTION —"
+        sub_title = "SESI NX-POC (100-BAR PROFILE | ADX ≤ 25 | 1:1 RR)"
+        cmd_prefix = "/ea_poc"
+        strat_line = "🎯 <b>100-Bar 40-Bin Volume Profile POC + Rejection Pinbar</b>"
+        mode_line = f"🟢 <b>NX-POC EA</b> (<code>{html.escape(session.remaining_human)}</code>)"
     elif session.ea_mode == "EA_EXPERT_ADVISOR":
         hdr_title = "EA EXPERT ADVISOR MT5 (RSI 14) —"
         sub_title = "SESI EA MT5 (RSI 14 | SL 50 PIPS | TP 150 PIPS)"
@@ -388,6 +412,18 @@ def format_autotrade_report_card(report: AutoTradeExecutionReport) -> str:
     if getattr(report, "ea_mode", None) == "EA_GRID_SCALPER":
         header_name = "EA GRID/TRAP SCALPER M1 (PENDING TRAP)"
         sub_rule = "🪤 <i>Layered BUY_STOP &amp; SELL_STOP Grid Trap • Target $5,000 USD Mass Close</i>\n"
+    elif getattr(report, "ea_mode", None) == "EA_NX_BREAK":
+        header_name = "NX-BREAK EA (M1/M5 BREAKOUT)"
+        sub_rule = "⚡ <i>Candle Breakout • Body ≥ 55% • Range 0.4-2.5 ATR • 1:1 RR</i>\n"
+    elif getattr(report, "ea_mode", None) == "EA_NX_PARSIAL":
+        header_name = "NX-PARSIAL EA (3-LEG BASKET)"
+        sub_rule = "📦 <i>3-Leg Shared Basket • TP1 1R, TP2 3R, TP3 6R Scaling</i>\n"
+    elif getattr(report, "ea_mode", None) == "EA_NX_REVERSE":
+        header_name = "NX-REVERSE EA (EMA 20/50/200 + SNR)"
+        sub_rule = "🔄 <i>Trend Alignment + 20-Bar Rolling SNR + 1:5 RR + SL Recovery</i>\n"
+    elif getattr(report, "ea_mode", None) == "EA_NX_POC":
+        header_name = "NX-POC EA (100-BAR VOLUME PROFILE)"
+        sub_rule = "🎯 <i>Point of Control 40-Bin Histogram Rejection • ADX ≤ 25 • 1:1 RR</i>\n"
     elif getattr(report, "ea_mode", None) == "EA_EXPERT_ADVISOR":
         header_name = "EA EXPERT ADVISOR MT5 (RSI 14)"
         sub_rule = "🤖 <i>Open BUY jika RSI 14 ≤ 30, Open SELL jika RSI 14 ≥ 70 • SL 50 Pips / TP 150 Pips</i>\n"

@@ -1,0 +1,37 @@
+{
+  "scope": "Text assembly, conditional-branch inspection, delimiter balance, input references, and source invariants only.",
+  "compiler_executed": false,
+  "mql_executed": false,
+  "backtest_executed": false,
+  "broker_connected": false,
+  "files": [
+    {
+      "file": "Standalone/NX-POC.mq5",
+      "lines": 1034,
+      "inputs_in_active_branch": 30,
+      "static_checks": "PASS",
+      "sha256": "00b9196a17185f425fed53478b7df2e5c2121759d06d0a1eaa888aff1c62f137"
+    },
+    {
+      "file": "Standalone/NXBreak.mq5",
+      "lines": 1034,
+      "inputs_in_active_branch": 21,
+      "static_checks": "PASS",
+      "sha256": "cb7a89d17cca218d5736e77daed0f0895371e246e228025b0f3e6cabd62216eb"
+    },
+    {
+      "file": "Standalone/NXParsial.mq5",
+      "lines": 1034,
+      "inputs_in_active_branch": 21,
+      "static_checks": "PASS",
+      "sha256": "d92b73dadf0fb7af1492656854a3a6cc2338b5a94ace10bd68f30c159f6cdf40"
+    },
+    {
+      "file": "Standalone/NXReverse.mq5",
+      "lines": 1034,
+      "inputs_in_active_branch": 30,
+      "static_checks": "PASS",
+      "sha256": "00199c8c1fc09eb3b14c87fd9ef0e34a704a7aee7b1e3cc9c5c159682dd3b891"
+    }
+  ]
+}

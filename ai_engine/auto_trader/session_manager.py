@@ -274,11 +274,19 @@ class AutoTradeSessionManager(PositionMonitorMixin):
                 if notify_callback is not None:
                     tp_str = "Dihapus (Runner)" if report.position_record.take_profit_1 <= 0 else f"${report.position_record.take_profit_1:,.2f}"
                     if sess.ea_mode == "EA_GRID_SCALPER":
-                        hdr = f"EA GRID/TRAP [ID #{sess.short_id}] (M1)"
+                        hdr = f"🪤 EA GRID/TRAP [ID #{sess.short_id}] (M1)"
+                    elif sess.ea_mode == "EA_NX_BREAK":
+                        hdr = f"⚡ NX-BREAK [ID #{sess.short_id}] (M1 BREAKOUT)"
+                    elif sess.ea_mode == "EA_NX_PARSIAL":
+                        hdr = f"📦 NX-PARSIAL [ID #{sess.short_id}] (1R•3R•6R BASKET)"
+                    elif sess.ea_mode == "EA_NX_REVERSE":
+                        hdr = f"🔄 NX-REVERSE [ID #{sess.short_id}] (1:5 RR RECOVERY)"
+                    elif sess.ea_mode == "EA_NX_POC":
+                        hdr = f"🎯 NX-POC [ID #{sess.short_id}] (100-BAR VOLUME PROFILE)"
                     elif sess.ea_mode == "EA_EXPERT_ADVISOR":
-                        hdr = f"EA EXPERT ADVISOR [ID #{sess.short_id}] (RSI 14)"
+                        hdr = f"🤖 EA EXPERT ADVISOR [ID #{sess.short_id}] (RSI 14)"
                     elif sess.ea_mode == "EA_SCALPING":
-                        hdr = f"EA SCALPING [ID #{sess.short_id}] (M1 MOMENTUM)"
+                        hdr = f"⚡ EA SCALPING [ID #{sess.short_id}] (M1 MOMENTUM)"
                     elif sess.is_trade_mode:
                         hdr = f"ALGO-TRADE [ID #{sess.short_id}] (4 INDIKATOR)"
                     else:

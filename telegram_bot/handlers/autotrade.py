@@ -125,6 +125,22 @@ def build_setup_keyboard(has_creds: bool = False, autotrade_on: bool = False) ->
         "ea-grid",
         "eagrid",
         "grid",
+        "ea_break",
+        "ea-break",
+        "eabreak",
+        "nxbreak",
+        "ea_parsial",
+        "ea-parsial",
+        "eaparsial",
+        "nxparsial",
+        "ea_reverse",
+        "ea-reverse",
+        "eareverse",
+        "nxreverse",
+        "ea_poc",
+        "ea-poc",
+        "eapoc",
+        "nxpoc",
         ignore_case=True,
     )
 )
@@ -151,15 +167,51 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
     is_ea_scp = any(cmd_token.startswith(p) for p in ("/ea-scp", "/ea_scp", "/eascp"))
     is_ea_ea = any(cmd_token.startswith(p) for p in ("/ea-ea", "/ea_ea", "/eaea"))
     is_ea_grid = any(cmd_token.startswith(p) for p in ("/ea_grid", "/ea-grid", "/eagrid", "/grid"))
+    is_nx_break = any(cmd_token.startswith(p) for p in ("/ea_break", "/ea-break", "/eabreak", "/nxbreak"))
+    is_nx_parsial = any(cmd_token.startswith(p) for p in ("/ea_parsial", "/ea-parsial", "/eaparsial", "/nxparsial"))
+    is_nx_reverse = any(cmd_token.startswith(p) for p in ("/ea_reverse", "/ea-reverse", "/eareverse", "/nxreverse"))
+    is_nx_poc = any(cmd_token.startswith(p) for p in ("/ea_poc", "/ea-poc", "/eapoc", "/nxpoc"))
     ea_mode: Optional[str] = (
-        "EA_GRID_SCALPER"
-        if is_ea_grid
-        else ("EA_SCALPING" if is_ea_scp else ("EA_EXPERT_ADVISOR" if is_ea_ea else None))
+        "EA_NX_BREAK"
+        if is_nx_break
+        else (
+            "EA_NX_PARSIAL"
+            if is_nx_parsial
+            else (
+                "EA_NX_REVERSE"
+                if is_nx_reverse
+                else (
+                    "EA_NX_POC"
+                    if is_nx_poc
+                    else (
+                        "EA_GRID_SCALPER"
+                        if is_ea_grid
+                        else ("EA_SCALPING" if is_ea_scp else ("EA_EXPERT_ADVISOR" if is_ea_ea else None))
+                    )
+                )
+            )
+        )
     )
     cmd_name = (
-        "/ea_grid"
-        if is_ea_grid
-        else ("/ea-scp" if is_ea_scp else ("/ea-EA" if is_ea_ea else ("/trade" if is_trade_mode else "/autotrade")))
+        "/ea_break"
+        if is_nx_break
+        else (
+            "/ea_parsial"
+            if is_nx_parsial
+            else (
+                "/ea_reverse"
+                if is_nx_reverse
+                else (
+                    "/ea_poc"
+                    if is_nx_poc
+                    else (
+                        "/ea_grid"
+                        if is_ea_grid
+                        else ("/ea-scp" if is_ea_scp else ("/ea-EA" if is_ea_ea else ("/trade" if is_trade_mode else "/autotrade")))
+                    )
+                )
+            )
+        )
     )
     args = parse_command_args(message.text)
     sub = args[0].lower() if args else "status"
@@ -192,6 +244,26 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
                 "🟢 <b>Mode EA Grid/Trap Scalper M1 Diaktifkan!</b>\n"
                 "Eksekusi trap stop ganda (BUY_STOP &amp; SELL_STOP) pada M1 dengan auto-compounding lot ($10 ➔ 0.01 lot), "
                 "target profit $5,000, dan pembersihan posisi massal.\n\n"
+            )
+        elif is_nx_break:
+            on_title = (
+                "🟢 <b>Mode EA NXBreak (M1/M5 Breakout) Diaktifkan!</b>\n"
+                "Breakout candle berkualitas (Body ≥ 55%, Range 0.4–2.5 ATR, Buffer 0.05 ATR) dengan SL 300pt & TP 1:1 RR.\n\n"
+            )
+        elif is_nx_parsial:
+            on_title = (
+                "🟢 <b>Mode EA NXParsial (3-Leg Basket) Diaktifkan!</b>\n"
+                "Breakout candle 3-leg berurutan dengan shared risk budget dan target berjenjang (1R, 3R, 6R).\n\n"
+            )
+        elif is_nx_reverse:
+            on_title = (
+                "🟢 <b>Mode EA NXReverse (Trend & 1:5 RR Recovery) Diaktifkan!</b>\n"
+                "EMA 20>50>200 + Breakout Rolling 20-bar SNR, dynamic swing stop, TP 1:5 RR, dan recovery switching 10-bar.\n\n"
+            )
+        elif is_nx_poc:
+            on_title = (
+                "🟢 <b>Mode EA NX-POC (Volume Profile Rejection) Diaktifkan!</b>\n"
+                "100-bar 40-bin Point of Control rejection pinbar dengan filter ADX ≤ 25 dan target 1:1 RR menuju POC.\n\n"
             )
         elif is_ea_ea:
             on_title = (

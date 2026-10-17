@@ -26,6 +26,7 @@ from ai_engine.auto_trader.mt5_exness_client import (
     estimate_mt5_pnl_usdt,
     get_mt5_contract_size,
 )
+from ai_engine.auto_trader.nx_ea_engine import NXEAEngine, NXSignalResult
 from ai_engine.auto_trader.session_manager import (
     AutoTradeSessionManager,
     AutoTradeSessionState,
@@ -624,6 +625,53 @@ class SmartAutoTraderEngine:
                 support_2=latest_price * 0.90,
                 indicators={"ea_mode": "EA_GRID_SCALPER", "comp_lot": comp_lot, "ea_detail": f"Trap Grid M1 Aktif (Lot {comp_lot:.2f})"},
             )
+        elif ea_mode in ("EA_NX_BREAK", "EA_NX_PARSIAL", "EA_NX_REVERSE", "EA_NX_POC"):
+            market_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="1m", limit=120)
+            closes = pd.to_numeric(market_df["close"], errors="coerce").ffill()
+            latest_price = float(closes.iloc[-1])
+            if ea_mode == "EA_NX_BREAK":
+                nx_res = NXEAEngine.evaluate_nx_break(market_df, clean_sym)
+            elif ea_mode == "EA_NX_PARSIAL":
+                nx_res = NXEAEngine.evaluate_nx_parsial(market_df, clean_sym)
+            elif ea_mode == "EA_NX_REVERSE":
+                nx_res = NXEAEngine.evaluate_nx_reverse(market_df, clean_sym)
+            else:
+                nx_res = NXEAEngine.evaluate_nx_poc(market_df, clean_sym)
+
+            ea_action = nx_res.action
+            ea_conf = 0.88 if ea_action in ("BUY", "SELL") else 0.50
+            sl_val = nx_res.stop_loss if nx_res.stop_loss > 0 else (latest_price * 0.98 if ea_action == "BUY" else latest_price * 1.02)
+            tp1_val = nx_res.take_profit_levels[0] if nx_res.take_profit_levels else nx_res.take_profit
+            tp2_val = nx_res.take_profit_levels[1] if len(nx_res.take_profit_levels) > 1 else nx_res.take_profit
+            decision = SignalDecision(
+                symbol=clean_sym,
+                timeframe="1m",
+                action=ea_action,
+                badge=f"{nx_res.strategy.upper()} {ea_action}" if ea_action in ("BUY", "SELL") else "NEUTRAL / HOLD",
+                confidence=ea_conf,
+                s_tech=0.60 if ea_action == "BUY" else (-0.60 if ea_action == "SELL" else 0.0),
+                s_vol=0.10,
+                s_sent=0.0,
+                risk_multiplier=1.0,
+                entry_price=latest_price,
+                position_units=round(0.01 * get_mt5_contract_size(clean_sym), 4),
+                stop_loss=sl_val,
+                take_profit_1=tp1_val,
+                take_profit_2=tp2_val,
+                expectancy_r=1.5,
+                confluence_pillars=5,
+                is_sideways=False,
+                resistance_1=latest_price * 1.05,
+                resistance_2=latest_price * 1.10,
+                support_1=latest_price * 0.95,
+                support_2=latest_price * 0.90,
+                indicators={
+                    "ea_mode": ea_mode,
+                    "nx_detail": nx_res.details,
+                    "nx_strategy": nx_res.strategy,
+                    "nx_levels": nx_res.take_profit_levels,
+                },
+            )
         else:
             decision = self.ensemble_agent.analyze_multi_timeframe_autotrade(
                 symbol=clean_sym,
@@ -699,6 +747,14 @@ class SmartAutoTraderEngine:
             ea_ok = True
             tech_detail = f"🪤 EA GRID/TRAP SCALPER M1: Pending Stop Trap Grid Aktif (Lot {decision.indicators.get('comp_lot', 0.01):.2f})"
             conf_ok = True
+        elif ea_mode and ea_mode.startswith("EA_NX_"):
+            ea_ok = decision.action in ("BUY", "SELL")
+            nx_detail_str = decision.indicators.get("nx_detail", "")
+            if ea_ok:
+                tech_detail = f"🎯 {decision.badge}: {nx_detail_str}"
+            else:
+                tech_detail = f"DITOLAK ({ea_mode}): {nx_detail_str}"
+            conf_ok = ea_ok
         elif trade_mode:
             if decision.action == "BUY":
                 quad_ok = (ut_trend >= 0) and (st_dir >= 0) and (oc_sig >= 0) and (cp_score >= -0.5)
@@ -787,15 +843,19 @@ class SmartAutoTraderEngine:
             AutoTradeGateCheck(
                 gate_number=3,
                 name=(
-                    "EA Grid/Trap Scalper M1"
-                    if ea_mode == "EA_GRID_SCALPER"
+                    f"EA {decision.indicators.get('nx_strategy', ea_mode)}"
+                    if ea_mode and ea_mode.startswith("EA_NX_")
                     else (
-                        "EA Expert Advisor MT5 (RSI 14)"
-                        if ea_mode == "EA_EXPERT_ADVISOR"
+                        "EA Grid/Trap Scalper M1"
+                        if ea_mode == "EA_GRID_SCALPER"
                         else (
-                            "EA Scalping M1/M5 (Micro Momentum)"
-                            if ea_mode == "EA_SCALPING"
-                            else ("Strategi 4 Indikator Murni (/trade)" if trade_mode else "Strategi UT Bot + Supertrend + OC Signals (1D•1H•15M•5M ➔ 1M)")
+                            "EA Expert Advisor MT5 (RSI 14)"
+                            if ea_mode == "EA_EXPERT_ADVISOR"
+                            else (
+                                "EA Scalping M1/M5 (Micro Momentum)"
+                                if ea_mode == "EA_SCALPING"
+                                else ("Strategi 4 Indikator Murni (/trade)" if trade_mode else "Strategi UT Bot + Supertrend + OC Signals (1D•1H•15M•5M ➔ 1M)")
+                            )
                         )
                     )
                 ),
