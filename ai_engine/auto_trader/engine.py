@@ -416,15 +416,15 @@ class SmartAutoTraderEngine:
             if latest_rsi >= 70.0:
                 ea_action = "SELL"
                 ea_conf = min(0.95, 0.70 + (latest_rsi - 70.0) * 0.015)
-                ea_detail = f"RSI 14 Overbought ({latest_rsi:.1f} >= 70) ➔ Sinyal SELL (SL 50 Pips | TP 150 Pips)"
+                ea_detail = f"RSI 14 Overbought ({latest_rsi:.1f} ≥ 70) ➔ Sinyal SELL (SL 50 Pips | TP 150 Pips)"
             elif latest_rsi <= 30.0:
                 ea_action = "BUY"
                 ea_conf = min(0.95, 0.70 + (30.0 - latest_rsi) * 0.015)
-                ea_detail = f"RSI 14 Oversold ({latest_rsi:.1f} <= 30) ➔ Sinyal BUY (SL 50 Pips | TP 150 Pips)"
+                ea_detail = f"RSI 14 Oversold ({latest_rsi:.1f} ≤ 30) ➔ Sinyal BUY (SL 50 Pips | TP 150 Pips)"
             else:
                 ea_action = "HOLD"
                 ea_conf = 0.50
-                ea_detail = f"Menunggu RSI 14 ({latest_rsi:.1f}) mencapai Overbought (>=70) atau Oversold (<=30)"
+                ea_detail = f"Menunggu RSI 14 ({latest_rsi:.1f}) mencapai Overbought (≥70) atau Oversold (≤30)"
 
             ea_sl, ea_tp, _ = calculate_ea_sl_tp(
                 symbol=clean_sym,

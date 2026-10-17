@@ -271,7 +271,7 @@ def format_timed_session_started_card(
         hdr_title = "EA EXPERT ADVISOR MT5 (RSI 14) —"
         sub_title = "SESI EA MT5 (RSI 14 | SL 50 PIPS | TP 150 PIPS)"
         cmd_prefix = "/ea-EA"
-        strat_line = "🤖 <b>RSI 14 (RSI >= 70 SELL, RSI <= 30 BUY | SL 50p, TP 150p)</b>"
+        strat_line = "🤖 <b>RSI 14 (RSI ≥ 70 SELL, RSI ≤ 30 BUY | SL 50p, TP 150p)</b>"
         mode_line = f"🟢 <b>EA Expert Advisor</b> (<code>{html.escape(session.remaining_human)}</code>)"
     elif session.ea_mode == "EA_SCALPING":
         hdr_title = "EA SCALPING M1/M5 (FAST MOMENTUM) —"
@@ -381,7 +381,7 @@ def format_autotrade_report_card(report: AutoTradeExecutionReport) -> str:
 
     if getattr(report, "ea_mode", None) == "EA_EXPERT_ADVISOR":
         header_name = "EA EXPERT ADVISOR MT5 (RSI 14)"
-        sub_rule = "🤖 <i>Open BUY jika RSI 14 <= 30, Open SELL jika RSI 14 >= 70 • SL 50 Pips / TP 150 Pips</i>\n"
+        sub_rule = "🤖 <i>Open BUY jika RSI 14 ≤ 30, Open SELL jika RSI 14 ≥ 70 • SL 50 Pips / TP 150 Pips</i>\n"
     elif getattr(report, "ea_mode", None) == "EA_SCALPING":
         header_name = "EA SCALPING M1/M5 (MOMENTUM)"
         sub_rule = "⚡ <i>Fast Scalping M1/M5 Micro-Momentum • SL 20 Pips / TP 40 Pips</i>\n"
