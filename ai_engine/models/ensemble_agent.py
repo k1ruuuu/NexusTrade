@@ -109,6 +109,9 @@ class SignalDecision:
     )
     meta_probability: float = 0.0
     dxy_filter_triggered: bool = False
+    macro_stance: str = "NEUTRAL"
+    gold_action_bias: str = "HOLD"
+    event_mode: Optional[str] = None
     @property
     def meets_confidence_threshold(self) -> bool:
         return self.approved and self.action in ("BUY", "SELL") and self.confidence >= 0.72
@@ -187,6 +190,9 @@ class EnsembleDecisionAgent:
         sr_levels: Optional[SupportResistanceLevels] = None,
         market_df: Optional[pd.DataFrame] = None,
         annualized_volatility: float = 0.45,
+        macro_stance: str = "NEUTRAL",
+        gold_action_bias: str = "HOLD",
+        event_mode: Optional[str] = None,
     ) -> SignalDecision:
         """
         Apply AGENT.md Section 5.A Ensemble Decision Matrix:
@@ -220,15 +226,49 @@ class EnsembleDecisionAgent:
             raw_action = "SELL"
         elif action_hint in ("BUY", "SELL") and abs(signed_composite) >= 0.08:
             raw_action = action_hint
+        elif event_mode and gold_action_bias in ("BUY", "SELL"):
+            # Institutional Macro Monetary Transmission in Event Sniper Mode
+            raw_action = gold_action_bias
+            confidence = max(confidence, 0.76)
         else:
             raw_action = "HOLD"
-
         effective_atr = atr_14 if (atr_14 is not None and atr_14 > 0) else entry_price * 0.012
         resolved_sr = sr_levels or self.sr_detector.detect_levels(
             None, current_price=entry_price, atr_14=effective_atr
         )
-        if sr_levels is not None:
-            targets: StopLossTargets = self.stop_loss_manager.calculate_realistic_targets(
+        oc_sig_val = int(indicators.get("oc_signal", 0)) if indicators else 0
+        oc_sl_val = float(indicators.get("oc_sl", 0.0)) if indicators else 0.0
+        oc_tp_val = float(indicators.get("oc_tp", 0.0)) if indicators else 0.0
+        if event_mode:
+            targets: StopLossTargets = self.stop_loss_manager.calculate_event_mode_targets(
+                entry_price=entry_price,
+                action=raw_action,
+                account_balance=portfolio_equity or self.settings.portfolio_initial_capital,
+                lot_size=0.01,
+                symbol=symbol,
+                risk_pct=self.settings.max_account_risk_per_trade,
+            )
+        elif oc_sig_val != 0 and oc_sl_val > 0 and (
+            (raw_action == "BUY" and oc_sig_val == 1) or (raw_action == "SELL" and oc_sig_val == -1)
+        ):
+            # Dynamic RRR anchoring: Calibrate Stop Loss and Take Profit to current entry_price maintaining strict 1:2 RRR
+            risk_dist = max(abs(entry_price - oc_sl_val), entry_price * 0.001)
+            dyn_tp1 = entry_price + (risk_dist * 2.0) if raw_action == "BUY" else max(entry_price * 0.01, entry_price - (risk_dist * 2.0))
+            dyn_tp2 = entry_price + (risk_dist * 3.0) if raw_action == "BUY" else max(entry_price * 0.01, entry_price - (risk_dist * 3.0))
+            targets = StopLossTargets(
+                action=raw_action,
+                entry_price=round(entry_price, 4),
+                atr_14=round(effective_atr, 4),
+                stop_loss=round(oc_sl_val, 4),
+                take_profit_1=round(dyn_tp1, 4),
+                take_profit_2=round(dyn_tp2, 4),
+                trailing_stop_distance=round(risk_dist * 0.60, 4),
+                risk_per_unit=round(risk_dist, 4),
+                reward_risk_ratio_1=2.0,
+                reward_risk_ratio_2=3.0,
+            )
+        elif sr_levels is not None:
+            targets = self.stop_loss_manager.calculate_realistic_targets(
                 entry_price=entry_price,
                 atr_14=effective_atr,
                 action=raw_action,
@@ -325,6 +365,9 @@ class EnsembleDecisionAgent:
             adx_14=conf_report.adx_14,
             is_sideways=conf_report.is_sideways,
             market_structure_status=conf_report.market_structure_status,
+            macro_stance=macro_stance,
+            gold_action_bias=gold_action_bias,
+            event_mode=event_mode.upper() if event_mode else None,
         )
     def load_market_series(
         self,
@@ -360,6 +403,7 @@ class EnsembleDecisionAgent:
         action_hint: Optional[ActionType] = None,
         indicator_overrides: Optional[dict[str, float]] = None,
         daily_drawdown_override: Optional[float] = None,
+        event_mode: Optional[str] = None,
     ) -> SignalDecision:
         """
         Execute end-to-end multimodal inference (LightGBM Technical + Optiver Volatility
@@ -375,23 +419,20 @@ class EnsembleDecisionAgent:
         if self.settings.use_live_market_data:
             df_5y = self.live_feed.fetch_5y_daily_memory(clean_sym)
         sent_result: SentimentAnalysisResult = self.sentiment_analyzer.analyze_headlines(
-            headlines=headlines,
             symbol=clean_sym,
+            headlines=headlines,
             market_df=market_df,
+            event_mode=event_mode,
         )
         sig_key = f"{clean_sym}_{timeframe}"
-        latest_bar_ts = str(market_df.index[-1]) if len(market_df) > 0 else ""
-        latest_bar_close = float(market_df["close"].iloc[-1]) if len(market_df) > 0 else 0.0
-        current_sig = (latest_bar_ts, round(latest_bar_close, 4))
-        data_changed = self._last_trained_signature.get(sig_key) != current_sig
-
-        if (sent_result.newly_learned_count > 0 or data_changed) and len(market_df) >= 60:
-            self.ohlcv_predictor.train(
-                market_df, symbol=clean_sym, timeframe=timeframe, df_5y=df_5y
-            )
-            self.volatility_estimator.fit(market_df)
-            self._last_trained_signature[sig_key] = current_sig
-
+        # Only train synchronously on initial cold-start if model is not yet fitted.
+        # Periodic retraining is handled asynchronously in the background learner thread.
+        with self.ohlcv_predictor._train_lock:
+            if sig_key not in self.ohlcv_predictor._models_by_key and len(market_df) >= 60:
+                self.ohlcv_predictor.train(
+                    market_df, symbol=clean_sym, timeframe=timeframe, df_5y=df_5y
+                )
+                self.volatility_estimator.fit(market_df)
         tech_pred: TechnicalPrediction = self.ohlcv_predictor.predict(
             market_df,
             symbol=clean_sym,
@@ -465,6 +506,9 @@ class EnsembleDecisionAgent:
             sr_levels=sr_levels,
             market_df=market_df,
             annualized_volatility=vol_forecast.annualized_volatility,
+            macro_stance=sent_result.macro_stance,
+            gold_action_bias=sent_result.gold_action_bias,
+            event_mode=event_mode,
         )
         # Stage 2: Secondary Meta-Model & Macro Risk Filtering (ADVANCED_AI_TRADING_ENGINE_SPEC)
         meta_feat = AdvancedFeatureExtractor.compute_features(
@@ -486,7 +530,7 @@ class EnsembleDecisionAgent:
                 decision.dxy_filter_triggered = True
                 self._reject(decision, dxy_reason)
 
-        if getattr(sent_result, "is_macro_blackout", False):
+        if getattr(self.settings, "macro_blackout_enabled", False) and getattr(sent_result, "is_macro_blackout", False):
             self._reject(decision, f"HIGH_IMPACT_NEWS_BLACKOUT ({sent_result.blackout_event or 'High Impact Event'})")
         return decision
 
@@ -526,12 +570,20 @@ class EnsembleDecisionAgent:
                 + (1.0 if ema20 > ema50 else -1.0) * 0.35
                 + (1.0 if ema50 > ema200 else -1.0) * 0.25
             )
-            mom_score = (
-                float(np.tanh((rsi14 - 50.0) / 14.0)) * 0.55
-                + (0.45 if macd_h > 0 else (-0.45 if macd_h < 0 else 0.0))
-            )
-            flow_score = float(np.clip(cvd20 * 2.5, -1.0, 1.0))
-            score = float(np.clip(0.50 * ema_score + 0.35 * mom_score + 0.15 * flow_score, -1.0, 1.0))
+            ut_trend = float(last.get("ut_trend", 0.0))
+            ut_buy = bool(last.get("ut_buy", False))
+            ut_sell = bool(last.get("ut_sell", False))
+            ut_score = 0.85 if ut_buy else (-0.85 if ut_sell else (0.50 * ut_trend))
+
+            st_dir = float(last.get("supertrend_dir", 0.0))
+            st_buy = bool(last.get("supertrend_buy", False))
+            st_sell = bool(last.get("supertrend_sell", False))
+            st_score = 0.85 if st_buy else (-0.85 if st_sell else (0.50 * st_dir))
+            oc_sig = float(last.get("oc_signal", 0.0))
+            oc_score = 0.85 if oc_sig == 1 else (-0.85 if oc_sig == -1 else 0.0)
+
+            strategy_score = 0.40 * ut_score + 0.40 * st_score + 0.20 * oc_score
+            score = float(np.clip(0.30 * ema_score + 0.35 * strategy_score + 0.20 * mom_score + 0.15 * flow_score, -1.0, 1.0))
             lbl = "🟢 BULL" if score >= 0.12 else ("🔴 BEAR" if score <= -0.12 else "🟡 FLAT")
             return round(score, 3), max(atr14, close_p * 0.0015), lbl
         except Exception:
@@ -540,27 +592,34 @@ class EnsembleDecisionAgent:
     def analyze_multi_timeframe_autotrade(
         self,
         symbol: str = "BTCUSDT",
+        event_mode: Optional[str] = None,
     ) -> SignalDecision:
         """
-        Multi-Timeframe + 3-Month Deep News Auto-Trade Intelligence:
         1. Reads latest breaking news + 3 months (90 days) historical news in detail.
         2. Analyzes market movement & trend across `1D`, `4H`, `1H`, `15M`, and `5M`.
         3. Executes open-position timing, entry price, and realistic 1:2 / 1:3 SL/TP on `1M` (`1m`).
         """
         clean_sym = normalize_symbol(symbol)
-        df_1d = self.load_market_series(clean_sym, timeframe="1d", limit=160)
-        df_4h = self.load_market_series(clean_sym, timeframe="4h", limit=160)
-        df_1h = self.load_market_series(clean_sym, timeframe="1h", limit=160)
-        df_15m = self.load_market_series(clean_sym, timeframe="15m", limit=300)
-        df_5m = self.load_market_series(clean_sym, timeframe="5m", limit=160)
-        df_1m = self.load_market_series(clean_sym, timeframe="1m", limit=160)
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            f_1d = pool.submit(self.load_market_series, clean_sym, "1d", 160)
+            f_4h = pool.submit(self.load_market_series, clean_sym, "4h", 160)
+            f_1h = pool.submit(self.load_market_series, clean_sym, "1h", 160)
+            f_15m = pool.submit(self.load_market_series, clean_sym, "15m", 300)
+            f_5m = pool.submit(self.load_market_series, clean_sym, "5m", 160)
+            f_1m = pool.submit(self.load_market_series, clean_sym, "1m", 160)
+            df_1d = f_1d.result()
+            df_4h = f_4h.result()
+            df_1h = f_1h.result()
+            df_15m = f_15m.result()
+            df_5m = f_5m.result()
+            df_1m = f_1m.result()
 
-        # Step 1: Mandatory Deep News Analysis (Latest Breaking + 3 Months / 90 Days Back)
-        sent_90d = self.sentiment_analyzer.analyze_headlines(
+        sent_90d = self.sentiment_analyzer.analyze_symbol(
             symbol=clean_sym,
             market_df=df_1d if (df_1d is not None and len(df_1d) > 0) else df_15m,
+            event_mode=event_mode,
         )
-
         # Step 2: Multi-Timeframe (1D, 4H, 1H, 15M, 5M) Market & Trend Analysis
         s_1d, _, lbl_1d = self._score_timeframe_trend(df_1d)
         s_4h, atr_4h, lbl_4h = self._score_timeframe_trend(df_4h)
@@ -573,6 +632,7 @@ class EnsembleDecisionAgent:
             timeframe="15m",
             df=df_15m,
             headlines=[h.headline for h in sent_90d.headline_scores] or None,
+            event_mode=event_mode,
         )
         s_15m_raw, atr_15m, _ = self._score_timeframe_trend(df_15m)
         s_15m = float(np.clip(0.65 * base_15m.s_tech + 0.35 * s_15m_raw, -1.0, 1.0))
@@ -620,9 +680,91 @@ class EnsembleDecisionAgent:
         )
         blended_atr = raw_robust_atr
 
-        # Rekomendasi 3: Filter Pasar Sideways / Chop (ADX < 20 atau konsolidasi tanpa momentum)
-        is_market_chop = bool(base_15m.is_sideways or (abs(s_1h) < 0.08 and abs(s_15m) < 0.08 and abs(s_5m) < 0.08))
-        if is_market_chop:
+        # UT Bot Alerts & Supertrend Strategy on 5M Execution Timeframe
+        ut_source_df = df_5m if (df_5m is not None and len(df_5m) >= 10) else (df_15m if df_15m is not None else df_1d)
+        ut_5m_df = self.ohlcv_preprocessor.compute_ut_bot_indicators(ut_source_df.tail(40), key_value=1.0, atr_period=10)
+        last_ut = ut_5m_df.iloc[-1]
+        ut_ts_level = float(last_ut.get("ut_trailing_stop", 0.0))
+        ut_trend_dir = int(last_ut.get("ut_trend", 0))
+        ut_buy_trigger = bool(last_ut.get("ut_buy", False))
+        ut_sell_trigger = bool(last_ut.get("ut_sell", False))
+
+        prev_ut = ut_5m_df.iloc[-2] if len(ut_5m_df) >= 2 else last_ut
+        ut_recent_buy = ut_buy_trigger or bool(prev_ut.get("ut_buy", False))
+        ut_recent_sell = ut_sell_trigger or bool(prev_ut.get("ut_sell", False))
+
+        st_5m_df = self.ohlcv_preprocessor.compute_supertrend_indicators(ut_source_df.tail(40), period=10, multiplier=3.0)
+        last_st = st_5m_df.iloc[-1]
+        st_level = float(last_st.get("supertrend", 0.0))
+        st_dir = int(last_st.get("supertrend_dir", 0))
+        st_buy_trigger = bool(last_st.get("supertrend_buy", False))
+        st_sell_trigger = bool(last_st.get("supertrend_sell", False))
+
+        prev_st = st_5m_df.iloc[-2] if len(st_5m_df) >= 2 else last_st
+        st_recent_buy = st_buy_trigger or bool(prev_st.get("supertrend_buy", False))
+        st_recent_sell = st_sell_trigger or bool(prev_st.get("supertrend_sell", False))
+        # OC Buy/Sell Signals (Pine Script v6) on 5M Execution Timeframe
+        oc_5m_df = self.ohlcv_preprocessor.compute_oc_signals(ut_source_df.tail(40), body_len=20, body_mult=1.5)
+        last_oc = oc_5m_df.iloc[-1]
+        oc_sig = int(last_oc.get("oc_signal", 0))
+        oc_entry = float(last_oc.get("oc_entry", 0.0))
+        oc_sl = float(last_oc.get("oc_sl", 0.0))
+        oc_tp = float(last_oc.get("oc_tp", 0.0))
+        if oc_sig == 0 and len(oc_5m_df) >= 2:
+            prev_oc = oc_5m_df.iloc[-2]
+            if int(prev_oc.get("oc_signal", 0)) != 0:
+                oc_sig = int(prev_oc.get("oc_signal", 0))
+                oc_entry = float(prev_oc.get("oc_entry", 0.0))
+                oc_sl = float(prev_oc.get("oc_sl", 0.0))
+                oc_tp = float(prev_oc.get("oc_tp", 0.0))
+
+        oc_tag = f" • OC: {('BUY' if oc_sig == 1 else 'SELL')} (SL: ${oc_sl:,.2f} | TP: ${oc_tp:,.2f})" if oc_sig != 0 else ""
+
+        # Candlestick Pattern Identification on 5M Execution Timeframe
+        cp_5m_df = self.ohlcv_preprocessor.identify_candlestick_patterns(ut_source_df.tail(40), trend_bars=5)
+        last_cp = cp_5m_df.iloc[-1]
+        active_pattern = str(last_cp.get("cp_pattern_name", "")).strip()
+        cp_score = float(last_cp.get("cp_score", 0.0))
+        if not active_pattern and len(cp_5m_df) >= 2:
+            prev_cp = cp_5m_df.iloc[-2]
+            prev_pname = str(prev_cp.get("cp_pattern_name", "")).strip()
+            if prev_pname:
+                active_pattern = f"{prev_pname} (Konfirmasi)"
+                cp_score = float(prev_cp.get("cp_score", 0.0))
+        pat_prefix = f"[🕯️ {active_pattern}] " if active_pattern else ""
+
+        # Market Chop filter only triggers when higher timeframes lack a clear trend (aligned_count < 3)
+        has_htf_trend = (aligned_count >= 3) or (htf_bull_locked or htf_bear_locked)
+        is_market_chop = bool(
+            not has_htf_trend
+            and (base_15m.is_sideways or (abs(s_1h) < 0.08 and abs(s_15m) < 0.08 and abs(s_5m) < 0.08))
+        )
+
+        # Dual Strategy Confluence (UT Bot + Supertrend + Candlestick Pattern) Acuan Eksekusi:
+        is_dual_buy = (ut_recent_buy or ut_trend_dir == 1) and (st_recent_buy or st_dir == 1)
+        is_dual_sell = (ut_recent_sell or ut_trend_dir == -1) and (st_recent_sell or st_dir == -1)
+
+        if is_dual_buy and dom_sign > 0 and not is_market_chop:
+            act_5m_tag = f"🟢 {pat_prefix}UT BOT + SUPERTREND BUY (ST: ${st_level:,.2f} | UT: ${ut_ts_level:,.2f}){oc_tag}"
+            if blended_s_tech < 0.28 and dom_sign > 0:
+                blended_s_tech = max(0.32, blended_s_tech + 0.40)
+            if cp_score > 0:
+                blended_s_tech = min(0.96, blended_s_tech + 0.10)
+        elif is_dual_sell and dom_sign < 0 and not is_market_chop:
+            act_5m_tag = f"🔴 {pat_prefix}UT BOT + SUPERTREND SELL (ST: ${st_level:,.2f} | UT: ${ut_ts_level:,.2f}){oc_tag}"
+            if blended_s_tech > -0.28 and dom_sign < 0:
+                blended_s_tech = min(-0.32, blended_s_tech - 0.40)
+            if cp_score < 0:
+                blended_s_tech = max(-0.96, blended_s_tech - 0.10)
+        elif ut_recent_buy or (ut_trend_dir == 1 and dom_sign > 0 and not is_market_chop):
+            act_5m_tag = f"🟢 {pat_prefix}UT BOT BUY (Trailing Stop: ${ut_ts_level:,.2f}){oc_tag}"
+            if blended_s_tech < 0.25 and dom_sign > 0:
+                blended_s_tech = max(0.28, blended_s_tech + 0.35)
+        elif ut_recent_sell or (ut_trend_dir == -1 and dom_sign < 0 and not is_market_chop):
+            act_5m_tag = f"🔴 {pat_prefix}UT BOT SELL (Trailing Stop: ${ut_ts_level:,.2f}){oc_tag}"
+            if blended_s_tech > -0.25 and dom_sign < 0:
+                blended_s_tech = min(-0.28, blended_s_tech - 0.35)
+        elif is_market_chop:
             blended_s_tech *= 0.35
             act_5m_tag = "⏳ PASAR SIDEWAYS / CHOP (Rawan Fakeout • Tahan Entri)"
         elif blended_s_tech > 0.15 and s_5m < -0.25:
@@ -632,8 +774,7 @@ class EnsembleDecisionAgent:
             blended_s_tech *= 0.45
             act_5m_tag = f"⏳ TUNGGU LONJAKAN 5M REDA ({s_5m:+.2f})"
         else:
-            act_5m_tag = f"⚡ TRIGGER 5M SIAP ({lbl_5m} {s_5m:+.2f})"
-
+            act_5m_tag = f"⚡ {pat_prefix}UT: ${ut_ts_level:,.2f} | ST: ${st_level:,.2f} ({lbl_5m}){oc_tag}"
         sr_levels = self.sr_detector.detect_levels(
             df_15m if (df_15m is not None and len(df_15m) >= 20) else df_1h,
             current_price=entry_px_5m,
@@ -647,7 +788,23 @@ class EnsembleDecisionAgent:
             timeframe="5m",
             entry_price=entry_px_5m,
             atr_14=blended_atr,
-            indicators=base_15m.indicators,
+            indicators={
+                **dict(base_15m.indicators),
+                "ut_trailing_stop": round(ut_ts_level, 4),
+                "ut_trend": float(ut_trend_dir),
+                "ut_buy": 1.0 if ut_recent_buy else 0.0,
+                "ut_sell": 1.0 if ut_recent_sell else 0.0,
+                "supertrend": round(st_level, 4),
+                "supertrend_dir": float(st_dir),
+                "supertrend_buy": 1.0 if st_recent_buy else 0.0,
+                "supertrend_sell": 1.0 if st_recent_sell else 0.0,
+                "candlestick_pattern": active_pattern,
+                "candlestick_score": float(cp_score),
+                "oc_signal": float(oc_sig),
+                "oc_entry": round(oc_entry, 4),
+                "oc_sl": round(oc_sl, 4),
+                "oc_tp": round(oc_tp, 4),
+            },
             headlines=[h.headline for h in sent_90d.headline_scores],
             newly_learned_headlines=sent_90d.newly_learned_count,
             total_corpus_size=sent_90d.total_corpus_size,
@@ -658,6 +815,9 @@ class EnsembleDecisionAgent:
             macro_regime=base_15m.macro_regime,
             sr_levels=sr_levels,
             market_df=df_15m,
+            macro_stance=sent_90d.macro_stance,
+            gold_action_bias=sent_90d.gold_action_bias,
+            event_mode=event_mode,
         )
         if is_market_chop:
             decision.is_sideways = True
@@ -671,7 +831,24 @@ class EnsembleDecisionAgent:
             target_confidence = max(decision.confidence, base_15m.confidence) + mtf_bonus
             decision.confidence = round(float(np.clip(target_confidence, 0.0, 0.98)), 4)
             decision.badge = self.resolve_badge(decision.action, decision.confidence)
-        if getattr(sent_90d, "is_macro_blackout", False):
+        decision.macro_stance = getattr(sent_90d, "macro_stance", "NEUTRAL")
+        decision.gold_action_bias = getattr(sent_90d, "gold_action_bias", "HOLD")
+        decision.event_mode = event_mode.upper() if event_mode else getattr(sent_90d, "event_mode", None)
+        if event_mode and sent_90d.gold_action_bias in ("BUY", "SELL"):
+            # Macro Monetary Policy Transmission override in Event Sniper Mode:
+            # Hawkish (US inflation/jobs strong -> Sell Gold)
+            # Dovish (US inflation/jobs weak -> Buy Gold)
+            if sent_90d.gold_action_bias == "SELL" and decision.action != "BUY":
+                decision.action = "SELL"
+                decision.approved = True
+                decision.confidence = round(max(decision.confidence, 0.76), 4)
+                decision.badge = self.resolve_badge(decision.action, decision.confidence)
+            elif sent_90d.gold_action_bias == "BUY" and decision.action != "SELL":
+                decision.action = "BUY"
+                decision.approved = True
+                decision.confidence = round(max(decision.confidence, 0.76), 4)
+                decision.badge = self.resolve_badge(decision.action, decision.confidence)
+        if getattr(self.settings, "macro_blackout_enabled", False) and getattr(sent_90d, "is_macro_blackout", False):
             self._reject(decision, f"HIGH_IMPACT_NEWS_BLACKOUT ({sent_90d.blackout_event or 'High Impact Event'})")
         elif decision.action == "BUY" and decision.s_sent < -0.35:
             self._reject(decision, f"Sentiment Conflict: Composite sentiment ({decision.s_sent:+.2f}) vetoes BUY")

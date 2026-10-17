@@ -204,3 +204,73 @@ def estimate_mt5_pnl_usdt(
     if len(clean) == 6 and clean.startswith("USD") and not clean.endswith("USD"):
         raw_pnl = raw_pnl / max(exit_price, 1e-6)
     return round(raw_pnl, 2)
+
+
+def get_mt5_pip_size(symbol: str, price: float = 0.0) -> float:
+    """
+    Return instrument-specific 1.0 pip size in price currency units:
+    - Gold (XAUUSD / GOLD): 1 pip = 0.10 ($5.00 move is 50 pips)
+    - Silver (XAGUSD / SILVER): 1 pip = 0.01
+    - 6-letter FX ending in JPY (USDJPY, EURJPY, GBPJPY): 1 pip = 0.01
+    - Standard 6-letter FX (EURUSD, GBPUSD, AUDUSD): 1 pip = 0.0001
+    - Crypto (BTCUSD, BTCUSDT, ETHUSD): 1 pip = 1.0 ($50.00 move is 50 pips)
+    - Global Indices (US30, US500, USTEC): 1 pip = 1.0 index point
+    - Oil (USOIL, UKOIL, WTI, BRENT): 1 pip = 0.01
+    """
+    sym = normalize_symbol(symbol, strip_hyphen=True).upper()
+    if sym.endswith("M") and len(sym) > 4 and symbol.endswith("m"):
+        sym = sym[:-1]
+    if any(k in sym for k in ("XAU", "GOLD")):
+        return 0.10
+    if any(k in sym for k in ("XAG", "SILVER")):
+        return 0.01
+    if any(k in sym for k in ("BTC", "ETH", "SOL", "CRYPTO")):
+        return 1.0
+    if any(k in sym for k in ("US30", "US500", "USTEC", "SPX", "NDX", "DJI")):
+        return 1.0
+    if any(k in sym for k in ("USOIL", "UKOIL", "WTI", "BRENT", "OIL")):
+        return 0.01
+    if len(sym) == 6 and sym.endswith("JPY"):
+        return 0.01
+    if len(sym) == 6 and any(c in sym for c in ("EUR", "GBP", "AUD", "NZD", "CAD", "CHF")):
+        return 0.0001
+    if price >= 1000.0:
+        return 1.0
+    if price >= 10.0:
+        return 0.10
+    return 0.0001
+
+
+def get_mt5_point_size(symbol: str, price: float = 0.0) -> float:
+    """Return 1.0 point size (1/10th of a pip on 5-digit pricing)."""
+    return get_mt5_pip_size(symbol, price) * 0.10
+
+
+def calculate_ea_sl_tp(
+    symbol: str,
+    side: Literal["BUY", "SELL"],
+    entry_price: float,
+    sl_pips: float = 50.0,
+    tp_pips: float = 150.0,
+    stops_level_pips: float = 3.0,
+) -> tuple[float, float, int]:
+    """
+    Calculate EA Stop-Loss and Take-Profit enforcing Stops Level & Spread Protector:
+    - Guarantees minimum distance from market price >= stops_level_pips (Prevents MT5 Error 130).
+    - Returns (stop_loss, take_profit, decimals).
+    """
+    pip_sz = get_mt5_pip_size(symbol, entry_price)
+    decimals = 2 if entry_price >= 10.0 else (4 if entry_price >= 0.1 else 5)
+    eff_sl_pips = max(float(sl_pips), float(stops_level_pips))
+    eff_tp_pips = max(float(tp_pips), float(stops_level_pips))
+
+    sl_dist = eff_sl_pips * pip_sz
+    tp_dist = eff_tp_pips * pip_sz
+
+    if side == "BUY":
+        sl = round(entry_price - sl_dist, decimals)
+        tp = round(entry_price + tp_dist, decimals)
+    else:
+        sl = round(entry_price + sl_dist, decimals)
+        tp = round(max(entry_price * 0.01, entry_price - tp_dist), decimals)
+    return sl, tp, decimals

@@ -98,7 +98,43 @@ class PositionMonitorMixin:
         open_positions = self.engine.vault.get_open_positions(user_id, symbol=clean_sym)
         if not open_positions:
             return PositionMonitorResult(action_taken="NONE")
-        pos = open_positions[0]
+
+        first_holding: Optional[PositionMonitorResult] = None
+        total_unr_pnl = 0.0
+
+        for pos in open_positions:
+            res = await self._evaluate_single_position(
+                pos=pos,
+                clean_sym=clean_sym,
+                timeframe=timeframe,
+                live_ticket_map=live_ticket_map,
+                price_override=price_override,
+                high_override=high_override,
+                low_override=low_override,
+                headlines_override=headlines_override,
+            )
+            if res.action_taken in ("CLOSED_TP", "CLOSED_SL", "TRAILING_UPDATED"):
+                return res
+            total_unr_pnl += res.unrealized_pnl_usdt
+            if first_holding is None:
+                first_holding = res
+
+        if first_holding is not None:
+            first_holding.unrealized_pnl_usdt = round(total_unr_pnl, 2)
+            return first_holding
+        return PositionMonitorResult(action_taken="HOLDING")
+
+    async def _evaluate_single_position(
+        self,
+        pos: UserPositionRecord,
+        clean_sym: str,
+        timeframe: str,
+        live_ticket_map: dict[str, dict[str, Any]],
+        price_override: Optional[float] = None,
+        high_override: Optional[float] = None,
+        low_override: Optional[float] = None,
+        headlines_override: Optional[list[str]] = None,
+    ) -> PositionMonitorResult:
         live_ord = live_ticket_map.get(pos.order_id)
         live_close_px = float(live_ord.get("closePrice") or 0.0) if isinstance(live_ord, dict) else 0.0
 
@@ -319,6 +355,31 @@ class PositionMonitorMixin:
         unr_pct: float,
     ) -> PositionMonitorResult:
         """Sync ratcheted Trailing Stop to Exness MT5 FIRST, and only persist in SQLite if broker modify succeeded (F03)."""
+        from ai_engine.auto_trader.mt5_symbols import get_mt5_pip_size
+        pip_sz = get_mt5_pip_size(pos.symbol, curr_price)
+
+        # Anti-Broker-Ban Protection 2: Step Filter (InpMinStepPoints = 10.0 points / 1 pip)
+        min_step_dist = 1.0 * pip_sz
+        if abs(candidate_sl - pos.stop_loss) < min_step_dist:
+            return PositionMonitorResult(
+                action_taken="HOLDING",
+                position=pos,
+                current_price=curr_price,
+                unrealized_pnl_usdt=round(unr_pnl, 2),
+                unrealized_pnl_pct=round(unr_pct, 2),
+            )
+
+        # Anti-Broker-Ban Protection 3: Stops Level & Spread Protector (prevents MT5 Error 130)
+        stops_level_dist = 3.0 * pip_sz
+        if abs(curr_price - candidate_sl) < stops_level_dist:
+            return PositionMonitorResult(
+                action_taken="HOLDING",
+                position=pos,
+                current_price=curr_price,
+                unrealized_pnl_usdt=round(unr_pnl, 2),
+                unrealized_pnl_pct=round(unr_pct, 2),
+            )
+
         mod_ok = await self._sync_trailing_sl_on_broker(pos, candidate_sl)
         if not mod_ok:
             return PositionMonitorResult(
@@ -367,6 +428,8 @@ class PositionMonitorMixin:
         new_stop_loss: float,
     ) -> bool:
         """Push updated Trailing Stop-Loss to Exness MT5 in real time via `/OrderModifySafe`."""
+        # Anti-Broker-Ban Protection 1: Request Throttle (InpThrottleMs = 500ms to 1500ms)
+        await self.engine._enforce_broker_throttle(pos.account_id or str(pos.user_id), 500, 1500)
         creds = self.engine.vault.resolve_credentials(pos.user_id)
         if creds is None:
             return False
@@ -389,6 +452,8 @@ class PositionMonitorMixin:
         broker_pnl_override: Optional[float] = None,
     ) -> PositionMonitorResult:
         """Execute closing order on Exness MT5 (`/OrderCloseSafe`) and mark position CLOSED in UserVault."""
+        # Anti-Broker-Ban Protection 1: Request Throttle (InpThrottleMs = 500ms to 1500ms)
+        await self.engine._enforce_broker_throttle(pos.account_id or str(pos.user_id), 500, 1500)
         net_pnl = (
             round(float(broker_pnl_override), 2)
             if broker_pnl_override is not None

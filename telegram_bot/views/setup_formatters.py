@@ -17,6 +17,26 @@ from ai_engine.auto_trader.user_vault import (
 from telegram_bot.views.formatter_utils import format_price
 
 
+EVENT_ICONS: dict[str, str] = {
+    "FOMC": "🏛️",
+    "IMF": "🌐",
+    "NFP": "💼",
+    "CPI": "📊",
+    "PPI": "🏭",
+    "PCE": "📈",
+    "GDP": "🇺🇸",
+    "RETAIL": "🛒",
+    "PMI": "🏗️",
+    "JOBLESS": "📉",
+}
+
+
+def get_macro_event_icon(event_mode: Optional[str]) -> str:
+    if not event_mode:
+        return "🎯"
+    return EVENT_ICONS.get(event_mode.upper(), "🎯")
+
+
 def format_role_badge(role: UserRole, source: Optional[str] = None) -> str:
     if role == "admin":
         if source == "admin_env":
@@ -138,9 +158,10 @@ def format_myaccount_card(
     if positions:
         pos_lines = []
         for p in positions[:5]:
+            tp_str = f"TP1: <code>{format_price(p.take_profit_1)}</code>" if p.take_profit_1 > 0 else "TP: <i>Dihapus (Runner)</i>"
             pos_lines.append(
                 f"  • <b>{html.escape(p.symbol)} ({p.side})</b>: <code>{p.quantity}</code> @ <code>{format_price(p.entry_price)}</code> "
-                f"| SL: <code>{format_price(p.stop_loss)}</code> | TP1: <code>{format_price(p.take_profit_1)}</code>"
+                f"| SL: <code>{format_price(p.stop_loss)}</code> | {tp_str}"
             )
         pos_block = "\n".join(pos_lines)
     else:
@@ -205,12 +226,17 @@ def format_timed_session_started_card(
         sl_dist = abs(pos.entry_price - pos.stop_loss)
         tp1_dist = abs(pos.take_profit_1 - pos.entry_price)
         tp2_dist = abs(pos.take_profit_2 - pos.entry_price)
+        tp_line = (
+            "• <b>Take Profit (TP):</b> <i>Dihapus / Tanpa Batas (Runner Mode Volatilitas)</i>"
+            if pos.take_profit_1 <= 0
+            else f"• <b>Take Profit (1:2 | 1:3):</b> <code>{format_price(pos.take_profit_1)}</code> (<code>{format_price(tp1_dist)}</code>) | <code>{format_price(pos.take_profit_2)}</code> (<code>{format_price(tp2_dist)}</code>)"
+        )
         cycle_block = (
             f"🚀 <b>STATUS POSISI AKTIF (DIKAWAL REAL-TIME 5M):</b>\n"
             f"• <b>Posisi &amp; Ticket:</b> <b>{pos.side} {html.escape(pos.symbol)}</b> (<code>{pos.quantity} Lot</code> | Ticket <code>#{html.escape(pos.order_id)}</code>)\n"
             f"• <b>Harga Entry vs Live (5m):</b> <code>{format_price(pos.entry_price)}</code> ➔ <b><code>{format_price(live_px)}</code></b>\n"
             f"• <b>Stop Loss (1R):</b> <code>{format_price(pos.stop_loss)}</code> (Jarak <code>{format_price(sl_dist)}</code>)\n"
-            f"• <b>Take Profit (1:2 | 1:3):</b> <code>{format_price(pos.take_profit_1)}</code> (<code>{format_price(tp1_dist)}</code>) | <code>{format_price(pos.take_profit_2)}</code> (<code>{format_price(tp2_dist)}</code>)"
+            f"{tp_line}"
         )
     elif isinstance(first_cycle_result, AutoTradeExecutionReport):
         reason = html.escape(
@@ -235,11 +261,46 @@ def format_timed_session_started_card(
         else "<code>Otomatis (Sesuai Risiko Modal)</code>"
     )
     upd_str = html.escape(session.last_updated_iso or session.started_at_iso)
+    ev_icon = get_macro_event_icon(session.macro_event_mode)
+    event_line = (
+        f"• <b>Mode Event Makro:</b> {ev_icon} <b>{session.macro_event_mode} Event Sniper</b> (Blackout Bypass Aktif)\n"
+        if session.macro_event_mode
+        else ""
+    )
+    if session.ea_mode == "EA_EXPERT_ADVISOR":
+        hdr_title = "EA EXPERT ADVISOR MT5 (RSI 14) —"
+        sub_title = "SESI EA MT5 (RSI 14 | SL 50 PIPS | TP 150 PIPS)"
+        cmd_prefix = "/ea-EA"
+        strat_line = "🤖 <b>RSI 14 (RSI ≥ 70 SELL, RSI ≤ 30 BUY | SL 50p, TP 150p)</b>"
+        mode_line = f"🟢 <b>EA Expert Advisor</b> (<code>{html.escape(session.remaining_human)}</code>)"
+    elif session.ea_mode == "EA_SCALPING":
+        hdr_title = "EA SCALPING M1/M5 (FAST MOMENTUM) —"
+        sub_title = "SESI EA SCALPING (M1 MOMENTUM | SL 20 PIPS | TP 40 PIPS)"
+        cmd_prefix = "/ea-scp"
+        strat_line = "⚡ <b>EMA Ribbon + Momentum Pullback (SL 20p, TP 40p)</b>"
+        mode_line = f"🟢 <b>EA Scalping</b> (<code>{html.escape(session.remaining_human)}</code>)"
+    elif session.is_trade_mode:
+        hdr_title = "TRADE (4 INDIKATOR MURNI) —"
+        sub_title = "SESI TRADE 4 INDIKATOR MURNI"
+        cmd_prefix = "/trade"
+        strat_line = "💎 <b>4 Indikator Murni (UT Bot + Supertrend + Candle + OC Signals)</b>"
+        mode_line = f"🟢 <b>4 Indikator Murni</b> (<code>{html.escape(session.remaining_human)}</code>)"
+    else:
+        hdr_title = "AUTO-TRADE 24/7 NON-STOP AKTIF —"
+        sub_title = f"SESI AUTO-TRADE OTOMATIS ({dur.upper()})"
+        cmd_prefix = "/autotrade"
+        strat_line = "🤖 <b>UT Bot + Supertrend + OC Signals + Candles</b>"
+        mode_line = f"🟢 <b>24/7 Non-Stop</b> (<code>{html.escape(session.remaining_human)}</code>)"
     return (
-        f"🤖 <b>AUTO-TRADE 24/7 NON-STOP AKTIF — {sym} (ACTION 5M)</b>\n"
-        f"⏱️ <i>SESI AUTO-TRADE OTOMATIS ({dur.upper()}) AKTIF</i>\n"
+        f"🤖 <b>{hdr_title} {sym} (ACTION 5M)</b>\n"
+        f"⏱️ <i>{sub_title} AKTIF</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• <b>Mode Sistem:</b> 🟢 <b>24/7 Non-Stop</b> (<code>{html.escape(session.remaining_human)}</code>)\n"
+        f"• <b>ID Sesi:</b> <code>#AT-{session.short_id}</code> <i>(Ketik <code>{cmd_prefix} stop {session.short_id}</code> untuk menghentikan)</i>\n"
+        f"• <b>Mode Sistem:</b> {mode_line}\n"
+        f"{event_line}"
+        f"• <b>Batas Layer Bersamaan:</b> <b>{session.max_positions} Posisi</b>\n"
+        f"• <b>Indikator Strategi:</b> {strat_line}\n"
+        f"• <b>Proteksi Anti-Banned:</b> 🛡️ <i>Throttle 500–1500ms • Step Filter 10pt • Anti-Error 130</i>\n"
         f"• <b>Analisa Tren:</b> <code>1D • 1H • 15M • 5M</code> ➔ <b>Action Open/Close:</b> <code>5M</code>\n"
         f"• <b>Ukuran Lot Order:</b> {lot_lbl}\n"
         f"• <b>Peta Tren MTF:</b> <i>{html.escape(session.mtf_status_line)}</i>\n\n"
@@ -249,7 +310,7 @@ def format_timed_session_started_card(
         f"• <b>Total Akumulasi Profit:</b> {net_icon} <b><code>${total_net_pnl:+.2f} USD</code></b>\n"
         f"• <b>Harga Live (5m) &amp; Siklus:</b> <code>{format_price(live_px)}</code> | Siklus <code>#{session.cycles_completed}</code> (<code>{upd_str}</code>)\n\n"
         f"{cycle_block}\n\n"
-        f"<i>💡 Data profit di atas diperbarui otomatis secara real-time. Ketik <code>/autotrade off</code> untuk menonaktifkan Auto-Trade 24/7.</i>"
+        f"<i>💡 Data profit di atas diperbarui otomatis secara real-time. Ketik <code>{cmd_prefix} off</code> untuk menonaktifkan sesi ini.</i>"
     )
 
 def format_autotrade_report_card(report: AutoTradeExecutionReport) -> str:
@@ -258,8 +319,10 @@ def format_autotrade_report_card(report: AutoTradeExecutionReport) -> str:
     tf = html.escape(report.timeframe)
 
     if report.setup_required:
+        is_trade = getattr(report, "trade_mode", False)
+        prefix_title = "TRADE" if is_trade else "AUTO-TRADE"
         return (
-            f"🔒 <b>AUTO-TRADE DITOLAK — WAJIB /SETUP DULU</b>\n"
+            f"🔒 <b>{prefix_title} DITOLAK — WAJIB /SETUP DULU</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"Akun Telegram Anda (ID: <code>{report.user_id}</code>) belum terhubung ke akun Exness Go / MT5 pribadi.\n\n"
             f"• <b>Aturan Sistem:</b> Kredensial pada <code>.env</code> hanya berlaku untuk <b>Role Admin</b>.\n"
@@ -280,13 +343,19 @@ def format_autotrade_report_card(report: AutoTradeExecutionReport) -> str:
         ord_r = report.order_result
         pos_r = report.position_record
         header_badge = "🚀 <b>POSISI DIBUKA OTOMATIS (LOLOS 6 GERBANG!)</b>"
+        sl_note = " (🛡️ <i>Terkalibrasi Saldo Akun • Anti-MC</i>)" if getattr(report.decision, "event_mode", None) else ""
+        tp_str = (
+            "<i>Dihapus / Tanpa Batas (Runner Mode)</i>"
+            if pos_r.take_profit_1 <= 0
+            else f"<code>{format_price(pos_r.take_profit_1)}</code> | <code>{format_price(pos_r.take_profit_2)}</code>"
+        )
         footer_block = (
             f"\n<b>🧾 Detail Order Exness Go / MT5 Anda:</b>\n"
             f"• <b>Order ID:</b> <code>{html.escape(ord_r.order_id)}</code> ({html.escape(ord_r.status)})\n"
             f"• <b>Aksi &amp; Simbol:</b> <b>{ord_r.side} {html.escape(ord_r.symbol)}</b>\n"
             f"• <b>Lot &amp; Harga Masuk:</b> <code>{ord_r.executed_qty} Lot</code> @ <code>{format_price(ord_r.avg_price)}</code> (<code>${ord_r.notional_usdt:,.2f}</code>)\n"
-            f"• <b>Stop Loss (SL):</b> <code>{format_price(pos_r.stop_loss)}</code>\n"
-            f"• <b>Take Profit 1 &amp; 2:</b> <code>{format_price(pos_r.take_profit_1)}</code> | <code>{format_price(pos_r.take_profit_2)}</code>"
+            f"• <b>Stop Loss (SL):</b> <code>{format_price(pos_r.stop_loss)}</code>{sl_note}\n"
+            f"• <b>Take Profit (TP):</b> {tp_str}"
         )
     else:
         header_badge = "🛡️ <b>POSISI DITAHAN — BELUM LOLOS 6 GERBANG AKURASI</b>"
@@ -296,10 +365,38 @@ def format_autotrade_report_card(report: AutoTradeExecutionReport) -> str:
             f"<i>AI tidak membuka posisi sembarangan. {reason}</i>"
         )
 
+    event_header = ""
+    if report.decision and getattr(report.decision, "event_mode", None):
+        ev_m = report.decision.event_mode
+        ev_icon = get_macro_event_icon(ev_m)
+        st_m = getattr(report.decision, "macro_stance", "NEUTRAL")
+        icon_st = "🦅" if st_m == "HAWKISH" else ("🕊️" if st_m == "DOVISH" else "⚖️")
+        bias_g = getattr(report.decision, "gold_action_bias", "HOLD")
+        event_header = (
+            f"{ev_icon} <b>US MACRO EVENT SNIPER: {ev_m}</b>\n"
+            f"• <b>Sikap Kebijakan AS:</b> {icon_st} <b>{st_m}</b> (Transmisi Emas ➔ <b>{bias_g}</b>)\n"
+            f"• <b>Status Blackout:</b> 🟢 <b>Dilewati (Bypassed)</b> — AI Aktif Berburu Setup\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        )
+
+    if getattr(report, "ea_mode", None) == "EA_EXPERT_ADVISOR":
+        header_name = "EA EXPERT ADVISOR MT5 (RSI 14)"
+        sub_rule = "🤖 <i>Open BUY jika RSI 14 ≤ 30, Open SELL jika RSI 14 ≥ 70 • SL 50 Pips / TP 150 Pips</i>\n"
+    elif getattr(report, "ea_mode", None) == "EA_SCALPING":
+        header_name = "EA SCALPING M1/M5 (MOMENTUM)"
+        sub_rule = "⚡ <i>Fast Scalping M1/M5 Micro-Momentum • SL 20 Pips / TP 40 Pips</i>\n"
+    elif getattr(report, "trade_mode", False):
+        header_name = "NEXUSTRADE ALGO-TRADE (4 INDIKATOR MURNI)"
+        sub_rule = "💎 <i>Eksekusi HANYA jika ke-4 Indikator Murni (UT Bot, Supertrend, Candle, OC Signals) selaras</i>\n"
+    else:
+        header_name = "LAPORAN AUTO-TRADE 6 GERBANG"
+        sub_rule = ""
     return (
-        f"🤖 <b>LAPORAN AUTO-TRADE 6 GERBANG — {sym} ({tf})</b>\n"
+        f"🤖 <b>{header_name} — {sym} ({tf})</b>\n"
+        f"{sub_rule}"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>Status Eksekusi:</b> {header_badge}\n\n"
+        + event_header
+        + f"<b>Status Eksekusi:</b> {header_badge}\n\n"
         f"<b>📋 Hasil Pemeriksaan 6 Gerbang AI:</b>\n"
         f"{gates_block}\n"
         f"{footer_block}"

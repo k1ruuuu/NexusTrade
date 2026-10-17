@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import sqlite3
+import time
 from typing import Any, Literal, Optional
 
 UserRole = Literal["admin", "user"]
@@ -230,6 +232,8 @@ def close_position_in_db(
         return None, False
     return row_to_position_record(row), newly_closed
 
+_LAST_BALANCE_REFRESH: dict[int, float] = {}
+
 async def refresh_live_exness_balance(
     vault: Any,
     mt5_client: Any,
@@ -239,6 +243,7 @@ async def refresh_live_exness_balance(
     """
     Shared helper to refresh `verified_usdt_balance` live from Exness MT5
     when the user has a non-sandbox `exness_mt5` account configured.
+    Cached for 30 seconds to prevent hammering MT5 API on every user command.
     """
     if (
         creds is None
@@ -247,12 +252,24 @@ async def refresh_live_exness_balance(
         or mt5_client._is_exness_trial_demo(creds.api_key, creds.testnet)
     ):
         return
-    ver = await mt5_client.verify_credentials(
-        creds.api_key,
-        creds.api_secret,
-        server_name=creds.server_name,
-        testnet=creds.testnet,
-    )
-    if ver.valid and ver.total_usdt >= 0:
-        vault.update_verified_balance(user_id, ver.total_usdt)
-        creds.verified_usdt_balance = ver.total_usdt
+
+    now = time.time()
+    if now - _LAST_BALANCE_REFRESH.get(user_id, 0.0) < 30.0 and creds.verified_usdt_balance > 0:
+        return
+
+    try:
+        ver = await asyncio.wait_for(
+            mt5_client.verify_credentials(
+                creds.api_key,
+                creds.api_secret,
+                server_name=creds.server_name,
+                testnet=creds.testnet,
+            ),
+            timeout=5.0,
+        )
+        _LAST_BALANCE_REFRESH[user_id] = now
+        if ver.valid and ver.total_usdt >= 0:
+            vault.update_verified_balance(user_id, ver.total_usdt)
+            creds.verified_usdt_balance = ver.total_usdt
+    except Exception:
+        pass

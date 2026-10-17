@@ -332,8 +332,8 @@ class MacroRiskFilter:
             if len(closes) < 2:
                 return False, "Insufficient DXY bars"
 
-            # Compute 1-hour return (or latest 4x 15m bars if 15m data)
-            lookback = 4 if len(closes) >= 4 else 1
+            # Compute 1-hour return (or latest available up to 4 bars back)
+            lookback = min(4, len(closes) - 1)
             dxy_chg = (float(closes.iloc[-1]) / float(closes.iloc[-1 - lookback])) - 1.0
             dxy_chg_pct = dxy_chg * 100.0
 

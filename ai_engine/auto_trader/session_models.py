@@ -17,6 +17,7 @@ LOT_TOKEN_RE = re.compile(
     r"^(?:lot[=:]?)?(\d+(?:\.\d+)?)(?:lots?|l)?$",
     re.IGNORECASE,
 )
+MAX_POS_RE = re.compile(r"^(?:layer[=:]?|layers[=:]?|pos[=:]?|max[=:]?|x)?(\d+)$", re.IGNORECASE)
 
 
 def is_session_duration_token(token: str) -> bool:
@@ -36,10 +37,14 @@ def is_session_duration_token(token: str) -> bool:
 def parse_custom_lot_token(token: str) -> Optional[float]:
     """
     Parse a custom lot size token (e.g. '0.01', '0.05', '0.1', '1.5', '0.05lot', 'lot=0.05').
-    Returns None if token is a duration or non-lot string.
+    Returns None if token is a duration, non-lot string, or an integer layer count (e.g. '4', '5').
     """
     cleaned = token.strip()
     if not cleaned or is_session_duration_token(cleaned):
+        return None
+    # If it's a bare integer <= 20 without decimal and without explicit 'lot' keyword,
+    # reserve it for max_positions (layers count)
+    if cleaned.isdigit() and "." not in cleaned and "lot" not in cleaned.lower() and int(cleaned) <= 20:
         return None
     m = LOT_TOKEN_RE.match(cleaned)
     if not m:
@@ -49,6 +54,81 @@ def parse_custom_lot_token(token: str) -> Optional[float]:
         return round(max(0.01, val), 2)
     return None
 
+
+def parse_max_positions_token(token: str) -> Optional[int]:
+    """
+    Parse maximum concurrent positions / layer count token (e.g. '4', '5', 'x4', 'layer=4', 'pos:5').
+    Returns int between 1 and 20 if valid, else None.
+    """
+    cleaned = token.strip()
+    if not cleaned or is_session_duration_token(cleaned):
+        return None
+    if "." in cleaned or "lot" in cleaned.lower():
+        return None
+    m = MAX_POS_RE.match(cleaned)
+    if not m:
+        return None
+    val = int(m.group(1))
+    if 1 <= val <= 20:
+        return val
+    return None
+SUPPORTED_MACRO_EVENTS = (
+    "FOMC",      # Fed Interest Rate Decision, Powell Press Conference, Minutes, Dot Plot
+    "NFP",       # Non-Farm Payrolls & US Unemployment
+    "CPI",       # Consumer Price Index & Core CPI
+    "PPI",       # Producer Price Index & Core PPI
+    "PCE",       # Core PCE Inflation (Fed's Target Indicator)
+    "GDP",       # Gross Domestic Product Growth (QoQ / YoY)
+    "IMF",       # IMF World Economic Outlook & Global Growth/Debt Risk
+    "RETAIL",    # US Retail Sales & Consumer Spending
+    "PMI",       # ISM Manufacturing / Services PMI & Flash PMI
+    "JOBLESS",   # US Initial Jobless Claims & Labor Softening
+)
+
+MACRO_EVENT_ALIASES: dict[str, str] = {
+    "FED": "FOMC",
+    "POWELL": "FOMC",
+    "RATES": "FOMC",
+    "RATE": "FOMC",
+    "INTEREST_RATE": "FOMC",
+    "INTEREST_RATES": "FOMC",
+    "FOMC_MINUTES": "FOMC",
+    "PAYROLL": "NFP",
+    "PAYROLLS": "NFP",
+    "JOBS": "NFP",
+    "UNEMPLOYMENT": "NFP",
+    "INFLATION": "CPI",
+    "CORE_CPI": "CPI",
+    "PRODUCER_PRICE": "PPI",
+    "CORE_PCE": "PCE",
+    "CLAIMS": "JOBLESS",
+    "JOBLESS_CLAIMS": "JOBLESS",
+    "INITIAL_CLAIMS": "JOBLESS",
+    "ISM": "PMI",
+    "SERVICES_PMI": "PMI",
+    "MANUFACTURING_PMI": "PMI",
+    "RETAIL_SALES": "RETAIL",
+    "GROWTH": "GDP",
+    "US_GDP": "GDP",
+    "WEO": "IMF",
+    "WORLD_BANK": "IMF",
+}
+
+
+def parse_macro_event_mode_token(token: str) -> Optional[str]:
+    """
+    Parse macro event sniper mode token (e.g. 'FOMC', 'IMF', 'NFP', 'CPI', 'PPI', 'PCE', 'GDP', 'RETAIL', 'PMI', 'JOBLESS').
+    Supports aliases like 'FED', 'POWELL', 'JOBS', 'CLAIMS', 'ISM', 'WEO'.
+    Returns normalized uppercase string if valid, else None.
+    """
+    cleaned = token.strip().upper()
+    if cleaned.startswith("EVENT:") or cleaned.startswith("MODE:"):
+        cleaned = cleaned.split(":", 1)[1].strip()
+    if cleaned in SUPPORTED_MACRO_EVENTS:
+        return cleaned
+    if cleaned in MACRO_EVENT_ALIASES:
+        return MACRO_EVENT_ALIASES[cleaned]
+    return None
 
 def parse_session_duration(raw: str = "24/7", default_hours: float = 87600.0) -> tuple[int, str]:
     """
@@ -126,6 +206,15 @@ class AutoTradeSessionState:
     last_updated_iso: str = ""
     last_check_summary: str = "Memulai pemantauan 24/7 Non-Stop..."
     custom_lot: Optional[float] = None
+    macro_event_mode: Optional[str] = None
+    short_id: str = ""
+    max_positions: int = 1
+    is_trade_mode: bool = False
+    ea_mode: Optional[Literal["EA_SCALPING", "EA_EXPERT_ADVISOR"]] = None
+    last_broker_req_ts: float = 0.0
+    min_step_points: float = 10.0
+    stops_level_pips: float = 3.0
+    max_spread_pips: float = 4.0
     task: Optional[asyncio.Task[Any]] = field(default=None, repr=False)
 
     @property

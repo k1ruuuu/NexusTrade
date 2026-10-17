@@ -57,9 +57,11 @@ class SentimentAnalysisResult:
     online_updates_count: int = 0
     is_macro_blackout: bool = False
     blackout_event: Optional[str] = None
+    macro_stance: str = "NEUTRAL"
+    gold_action_bias: str = "HOLD"
+    event_mode: Optional[str] = None
     provider_breakdown: dict[str, int] = field(default_factory=dict)
     composite_sentiment: Optional[float] = None
-
 class FinancialSentimentAnalyzer:
     """
     FinBERT & Online Continual Learning Financial Sentiment Engine.
@@ -391,33 +393,37 @@ class FinancialSentimentAnalyzer:
             f"Sector allocation models maintain constructive overweight rating on {upper}",
         ]
 
-    def analyze_headlines(
+    def analyze_symbol(
         self,
+        symbol: str,
         headlines: Optional[list[str]] = None,
-        symbol: str = "BTCUSDT",
         weights: Optional[list[float]] = None,
         market_df: Optional[pd.DataFrame] = None,
+        event_mode: Optional[str] = None,
     ) -> SentimentAnalysisResult:
         """
-        Score a batch of news headlines (or harvest & learn live internet news when
-        headlines is None) and return unified polarity S_sent in [-1.0, +1.0].
+        Analyze sentiment for a specific asset symbol with online learning.
+        Supports event_mode (e.g. 'CPI', 'PPI', 'NFP') for US Macro Event Sniper.
         """
-        live_used = False
         newly_learned = 0
         live_items: list[LiveNewsItem] = []
-
+        live_used = False
         is_macro_blackout = False
         blackout_event = None
         provider_breakdown: dict[str, int] = {}
         composite_sentiment: Optional[float] = None
 
+        macro_stance = "NEUTRAL"
+        gold_action_bias = "HOLD"
         if headlines is None and self.settings.use_live_news_feed:
             try:
-                intel = self.aggregator.get_composite_intelligence_sync(symbol=symbol)
+                intel = self.aggregator.get_composite_intelligence_sync(symbol=symbol, event_mode=event_mode)
                 is_macro_blackout = bool(intel.get("is_macro_blackout", False))
                 blackout_event = intel.get("blackout_event")
                 provider_breakdown = intel.get("provider_breakdown", {})
                 composite_sentiment = intel.get("composite_sentiment")
+                macro_stance = intel.get("macro_stance", "NEUTRAL")
+                gold_action_bias = intel.get("gold_action_bias", "HOLD")
                 for th in intel.get("top_headlines", []):
                     t_title = str(th.get("title", "")).strip()
                     if t_title:
@@ -522,6 +528,11 @@ class FinancialSentimentAnalyzer:
             online_updates_count=self.online_updates_count,
             is_macro_blackout=is_macro_blackout,
             blackout_event=blackout_event,
+            macro_stance=macro_stance,
+            gold_action_bias=gold_action_bias,
+            event_mode=event_mode.upper() if event_mode else None,
             provider_breakdown=provider_breakdown,
             composite_sentiment=composite_sentiment,
         )
+
+    analyze_headlines = analyze_symbol

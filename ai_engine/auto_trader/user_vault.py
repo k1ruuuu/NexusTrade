@@ -54,7 +54,7 @@ class UserVault:
         db_path: Optional[Path] = None,
     ) -> None:
         self.settings = settings or get_settings()
-        self.db_path = db_path or (self.settings.processed_data_dir / "user_vault.db")
+        self.db_path = Path(db_path) if db_path is not None else (self.settings.processed_data_dir / "user_vault.db")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._admin_env_autotrade: dict[int, bool] = {}
         self._linked_position_sizer: Any = None

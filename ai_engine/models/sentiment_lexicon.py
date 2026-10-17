@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Tuple
 
 SentimentLabel = Literal["POSITIVE", "NEUTRAL", "NEGATIVE"]
+MacroStance = Literal["HAWKISH", "DOVISH", "NEUTRAL"]
 
 BULLISH_LEXICON: dict[str, float] = {
     "surge": 0.85,
@@ -172,3 +173,190 @@ def classify_sentiment_polarity(
     if polarity <= -threshold:
         return "NEGATIVE"
     return "NEUTRAL"
+
+# -----------------------------------------------------------------------------
+# Institutional Macroeconomic "Hawkish vs Dovish" Monetary Policy Lexicon
+# -----------------------------------------------------------------------------
+# Hawkish = Strong US Inflation/Jobs -> Fed Hikes/Holds -> DXY Up -> Gold (XAUUSD) Down (SELL)
+# Dovish = Weak US Inflation/Jobs -> Fed Cuts/Eases -> DXY Down -> Gold (XAUUSD) Up (BUY)
+
+HAWKISH_LEXICON: dict[str, float] = {
+    "hot": 0.70,
+    "hotter": 0.85,
+    "hottest": 0.90,
+    "accelerate": 0.75,
+    "accelerates": 0.75,
+    "accelerated": 0.75,
+    "accelerating": 0.75,
+    "beat": 0.80,
+    "beats": 0.80,
+    "surge": 0.85,
+    "surges": 0.85,
+    "surging": 0.85,
+    "sticky": 0.80,
+    "robust": 0.75,
+    "resilient": 0.70,
+    "overheating": 0.90,
+    "hike": 0.85,
+    "hikes": 0.85,
+    "hiking": 0.85,
+    "hawkish": 0.90,
+    "higher for longer": 0.90,
+    "inflation persists": 0.85,
+    "tight labor": 0.80,
+    "wage growth": 0.75,
+    "strong jobs": 0.85,
+    "payroll surge": 0.85,
+    "cpi beat": 0.90,
+    "ppi beat": 0.90,
+    "retail sales beat": 0.80,
+    "retail sales surge": 0.85,
+    "gdp beats": 0.85,
+    "gdp surges": 0.85,
+    "pmi expands": 0.80,
+    "ism beats": 0.80,
+    "fomc hawkish": 0.95,
+    "powell hawkish": 0.95,
+    "rate hike on table": 0.90,
+    "imf upgrades us growth": 0.85,
+    "imf raises us forecast": 0.85,
+    "jobless claims drop": 0.80,
+    "quantitative tightening": 0.80,
+}
+
+DOVISH_LEXICON: dict[str, float] = {
+    "cool": -0.70,
+    "cools": -0.75,
+    "cooled": -0.75,
+    "cooling": -0.80,
+    "slow": -0.65,
+    "slows": -0.70,
+    "slowed": -0.70,
+    "slowing": -0.75,
+    "slowdown": -0.80,
+    "miss": -0.80,
+    "misses": -0.80,
+    "missed": -0.80,
+    "disappoint": -0.75,
+    "disappoints": -0.80,
+    "disappointing": -0.80,
+    "soft": -0.70,
+    "soften": -0.75,
+    "softens": -0.75,
+    "softening": -0.80,
+    "weak": -0.75,
+    "weaker": -0.80,
+    "weakness": -0.80,
+    "cut": -0.85,
+    "cuts": -0.85,
+    "cutting": -0.85,
+    "rate cut": -0.90,
+    "dovish": -0.90,
+    "dovish pivot": -0.95,
+    "easing": -0.85,
+    "disinflation": -0.85,
+    "deflation": -0.80,
+    "jobless claims jump": -0.80,
+    "jobless claims surge": -0.85,
+    "unemployment rises": -0.85,
+    "cooling inflation": -0.90,
+    "cpi miss": -0.90,
+    "ppi miss": -0.90,
+    "nfp miss": -0.90,
+    "fomc dovish": -0.95,
+    "powell dovish": -0.95,
+    "dovish pause": -0.90,
+    "rate cuts on horizon": -0.85,
+    "gdp misses": -0.85,
+    "gdp contracts": -0.90,
+    "gdp slows": -0.80,
+    "retail sales slump": -0.85,
+    "retail sales miss": -0.80,
+    "pmi contracts": -0.80,
+    "pmi misses": -0.80,
+    "imf warns global slowdown": -0.85,
+    "imf cuts global growth": -0.85,
+    "debt distress": -0.80,
+    "recession fear": -0.85,
+    "recession warning": -0.90,
+}
+
+def compute_macro_monetary_bias(text: str) -> Tuple[float, MacroStance]:
+    """
+    Quantify macroeconomic stance from text:
+      - Score > 0: HAWKISH (Strong US inflation / jobs -> USD bullish)
+      - Score < 0: DOVISH (Cooling US inflation / jobs -> USD bearish)
+      - Score ~ 0: NEUTRAL
+    """
+    lower_text = text.lower()
+    import re
+
+    score = 0.0
+    matched_count = 0
+
+    for phrase, wt in HAWKISH_LEXICON.items():
+        if " " in phrase:
+            if phrase in lower_text:
+                score += wt * 1.3
+                matched_count += 1
+        else:
+            if re.search(rf"\b{re.escape(phrase)}\b", lower_text):
+                score += wt
+                matched_count += 1
+
+    for phrase, wt in DOVISH_LEXICON.items():
+        if " " in phrase:
+            if phrase in lower_text:
+                score += wt * 1.3
+                matched_count += 1
+        else:
+            if re.search(rf"\b{re.escape(phrase)}\b", lower_text):
+                score += wt
+                matched_count += 1
+
+    if matched_count == 0:
+        return 0.0, "NEUTRAL"
+
+    normalized = float(max(-1.0, min(1.0, score / max(1.0, matched_count * 0.75))))
+    if normalized >= 0.15:
+        return round(normalized, 4), "HAWKISH"
+    elif normalized <= -0.15:
+        return round(normalized, 4), "DOVISH"
+    return round(normalized, 4), "NEUTRAL"
+
+
+def macro_monetary_to_gold_signal(
+    macro_score: float,
+    asset_symbol: str = "XAUUSD",
+) -> Tuple[float, str]:
+    """
+    Macro Monetary Policy Transmission to Gold (XAUUSD) & Commodities:
+      - Strong US Inflation / Jobs (Hawkish, macro_score > 0)
+        -> Fed hikes / holds higher -> DXY strengthens
+        -> Gold (XAUUSD) drops -> SELL signal (-1.0)
+      - Weak US Inflation / Jobs (Dovish, macro_score < 0)
+        -> Fed cuts -> DXY weakens
+        -> Gold (XAUUSD) rallies -> BUY signal (+1.0)
+
+    Returns: (gold_sentiment_score [-1.0, +1.0], action_recommendation ['BUY', 'SELL', 'HOLD'])
+    """
+    clean_sym = asset_symbol.upper().replace("/", "").replace("-", "")
+    # Direct USD strength: DXY or pairs where USD is the base currency (USDJPY, USDCAD, USDCHF)
+    is_direct_usd = (
+        clean_sym in ("DXY", "USDX", "USD", "UUP")
+        or (len(clean_sym) == 6 and clean_sym.startswith("USD") and clean_sym.isalpha())
+    )
+    if is_direct_usd:
+        # Direct: Hawkish USD (+score) = Bullish USDJPY / USDCAD / USDCHF
+        gold_score = float(macro_score)
+    else:
+        # Inverse: Commodities (XAUUSD, XAGUSD, WTI), Crypto (BTC, ETH), and XXX/USD Forex (EURUSD, GBPUSD, AUDUSD)
+        # Hawkish USD (+score) -> Bearish Gold/EURUSD (-score -> SELL)
+        # Dovish USD (-score) -> Bullish Gold/EURUSD (+score -> BUY)
+        gold_score = -float(macro_score)
+    gold_score = float(max(-1.0, min(1.0, gold_score)))
+    if gold_score >= 0.18:
+        return round(gold_score, 4), "BUY"
+    elif gold_score <= -0.18:
+        return round(gold_score, 4), "SELL"
+    return round(gold_score, 4), "HOLD"

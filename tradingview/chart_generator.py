@@ -144,6 +144,36 @@ class ChartSnapshotGenerator:
             color="#3b82f6",
             alpha=0.05,
         )
+        # UT Bot Alerts Trailing Stop Line
+        if "ut_trailing_stop" in enriched.columns:
+            ut_stop = pd.to_numeric(enriched["ut_trailing_stop"], errors="coerce").fillna(0.0).to_numpy(dtype=np.float64)
+            if np.any(ut_stop > 0):
+                ax_price.plot(
+                    x,
+                    ut_stop,
+                    color="#06b6d4",
+                    linestyle="-.",
+                    linewidth=1.3,
+                    label="UT Bot Trailing Stop",
+                    zorder=5,
+                )
+        # Supertrend (10, 3.0) Line
+        if "supertrend" in enriched.columns:
+            st_line = pd.to_numeric(enriched["supertrend"], errors="coerce").fillna(0.0).to_numpy(dtype=np.float64)
+            st_dir = pd.to_numeric(enriched.get("supertrend_dir", 1), errors="coerce").fillna(1).to_numpy(dtype=np.int32)
+            if np.any(st_line > 0):
+                st_color = "#10b981" if st_dir[-1] == 1 else "#ef4444"
+                ax_price.plot(
+                    x,
+                    st_line,
+                    color=st_color,
+                    linestyle="--",
+                    linewidth=1.4,
+                    label="Supertrend (10, 3.0)",
+                    zorder=6,
+                )
+
+
 
         # Annotate Signal Entry, Stop Loss, and Take Profit levels
         latest_x = x[-1]

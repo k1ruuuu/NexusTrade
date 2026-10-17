@@ -8,7 +8,7 @@ from ai_engine.models.ensemble_agent import SignalDecision
 from ai_engine.models.sentiment_analyzer import SentimentAnalysisResult
 from ai_engine.models.volatility_estimator import VolatilityForecast
 from ai_engine.risk_management.position_sizer import PositionSizer
-from config.settings import Settings
+from config.settings import Settings, get_settings
 from telegram_bot.views.formatter_utils import (
     build_human_signal_summary as _build_human_signal_summary,
     describe_sentiment_score as _describe_sentiment_score,
@@ -35,8 +35,12 @@ def format_welcome_card(user_name: str, settings: Settings) -> str:
         f"<b>📌 Daftar Perintah Mudah:</b>\n"
         f"• <code>/signal BTCUSDT</code> — Sinyal Beli/Jual + Gambar Grafik\n"
         f"• <code>/setup</code> — Hubungkan Akun Binance Pribadi (Wajib untuk Auto-Trade)\n"
+        f"• <code>/ea-EA XAUUSD 0.01</code> — EA Expert Advisor MT5 (RSI 14, SL 50p, TP 150p, Anti-Ban)\n"
+        f"• <code>/ea-scp XAUUSD 0.01</code> — EA Scalping M1/M5 (Fast Momentum, SL 20p, TP 40p)\n"
+        f"• <code>/trade scan BTCUSDT</code> — Trade 4 Indikator Murni (UT Bot, Supertrend, Candle, OC Signals)\n"
         f"• <code>/autotrade scan BTCUSDT</code> — Auto-Trade 6 Gerbang (Baca Berita + Analisis + S/R)\n"
-        f"• <code>/myaccount</code> — Lihat Status Akun Binance &amp; Posisi Terbuka Anda\n"
+        f"• <code>/ea-EA stop 1</code> / <code>/ea-scp stop 1</code> — Hentikan Sesi EA Tertentu\n"
+        f"• <code>/myaccount</code> — Lihat Status Akun Trading &amp; Posisi Terbuka Anda\n"
         f"• <code>/analyze XAUUSD</code> — Ringkasan Analisis Cepat (Tanpa Gambar)\n"
         f"• <code>/sentiment BTCUSDT</code> — Cek Sentimen Berita Terkini\n"
         f"• <code>/learn BTCUSDT</code> — Perintahkan AI Belajar Berita Baru Sekarang\n"
@@ -91,8 +95,8 @@ def format_signal_card(decision: SignalDecision) -> str:
     summary_text = _build_human_signal_summary(decision)
 
     sl_pct = format_pct_diff(decision.stop_loss, decision.entry_price)
-    tp1_pct = format_pct_diff(decision.take_profit_1, decision.entry_price)
-    tp2_pct = format_pct_diff(decision.take_profit_2, decision.entry_price)
+    tp1_pct = format_pct_diff(decision.take_profit_1, decision.entry_price) if decision.take_profit_1 > 0 else ""
+    tp2_pct = format_pct_diff(decision.take_profit_2, decision.entry_price) if decision.take_profit_2 > 0 else ""
 
     r1_pct = format_pct_diff(decision.resistance_1, decision.entry_price)
     s1_pct = format_pct_diff(decision.support_1, decision.entry_price)
@@ -136,7 +140,36 @@ def format_signal_card(decision: SignalDecision) -> str:
         if acc_pct > 0
         else ""
     )
+    if decision.take_profit_1 > 0:
+        tp_block = (
+            f"• <b>Take Profit 1 (1:2):</b> <code>{format_price(decision.take_profit_1)}</code> (<code>{tp1_pct}</code>)\n"
+            + (f"• <b>Take Profit 2 (1:3):</b> <code>{format_price(decision.take_profit_2)}</code> (<code>{tp2_pct}</code>)\n" if decision.take_profit_2 > 0 else "")
+        )
+    else:
+        tp_block = "• <b>Take Profit (TP):</b> <i>Dihapus / Tanpa Batas (Runner Mode)</i>\n"
 
+    ut_ts = decision.indicators.get("ut_trailing_stop", 0.0)
+    ut_trend = decision.indicators.get("ut_trend", 0.0)
+    ut_badge = "🟢 BUY" if ut_trend > 0 else ("🔴 SELL" if ut_trend < 0 else "⚪ —")
+    ut_line = f"• <b>Strategi UT Bot:</b> {ut_badge} (Trailing: <code>{format_price(ut_ts)}</code>)\n" if ut_ts > 0 else ""
+
+    st_val = decision.indicators.get("supertrend", 0.0)
+    st_dir = decision.indicators.get("supertrend_dir", 0.0)
+    st_badge = "🟢 BULL" if st_dir > 0 else ("🔴 BEAR" if st_dir < 0 else "⚪ —")
+    st_line = f"• <b>Supertrend (10, 3.0):</b> {st_badge} (Line: <code>{format_price(st_val)}</code>)\n" if st_val > 0 else ""
+
+    cp_pat = str(decision.indicators.get("candlestick_pattern", "")).strip()
+    cp_line = f"• <b>Pola Candlestick:</b> 🕯️ <b>{html.escape(cp_pat)}</b>\n" if cp_pat else ""
+
+    oc_sig = int(decision.indicators.get("oc_signal", 0))
+    oc_entry = decision.indicators.get("oc_entry", 0.0)
+    oc_sl = decision.indicators.get("oc_sl", 0.0)
+    oc_tp = decision.indicators.get("oc_tp", 0.0)
+    if oc_sig != 0 and oc_entry > 0 and oc_sl > 0 and oc_tp > 0:
+        oc_badge = "🟢 BUY" if oc_sig == 1 else "🔴 SELL"
+        oc_line = f"• <b>Rekomendasi OC Signals:</b> {oc_badge} @ <code>{format_price(oc_entry)}</code> (SL: <code>{format_price(oc_sl)}</code> | TP: <code>{format_price(oc_tp)}</code>)\n"
+    else:
+        oc_line = ""
     return (
         f"📡 <b>SINYAL AI NEXUSTRADE — {sym} ({tf})</b>\n"
         f"━━━━━━━━━━━━━━━━\n"
@@ -146,8 +179,11 @@ def format_signal_card(decision: SignalDecision) -> str:
         f"<b>🎯 Level Harga &amp; S/R:</b>\n"
         f"• <b>Entry Price:</b> <code>{format_price(decision.entry_price)}</code>\n"
         f"• <b>Stop Loss (2xATR):</b> <code>{format_price(decision.stop_loss)}</code> (<code>{sl_pct}</code>)\n"
-        f"• <b>Take Profit 1 (1:2):</b> <code>{format_price(decision.take_profit_1)}</code> (<code>{tp1_pct}</code>)\n"
-        f"• <b>Take Profit 2 (1:3):</b> <code>{format_price(decision.take_profit_2)}</code> (<code>{tp2_pct}</code>)\n"
+        f"{tp_block}"
+        f"{ut_line}"
+        f"{st_line}"
+        f"{cp_line}"
+        f"{oc_line}"
         f"• <b>Resistance Atas (R1 | R2):</b> <code>{format_price(decision.resistance_1)}</code> (<code>{r1_pct}</code>) | <code>{format_price(decision.resistance_2)}</code>\n"
         f"• <b>Support Bawah (S1 | S2):</b> <code>{format_price(decision.support_1)}</code> (<code>{s1_pct}</code>) | <code>{format_price(decision.support_2)}</code>\n"
         f"• <b>Posisi S/R:</b> <i>{html.escape(decision.sr_status)}</i>\n"
@@ -200,10 +236,15 @@ def format_sentiment_card(result: SentimentAnalysisResult) -> str:
         if result.live_news_used
         else "📁 <b>Memori Lokal</b>"
     )
+    is_blackout_enforced = result.is_macro_blackout and getattr(get_settings(), "macro_blackout_enabled", False)
     macro_line = (
         f"<b>Kalender Makro (ForexFactory):</b> 🔴 <b>BLACKOUT AKTIF ({html.escape(result.blackout_event or 'High Impact Event')})</b>\n"
-        if result.is_macro_blackout
-        else "<b>Kalender Makro (ForexFactory):</b> 🟢 <b>CLEAR (Tidak Ada Berita High Impact ±15m)</b>\n"
+        if is_blackout_enforced
+        else (
+            f"<b>Kalender Makro (ForexFactory):</b> 🟢 <b>CLEAR ({html.escape(result.blackout_event or 'High Impact')} • Gembok Nonaktif)</b>\n"
+            if result.is_macro_blackout
+            else "<b>Kalender Makro (ForexFactory):</b> 🟢 <b>CLEAR (Tidak Ada Berita High Impact ±15m)</b>\n"
+        )
     )
     prov_line = ""
     if result.provider_breakdown:

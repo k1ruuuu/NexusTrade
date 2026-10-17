@@ -41,8 +41,12 @@ async def handle_dashboard_callback(callback: CallbackQuery, **data: Any) -> Non
     action = payload[1] if len(payload) > 1 else "dashboard"
     msg = callback.message
 
-    if msg is None:
+    try:
         await callback.answer()
+    except Exception:
+        pass
+
+    if msg is None:
         return
 
     symbol = payload[2].upper() if len(payload) > 2 else "BTCUSDT"
@@ -80,4 +84,3 @@ async def handle_dashboard_callback(callback: CallbackQuery, **data: Any) -> Non
         days = int(payload[3]) if len(payload) > 3 and payload[3].isdigit() else 90
         await send_backtest_response(msg, symbol, days, agent, backtester)
 
-    await callback.answer()

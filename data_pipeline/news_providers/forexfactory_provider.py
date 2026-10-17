@@ -87,9 +87,9 @@ class ForexFactoryProvider(BaseNewsProvider):
                         title=str(ev.get("title", "")).strip(),
                         country=str(ev.get("country", "")).strip().upper(),
                         timestamp=dt,
-                        impact=impact,
                         forecast=str(ev.get("forecast")) if ev.get("forecast") is not None else None,
                         previous=str(ev.get("previous")) if ev.get("previous") is not None else None,
+                        actual=str(ev.get("actual")) if ev.get("actual") is not None else None,
                     )
                 )
 
@@ -110,15 +110,21 @@ class ForexFactoryProvider(BaseNewsProvider):
         events: List[EconomicCalendarEvent],
         window_minutes: int = 15,
         as_of: Optional[datetime] = None,
+        bypassed_event_mode: Optional[str] = None,
     ) -> Tuple[bool, Optional[str]]:
         """
         Check if current time (or as_of) is within +/- window_minutes of any
         High Impact event matching the target currencies (e.g. USD, EUR, GBP).
+        If bypassed_event_mode is specified (e.g. 'CPI', 'PPI', 'NFP'), events matching
+        that mode are bypassed from blackout to enable intentional Event Sniper trading.
         """
         now = as_of or datetime.now(timezone.utc)
         target_ccys = {str(c).upper().strip() for c in currencies if c}
         for ev in events:
             if ev.impact == ImpactLevel.HIGH and ev.country in target_ccys:
+                if bypassed_event_mode and ev.matches_event_mode(bypassed_event_mode):
+                    # Deliberately bypassed: Trader is targeting this macroeconomic event!
+                    continue
                 diff_mins = abs((now - ev.timestamp).total_seconds()) / 60.0
                 if diff_mins <= window_minutes:
                     event_time = ev.timestamp.strftime("%H:%M UTC")

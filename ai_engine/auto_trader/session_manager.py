@@ -45,15 +45,43 @@ class AutoTradeSessionManager(PositionMonitorMixin):
 
     def __init__(self, engine: Any) -> None:
         self.engine = engine
-        self._sessions: dict[tuple[int, str], AutoTradeSessionState] = {}
+        self._sessions: dict[str, AutoTradeSessionState] = {}
 
     def get_user_sessions(self, user_id: int) -> list[AutoTradeSessionState]:
         uid = int(user_id)
         return [
             s
-            for (u, _), s in self._sessions.items()
-            if u == uid and s.status == "RUNNING" and s.remaining_seconds > 0
+            for s in self._sessions.values()
+            if s.user_id == uid and s.status == "RUNNING" and s.remaining_seconds > 0
         ]
+
+    def stop_session_by_id(
+        self,
+        user_id: int,
+        target_id: str,
+    ) -> Optional[AutoTradeSessionState]:
+        """Stop a specific active autotrade session by short_id (e.g. '1', '2') or session_id or symbol."""
+        uid = int(user_id)
+        raw_id = str(target_id).strip()
+        cleaned_id = raw_id.upper().lstrip("#").strip()
+        if cleaned_id.startswith("AT-"):
+            cleaned_id = cleaned_id.split("-", 1)[1].strip()
+
+        for sid, sess in list(self._sessions.items()):
+            if sess.user_id == uid and sess.status == "RUNNING":
+                if (
+                    sess.short_id == raw_id
+                    or sess.short_id == cleaned_id
+                    or sess.session_id.upper() == raw_id.upper()
+                    or sess.symbol.upper() == raw_id.upper()
+                    or f"AT-{sess.short_id}".upper() == raw_id.upper()
+                ):
+                    sess.status = "STOPPED"
+                    if sess.task is not None and not sess.task.done():
+                        sess.task.cancel()
+                    self._sessions.pop(sid, None)
+                    return sess
+        return None
 
     def stop_user_sessions(
         self,
@@ -62,14 +90,14 @@ class AutoTradeSessionManager(PositionMonitorMixin):
     ) -> list[AutoTradeSessionState]:
         uid = int(user_id)
         stopped: list[AutoTradeSessionState] = []
-        target_sym = normalize_symbol(symbol) if symbol else None
-        for (u, sym), sess in list(self._sessions.items()):
-            if u == uid and (target_sym is None or sym == target_sym):
+        target_sym = normalize_symbol(symbol) if symbol and symbol.lower() not in ("all", "semua") else None
+        for sid, sess in list(self._sessions.items()):
+            if sess.user_id == uid and (target_sym is None or sess.symbol == target_sym):
                 sess.status = "STOPPED"
                 if sess.task is not None and not sess.task.done():
                     sess.task.cancel()
                 stopped.append(sess)
-                self._sessions.pop((u, sym), None)
+                self._sessions.pop(sid, None)
         return stopped
 
     async def start_timed_session(
@@ -82,6 +110,10 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         notify_callback: Optional[NotifyCallback] = None,
         custom_lot: Optional[float] = None,
         live_card_callback: Optional[NotifyCallback] = None,
+        macro_event_mode: Optional[str] = None,
+        max_positions: int = 1,
+        is_trade_mode: bool = False,
+        ea_mode: Optional[Literal["EA_SCALPING", "EA_EXPERT_ADVISOR"]] = None,
     ) -> tuple[AutoTradeSessionState, Any]:
         """
         Start a 24/7 Non-Stop autonomous trading session for `(user_id, symbol)`
@@ -95,11 +127,15 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         clean_sym = normalize_symbol(symbol)
         clean_tf = normalize_timeframe(timeframe) if timeframe != "1m" else "1m"
         dur_secs, dur_label = parse_session_duration(duration_code)
+        # Determine sequential short_id for this user
+        active = self.get_user_sessions(uid)
+        used_ids = {int(s.short_id) for s in active if s.short_id.isdigit()}
+        next_num = 1
+        while next_num in used_ids:
+            next_num += 1
+        short_id = str(next_num)
 
-        # Cancel any previous session on the same (user_id, symbol)
-        self.stop_user_sessions(uid, symbol=clean_sym)
         self.engine.vault.set_autotrade_enabled(uid, True)
-
         now_dt = datetime.now(timezone.utc)
         end_dt = now_dt + timedelta(seconds=dur_secs)
         sess = AutoTradeSessionState(
@@ -119,8 +155,13 @@ class AutoTradeSessionManager(PositionMonitorMixin):
             ),
             last_updated_iso=now_dt.strftime("%H:%M:%S UTC"),
             custom_lot=custom_lot,
+            macro_event_mode=macro_event_mode,
+            short_id=short_id,
+            max_positions=max(1, int(max_positions)),
+            is_trade_mode=is_trade_mode,
+            ea_mode=ea_mode,
         )
-        self._sessions[(uid, clean_sym)] = sess
+        self._sessions[sess.session_id] = sess
 
         # Execute immediate first cycle
         first_report = await self._run_single_session_cycle(sess, notify_callback=None)
@@ -139,6 +180,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         sess.cycles_completed += 1
         sess.last_updated_iso = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
         open_positions = self.engine.vault.get_open_positions(sess.user_id, symbol=sess.symbol)
+        mon_result: Optional[PositionMonitorResult] = None
 
         if open_positions:
             mon = await self.monitor_and_manage_open_position(
@@ -188,47 +230,65 @@ class AutoTradeSessionManager(PositionMonitorMixin):
                 sess.live_floating_pnl_usdt = mon.unrealized_pnl_usdt
                 sess.live_floating_pnl_pct = mon.unrealized_pnl_pct
                 sess.last_check_summary = (
-                    f"Menahan posisi {mon.position.side} @ ${mon.position.entry_price:,.2f} ➔ "
+                    f"Menahan {len(open_positions)}/{sess.max_positions} posisi {mon.position.side} @ ${mon.position.entry_price:,.2f} ➔ "
                     f"Sekarang ${mon.current_price:,.2f} (Floating: ${mon.unrealized_pnl_usdt:+.2f} / {mon.unrealized_pnl_pct:+.2f}%)"
                 )
-            return mon
+            mon_result = mon
+            # Re-query open positions after monitoring
+            open_positions = self.engine.vault.get_open_positions(sess.user_id, symbol=sess.symbol)
 
-        # No open position -> run 6-Gate Multi-Timeframe (1D/1H/15M/5M -> 1m) evaluation
-        sess.live_open_position = None
-        sess.live_floating_pnl_usdt = 0.0
-        sess.live_floating_pnl_pct = 0.0
-        report = await self.engine.evaluate_and_execute(
-            user_id=sess.user_id,
-            symbol=sess.symbol,
-            timeframe="1m",
-            require_autotrade_toggle=True,
-            custom_lot=sess.custom_lot,
-        )
-        if report.decision is not None:
-            sess.live_current_price = report.decision.entry_price
-            sess.mtf_status_line = report.decision.mtf_summary
-
-        if report.executed and report.order_result is not None and report.position_record is not None:
-            sess.positions_opened += 1
-            sess.live_open_position = report.position_record
-            sess.live_current_price = report.order_result.avg_price
-            sess.last_check_summary = (
-                f"Membuka posisi {report.order_result.side} (1m) @ ${report.order_result.avg_price:,.2f} "
-                f"(Ticket #{report.order_result.order_id})"
+        # Check if more concurrent layers can be opened up to sess.max_positions
+        if len(open_positions) < sess.max_positions:
+            report = await self.engine.evaluate_and_execute(
+                user_id=sess.user_id,
+                symbol=sess.symbol,
+                timeframe="1m",
+                require_autotrade_toggle=True,
+                custom_lot=sess.custom_lot,
+                macro_event_mode=sess.macro_event_mode,
+                max_positions=sess.max_positions,
+                trade_mode=sess.is_trade_mode,
+                ea_mode=sess.ea_mode,
             )
-            if notify_callback is not None:
-                await notify_callback(
-                    sess.user_id,
-                    f"🚀 <b>AUTO-TRADE 24/7 MEMBUKA POSISI BARU (1M) — {sess.symbol}</b>\n"
-                    f"• <b>Aksi &amp; Lot:</b> <b>{report.order_result.side} {report.order_result.symbol} ({report.order_result.executed_qty} Lot)</b>\n"
-                    f"• <b>Harga Masuk (1m):</b> <code>${report.order_result.avg_price:,.2f}</code>\n"
-                    f"• <b>Stop Loss:</b> <code>${report.position_record.stop_loss:,.2f}</code> | "
-                    f"<b>TP1:</b> <code>${report.position_record.take_profit_1:,.2f}</code>\n"
-                    f"• <b>Tren MTF:</b> <i>{sess.mtf_status_line}</i>",
+            if report.decision is not None:
+                sess.live_current_price = report.decision.entry_price
+                sess.mtf_status_line = report.decision.mtf_summary
+
+            if report.executed and report.order_result is not None and report.position_record is not None:
+                sess.positions_opened += 1
+                sess.live_open_position = report.position_record
+                sess.live_current_price = report.order_result.avg_price
+                curr_layer = len(open_positions) + 1
+                sess.last_check_summary = (
+                    f"Membuka layer {curr_layer}/{sess.max_positions} {report.order_result.side} (1m) @ ${report.order_result.avg_price:,.2f} "
+                    f"(Ticket #{report.order_result.order_id})"
                 )
-        else:
-            sess.last_check_summary = report.rejection_summary or "Memantau sinyal 1D/1H/15M/5M ➔ 1M..."
-        return report
+                if notify_callback is not None:
+                    tp_str = "Dihapus (Runner)" if report.position_record.take_profit_1 <= 0 else f"${report.position_record.take_profit_1:,.2f}"
+                    if sess.ea_mode == "EA_EXPERT_ADVISOR":
+                        hdr = f"EA EXPERT ADVISOR [ID #{sess.short_id}] (RSI 14)"
+                    elif sess.ea_mode == "EA_SCALPING":
+                        hdr = f"EA SCALPING [ID #{sess.short_id}] (M1 MOMENTUM)"
+                    elif sess.is_trade_mode:
+                        hdr = f"ALGO-TRADE [ID #{sess.short_id}] (4 INDIKATOR)"
+                    else:
+                        hdr = f"AUTO-TRADE [ID #{sess.short_id}]"
+                    await notify_callback(
+                        sess.user_id,
+                        f"🚀 <b>{hdr} MEMBUKA LAYER BARU ({curr_layer}/{sess.max_positions}) — {sess.symbol}</b>\n"
+                        f"• <b>Aksi &amp; Lot:</b> <b>{report.order_result.side} {report.order_result.symbol} ({report.order_result.executed_qty} Lot)</b>\n"
+                        f"• <b>Harga Masuk (1m):</b> <code>${report.order_result.avg_price:,.2f}</code>\n"
+                        f"• <b>Stop Loss:</b> <code>${report.position_record.stop_loss:,.2f}</code> | "
+                        f"<b>TP:</b> <code>{tp_str}</code>\n"
+                        f"• <b>Tren MTF:</b> <i>{sess.mtf_status_line}</i>",
+                    )
+                return report
+            else:
+                if not open_positions:
+                    sess.last_check_summary = report.rejection_summary or "Memantau sinyal 1D/1H/15M/5M ➔ 1M..."
+                return report if mon_result is None else mon_result
+
+        return mon_result
     async def close_session_open_positions(
         self,
         sess: AutoTradeSessionState,

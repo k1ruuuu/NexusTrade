@@ -59,8 +59,19 @@ class OHLCVPreprocessor:
         "rel_spread",
         "score_pinbar",
         "score_engulf",
+        "ut_trailing_stop",
+        "ut_trend",
+        "ut_buy",
+        "ut_sell",
+        "supertrend",
+        "supertrend_dir",
+        "supertrend_buy",
+        "supertrend_sell",
+        "oc_signal",
+        "oc_entry",
+        "oc_sl",
+        "oc_tp",
     )
-
     def __init__(
         self,
         settings: Optional[Settings] = None,
@@ -170,6 +181,519 @@ class OHLCVPreprocessor:
         resampled["symbol"] = inferred_symbol.upper()
         resampled["timeframe"] = target_timeframe
         return resampled
+
+    @staticmethod
+    def compute_ut_bot_indicators(
+        df: pd.DataFrame,
+        key_value: float = 1.0,
+        atr_period: int = 10,
+        use_heikin_ashi: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Algorithmic implementation of the 'UT Bot Alerts' Pine Script indicator:
+          a = key_value (sensitivity multiplier, default=1.0)
+          c = atr_period (ATR length, default=10)
+          xATR = atr(c)
+          nLoss = a * xATR
+          src = close (or Heikin-Ashi close)
+          xATRTrailingStop tracking
+          crossover(src, xATRTrailingStop) -> Buy Alert
+          crossunder(src, xATRTrailingStop) -> Sell Alert
+        """
+        out = df.copy()
+        high = pd.to_numeric(out["high"], errors="coerce").astype(np.float64)
+        low = pd.to_numeric(out["low"], errors="coerce").astype(np.float64)
+        close = pd.to_numeric(out["close"], errors="coerce").astype(np.float64)
+        open_p = pd.to_numeric(out["open"], errors="coerce").astype(np.float64)
+
+        src = (open_p + high + low + close) / 4.0 if use_heikin_ashi else close
+
+        prev_close = close.shift(1).fillna(close)
+        tr = pd.concat([
+            (high - low).abs(),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ], axis=1).max(axis=1)
+        x_atr = tr.ewm(alpha=1.0 / max(atr_period, 1), adjust=False).mean()
+        n_loss = float(key_value) * x_atr
+
+        n = len(src)
+        src_vals = src.to_numpy()
+        n_loss_vals = n_loss.to_numpy()
+
+        trailing_stop = np.zeros(n, dtype=np.float64)
+        pos = np.zeros(n, dtype=np.int32)
+
+        if n > 0:
+            trailing_stop[0] = src_vals[0] - n_loss_vals[0]
+            pos[0] = 1
+
+        for t in range(1, n):
+            prev_ts = trailing_stop[t - 1]
+            curr_src = src_vals[t]
+            prev_src = src_vals[t - 1]
+            loss = n_loss_vals[t]
+
+            if curr_src > prev_ts and prev_src > prev_ts:
+                ts = max(prev_ts, curr_src - loss)
+            elif curr_src < prev_ts and prev_src < prev_ts:
+                ts = min(prev_ts, curr_src + loss)
+            elif curr_src > prev_ts:
+                ts = curr_src - loss
+            else:
+                ts = curr_src + loss
+            trailing_stop[t] = ts
+
+            if prev_src < prev_ts and curr_src > prev_ts:
+                curr_pos = 1
+            elif prev_src > prev_ts and curr_src < prev_ts:
+                curr_pos = -1
+            else:
+                curr_pos = pos[t - 1]
+            pos[t] = curr_pos
+
+        out["ut_trailing_stop"] = pd.Series(trailing_stop, index=out.index)
+        out["ut_pos"] = pd.Series(pos, index=out.index)
+
+        prev_src_s = src.shift(1).fillna(src)
+        prev_ts_s = out["ut_trailing_stop"].shift(1).fillna(out["ut_trailing_stop"])
+
+        crossover = (prev_src_s <= prev_ts_s) & (src > out["ut_trailing_stop"])
+        crossunder = (prev_src_s >= prev_ts_s) & (src < out["ut_trailing_stop"])
+
+        out["ut_buy"] = (src > out["ut_trailing_stop"]) & crossover
+        out["ut_sell"] = (src < out["ut_trailing_stop"]) & crossunder
+        out["ut_trend"] = np.where(src > out["ut_trailing_stop"], 1, -1)
+        return out
+    @staticmethod
+    def compute_supertrend_indicators(
+        df: pd.DataFrame,
+        period: int = 10,
+        multiplier: float = 3.0,
+        change_atr: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Algorithmic implementation of the 'Supertrend' Pine Script indicator:
+          Periods = 10, Multiplier = 3.0, Source = hl2 = (high + low) / 2
+          atr = changeATR ? atr(Periods) : sma(tr, Periods)
+          up = src - Multiplier * atr, dn = src + Multiplier * atr
+          Recursive trailing band clamping
+          trend: +1 (Bullish) or -1 (Bearish)
+          buySignal / sellSignal breakout triggers
+        """
+        out = df.copy()
+        high = pd.to_numeric(out["high"], errors="coerce").astype(np.float64)
+        low = pd.to_numeric(out["low"], errors="coerce").astype(np.float64)
+        close = pd.to_numeric(out["close"], errors="coerce").astype(np.float64)
+
+        src = (high + low) / 2.0
+        prev_close = close.shift(1).fillna(close)
+        tr = pd.concat([
+            (high - low).abs(),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ], axis=1).max(axis=1)
+
+        if change_atr:
+            atr = tr.ewm(alpha=1.0 / max(period, 1), adjust=False).mean()
+        else:
+            atr = tr.rolling(window=max(period, 1), min_periods=1).mean()
+
+        n = len(df)
+        src_v = src.to_numpy()
+        close_v = close.to_numpy()
+        atr_v = atr.to_numpy()
+
+        up = np.zeros(n, dtype=np.float64)
+        dn = np.zeros(n, dtype=np.float64)
+        trend = np.ones(n, dtype=np.int32)
+        st_line = np.zeros(n, dtype=np.float64)
+        buy_sig = np.zeros(n, dtype=bool)
+        sell_sig = np.zeros(n, dtype=bool)
+
+        if n > 0:
+            up[0] = src_v[0] - float(multiplier) * atr_v[0]
+            dn[0] = src_v[0] + float(multiplier) * atr_v[0]
+            trend[0] = 1 if close_v[0] >= up[0] else -1
+            st_line[0] = up[0] if trend[0] == 1 else dn[0]
+
+        for t in range(1, n):
+            up_raw = src_v[t] - float(multiplier) * atr_v[t]
+            dn_raw = src_v[t] + float(multiplier) * atr_v[t]
+
+            up1 = up[t - 1]
+            dn1 = dn[t - 1]
+
+            if close_v[t - 1] > up1:
+                up[t] = max(up_raw, up1)
+            else:
+                up[t] = up_raw
+
+            if close_v[t - 1] < dn1:
+                dn[t] = min(dn_raw, dn1)
+            else:
+                dn[t] = dn_raw
+
+            prev_t = trend[t - 1]
+            if prev_t == -1 and close_v[t] > dn1:
+                curr_t = 1
+            elif prev_t == 1 and close_v[t] < up1:
+                curr_t = -1
+            else:
+                curr_t = prev_t
+
+            trend[t] = curr_t
+            st_line[t] = up[t] if curr_t == 1 else dn[t]
+            buy_sig[t] = (curr_t == 1 and prev_t == -1)
+            sell_sig[t] = (curr_t == -1 and prev_t == 1)
+
+        out["supertrend"] = pd.Series(st_line, index=out.index)
+        out["supertrend_dir"] = pd.Series(trend, index=out.index)
+        out["supertrend_buy"] = pd.Series(buy_sig, index=out.index)
+        out["supertrend_sell"] = pd.Series(sell_sig, index=out.index)
+        return out
+    @staticmethod
+    def identify_candlestick_patterns(
+        df: pd.DataFrame,
+        trend_bars: int = 5,
+        doji_size: float = 0.05,
+    ) -> pd.DataFrame:
+        """
+        Pine Script 'Candlestick Patterns Identified' (v6):
+          1. Doji
+          2. Bearish Harami / Bullish Harami
+          3. Bearish Engulfing / Bullish Engulfing
+          4. Piercing Line
+          5. Bullish Belt Hold
+          6. Bullish Kicker / Bearish Kicker
+          7. Hanging Man
+          8. Evening Star / Morning Star
+          9. Shooting Star
+          10. Hammer / Inverted Hammer
+        """
+        out = df.copy()
+        open_p = pd.to_numeric(out["open"], errors="coerce").astype(np.float64)
+        high = pd.to_numeric(out["high"], errors="coerce").astype(np.float64)
+        low = pd.to_numeric(out["low"], errors="coerce").astype(np.float64)
+        close = pd.to_numeric(out["close"], errors="coerce").astype(np.float64)
+
+        open_1 = open_p.shift(1).fillna(open_p)
+        high_1 = high.shift(1).fillna(high)
+        low_1 = low.shift(1).fillna(low)
+        close_1 = close.shift(1).fillna(close)
+
+        open_2 = open_p.shift(2).fillna(open_1)
+        close_2 = close.shift(2).fillna(close_1)
+        high_2 = high.shift(2).fillna(high_1)
+
+        open_trend = open_p.shift(trend_bars).fillna(open_p)
+        lower_10 = low.rolling(window=10, min_periods=1).min().shift(1).fillna(low)
+
+        spread = high - low
+        body = (open_p - close).abs()
+        eps = 0.001
+        denom_spread = eps + spread
+
+        # 1. Doji
+        doji = body <= (spread * doji_size)
+
+        # 2. Bearish Harami
+        bear_harami = (
+            (close_1 > open_1)
+            & (open_p > close)
+            & (open_p <= close_1)
+            & (open_1 <= close)
+            & ((open_p - close) < (close_1 - open_1))
+            & (open_trend < open_p)
+        )
+
+        # 3. Bullish Harami
+        bull_harami = (
+            (open_1 > close_1)
+            & (close > open_p)
+            & (close <= open_1)
+            & (close_1 <= open_p)
+            & ((close - open_p) < (open_1 - close_1))
+            & (open_trend > open_p)
+        )
+
+        # 4. Bearish Engulfing
+        bear_eng = (
+            (close_1 > open_1)
+            & (open_p > close)
+            & (open_p >= close_1)
+            & (open_1 >= close)
+            & ((open_p - close) > (close_1 - open_1))
+            & (open_trend < open_p)
+        )
+
+        # 5. Bullish Engulfing
+        bull_eng = (
+            (open_1 > close_1)
+            & (close > open_p)
+            & (close >= open_1)
+            & (close_1 >= open_p)
+            & ((close - open_p) > (open_1 - close_1))
+            & (open_trend > open_p)
+        )
+
+        # 6. Piercing Line
+        piercing = (
+            (close_1 < open_1)
+            & (open_p < low_1)
+            & (close > (close_1 + ((open_1 - close_1) / 2.0)))
+            & (close < open_1)
+            & (open_trend > open_p)
+        )
+
+        # 7. Bullish Belt Hold
+        bull_belt = (
+            np.isclose(low, open_p, atol=1e-5)
+            & (open_p < lower_10)
+            & (open_p < close)
+            & (close > (((high_1 - low_1) / 2.0) + low_1))
+            & (open_trend > open_p)
+        )
+
+        # 8. Bullish Kicker
+        bull_kick = (
+            (open_1 > close_1)
+            & (open_p >= open_1)
+            & (close > open_p)
+            & (open_trend > open_p)
+        )
+
+        # 9. Bearish Kicker
+        bear_kick = (
+            (open_1 < close_1)
+            & (open_p <= open_1)
+            & (close <= open_p)
+            & (open_trend < open_p)
+        )
+
+        # 10. Hanging Man
+        hanging_man = (
+            (spread > 4.0 * body)
+            & (((close - low) / denom_spread) >= 0.75)
+            & (((open_p - low) / denom_spread) >= 0.75)
+            & (open_trend < open_p)
+            & (high_1 < open_p)
+            & (high_2 < open_p)
+        )
+
+        # 11. Evening Star
+        evening_star = (
+            (close_2 > open_2)
+            & (np.minimum(open_1, close_1) > close_2)
+            & (open_p < np.minimum(open_1, close_1))
+            & (close < open_p)
+        )
+
+        # 12. Morning Star
+        morning_star = (
+            (close_2 < open_2)
+            & (np.maximum(open_1, close_1) < close_2)
+            & (open_p > np.maximum(open_1, close_1))
+            & (close > open_p)
+        )
+
+        # 13. Shooting Star
+        shooting_star = (
+            (open_1 < close_1)
+            & (open_p > close_1)
+            & ((high - np.maximum(open_p, close)) >= body * 3.0)
+            & ((np.minimum(close, open_p) - low) <= body)
+        )
+
+        # 14. Hammer
+        hammer = (
+            (spread > 3.0 * body)
+            & (((close - low) / denom_spread) > 0.60)
+            & (((open_p - low) / denom_spread) > 0.60)
+        )
+
+        # 15. Inverted Hammer
+        inv_hammer = (
+            (spread > 3.0 * body)
+            & (((high - close) / denom_spread) > 0.60)
+            & (((high - open_p) / denom_spread) > 0.60)
+        )
+
+        out["cp_doji"] = doji
+        out["cp_bear_harami"] = bear_harami
+        out["cp_bull_harami"] = bull_harami
+        out["cp_bear_engulf"] = bear_eng
+        out["cp_bull_engulf"] = bull_eng
+        out["cp_piercing"] = piercing
+        out["cp_bull_belt"] = bull_belt
+        out["cp_bull_kicker"] = bull_kick
+        out["cp_bear_kicker"] = bear_kick
+        out["cp_hanging_man"] = hanging_man
+        out["cp_evening_star"] = evening_star
+        out["cp_morning_star"] = morning_star
+        out["cp_shooting_star"] = shooting_star
+        out["cp_hammer"] = hammer
+        out["cp_inv_hammer"] = inv_hammer
+
+        bull_count = (
+            bull_eng.astype(int) + morning_star.astype(int) + hammer.astype(int)
+            + bull_harami.astype(int) + piercing.astype(int) + bull_belt.astype(int)
+            + bull_kick.astype(int) + inv_hammer.astype(int)
+        )
+        bear_count = (
+            bear_eng.astype(int) + evening_star.astype(int) + shooting_star.astype(int)
+            + hanging_man.astype(int) + bear_harami.astype(int) + bear_kick.astype(int)
+        )
+        out["cp_score"] = np.clip(bull_count - bear_count, -3.0, 3.0)
+
+        names = []
+        for i in range(len(df)):
+            if bull_eng.iloc[i]:
+                names.append("Bullish Engulfing")
+            elif bear_eng.iloc[i]:
+                names.append("Bearish Engulfing")
+            elif morning_star.iloc[i]:
+                names.append("Morning Star")
+            elif evening_star.iloc[i]:
+                names.append("Evening Star")
+            elif hammer.iloc[i]:
+                names.append("Hammer")
+            elif shooting_star.iloc[i]:
+                names.append("Shooting Star")
+            elif inv_hammer.iloc[i]:
+                names.append("Inverted Hammer")
+            elif hanging_man.iloc[i]:
+                names.append("Hanging Man")
+            elif bull_harami.iloc[i]:
+                names.append("Bullish Harami")
+            elif bear_harami.iloc[i]:
+                names.append("Bearish Harami")
+            elif piercing.iloc[i]:
+                names.append("Piercing Line")
+            elif bull_belt.iloc[i]:
+                names.append("Bullish Belt")
+            elif bull_kick.iloc[i]:
+                names.append("Bullish Kicker")
+            elif bear_kick.iloc[i]:
+                names.append("Bearish Kicker")
+            elif doji.iloc[i]:
+                names.append("Doji")
+            else:
+                names.append("")
+        out["cp_pattern_name"] = pd.Series(names, index=out.index)
+        return out
+    @staticmethod
+    def compute_oc_signals(
+        df: pd.DataFrame,
+        body_len: int = 50,
+        body_mult: float = 1.5,
+        vol_mult: float = 0.0,
+        sl_mode: str = "Candle wick",
+        tp_rmult: float = 2.0,
+        atr_len: int = 14,
+        alternate: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Algorithmic implementation of 'OC Buy/Sell Signals' Pine Script indicator:
+          - Bullish breakout: close > open and close > max(open[1], close[1]) and body >= avgBody * bodyMult and volOk
+          - Bearish breakout: close < open and close < min(open[1], close[1]) and body >= avgBody * bodyMult and volOk
+          - Entry price = signal candle close
+          - Stop loss = candle wick low (Buy) / high (Sell)
+          - Take profit = entry +/- (risk_dist * tp_rmult) [Default 1:2 RRR]
+        """
+        out = df.copy()
+        open_p = pd.to_numeric(out["open"], errors="coerce").astype(np.float64)
+        high = pd.to_numeric(out["high"], errors="coerce").astype(np.float64)
+        low = pd.to_numeric(out["low"], errors="coerce").astype(np.float64)
+        close = pd.to_numeric(out["close"], errors="coerce").astype(np.float64)
+        volume = (
+            pd.to_numeric(out["volume"], errors="coerce").fillna(1.0).astype(np.float64)
+            if "volume" in out.columns
+            else pd.Series(1.0, index=out.index, dtype=np.float64)
+        )
+
+        body_hi = np.maximum(open_p, close)
+        body_lo = np.minimum(open_p, close)
+        body = (close - open_p).abs()
+
+        eff_body_len = max(5, min(body_len, len(df)))
+        avg_body = body.rolling(window=eff_body_len, min_periods=1).mean()
+        avg_vol = volume.rolling(window=eff_body_len, min_periods=1).mean()
+        has_vol_var = bool(volume.std() > 1e-4) if len(volume) > 1 else False
+        vol_ok = (vol_mult <= 0.0) | (not has_vol_var) | (volume >= avg_vol * vol_mult)
+        prev_close = close.shift(1).fillna(close)
+        tr = pd.concat([
+            (high - low).abs(),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1.0 / max(atr_len, 1), adjust=False).mean()
+
+        body_hi_1 = body_hi.shift(1).fillna(body_hi)
+        body_lo_1 = body_lo.shift(1).fillna(body_lo)
+
+        bull_break = (close > open_p) & (close > body_hi_1) & (body >= avg_body * body_mult) & vol_ok
+        bear_break = (close < open_p) & (close < body_lo_1) & (body >= avg_body * body_mult) & vol_ok
+
+        n = len(df)
+        entry_px = np.zeros(n, dtype=np.float64)
+        sl_px = np.zeros(n, dtype=np.float64)
+        tp_px = np.zeros(n, dtype=np.float64)
+        sig_dir = np.zeros(n, dtype=np.int32)
+        current_dir = 0
+        curr_entry = 0.0
+        curr_sl = 0.0
+        curr_tp = 0.0
+
+        c_vals = close.to_numpy()
+        h_vals = high.to_numpy()
+        l_vals = low.to_numpy()
+        atr_vals = atr.to_numpy()
+        bull_b = bull_break.to_numpy()
+        bear_b = bear_break.to_numpy()
+
+        for t in range(n):
+            c_t = c_vals[t]
+            h_t = h_vals[t]
+            l_t = l_vals[t]
+            atr_t = max(atr_vals[t], 1e-4)
+
+            buy = bull_b[t] and (not alternate or current_dir != 1)
+            sell = bear_b[t] and (not alternate or current_dir != -1)
+
+            if buy:
+                current_dir = 1
+                curr_entry = c_t
+                if sl_mode == "ATR":
+                    curr_sl = curr_entry - (atr_t * 1.5)
+                else:
+                    curr_sl = l_t
+                risk_dist = max(abs(curr_entry - curr_sl), c_t * 0.001)
+                curr_tp = curr_entry + (risk_dist * tp_rmult)
+                sig_dir[t] = 1
+            elif sell:
+                current_dir = -1
+                curr_entry = c_t
+                if sl_mode == "ATR":
+                    curr_sl = curr_entry + (atr_t * 1.5)
+                else:
+                    curr_sl = h_t
+                risk_dist = max(abs(curr_sl - curr_entry), c_t * 0.001)
+                curr_tp = max(c_t * 0.01, curr_entry - (risk_dist * tp_rmult))
+                sig_dir[t] = -1
+
+            entry_px[t] = curr_entry
+            sl_px[t] = curr_sl
+            tp_px[t] = curr_tp
+
+        out["oc_signal"] = pd.Series(sig_dir, index=out.index)
+        out["oc_entry"] = pd.Series(entry_px, index=out.index)
+        out["oc_sl"] = pd.Series(sl_px, index=out.index)
+        out["oc_tp"] = pd.Series(tp_px, index=out.index)
+        return out
+
+
+
 
     @staticmethod
     def compute_raw_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -284,6 +808,32 @@ class OHLCVPreprocessor:
             & (low <= prev_low)
         )
         out["score_engulf"] = np.where(engulf_cond, ((body - prev_body) / atr_safe).fillna(0.0), 0.0)
+        # UT Bot Alerts Indicators
+        ut_df = OHLCVPreprocessor.compute_ut_bot_indicators(out, key_value=1.0, atr_period=10)
+        out["ut_trailing_stop"] = ut_df["ut_trailing_stop"]
+        out["ut_trend"] = ut_df["ut_trend"].astype(np.float32)
+        out["ut_buy"] = ut_df["ut_buy"].astype(np.float32)
+        out["ut_sell"] = ut_df["ut_sell"].astype(np.float32)
+        # Supertrend (10, 3.0) Indicator
+        st_df = OHLCVPreprocessor.compute_supertrend_indicators(out, period=10, multiplier=3.0)
+        out["supertrend"] = st_df["supertrend"]
+        out["supertrend_dir"] = st_df["supertrend_dir"].astype(np.float32)
+        out["supertrend_buy"] = st_df["supertrend_buy"].astype(np.float32)
+        out["supertrend_sell"] = st_df["supertrend_sell"].astype(np.float32)
+        # Candlestick Patterns Identified
+        cp_df = OHLCVPreprocessor.identify_candlestick_patterns(out, trend_bars=5, doji_size=0.05)
+        out["cp_score"] = cp_df["cp_score"].astype(np.float32)
+        out["cp_pattern_name"] = cp_df["cp_pattern_name"]
+        out["cp_bull_engulf"] = cp_df["cp_bull_engulf"].astype(np.float32)
+        out["cp_bear_engulf"] = cp_df["cp_bear_engulf"].astype(np.float32)
+        out["cp_hammer"] = cp_df["cp_hammer"].astype(np.float32)
+        out["cp_shooting_star"] = cp_df["cp_shooting_star"].astype(np.float32)
+        # OC Buy/Sell Signals (Pine Script v6)
+        oc_df = OHLCVPreprocessor.compute_oc_signals(out, body_len=50, body_mult=1.5)
+        out["oc_signal"] = oc_df["oc_signal"].astype(np.float32)
+        out["oc_entry"] = oc_df["oc_entry"].astype(np.float64)
+        out["oc_sl"] = oc_df["oc_sl"].astype(np.float64)
+        out["oc_tp"] = oc_df["oc_tp"].astype(np.float64)
 
         return out
 

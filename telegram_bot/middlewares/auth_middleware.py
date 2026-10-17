@@ -81,7 +81,10 @@ class WhitelistAuthMiddleware(BaseMiddleware):
         # F15: Always allow users to stop/disable Auto-Trade (/autotrade off|stop, /unlink) even during maintenance or expiry
         lower_act = action_str.strip().lower()
         is_emergency_stop_cmd = (
-            lower_act in ("/autotrade off", "/autotrade stop", "/unlink", "cb:autotrade:toggle:off", "cb:setup:unlink")
+            lower_act.startswith("/autotrade off")
+            or lower_act.startswith("/autotrade stop")
+            or lower_act == "/unlink"
+            or lower_act in ("cb:autotrade:toggle:off", "cb:setup:unlink")
         )
         # 1. Maintenance Mode Guard (Non-admin users are blocked when Maintenance is ON, except emergency stop)
         if self.admin_store.is_maintenance_mode() and not is_admin and not is_emergency_stop_cmd:

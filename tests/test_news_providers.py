@@ -200,7 +200,7 @@ def test_forexfactory_blackout_logic() -> None:
 
 def test_ensemble_agent_blackout_rejection() -> None:
     """Verify active macro blackout forces EnsembleDecisionAgent to reject trade with HOLD."""
-    cfg = Settings(_env_file=None, use_live_market_data=False, use_live_news_feed=True)
+    cfg = Settings(_env_file=None, use_live_market_data=False, use_live_news_feed=True, macro_blackout_enabled=True)
     agent = EnsembleDecisionAgent(settings=cfg)
 
     blackout_event_name = "USD CPI m/m (12:30 UTC)"
@@ -221,3 +221,230 @@ def test_ensemble_agent_blackout_rejection() -> None:
         assert decision.action == "HOLD"
         assert "HIGH_IMPACT_NEWS_BLACKOUT" in (decision.rejection_reason or "")
         assert blackout_event_name in (decision.rejection_reason or "")
+
+
+# -----------------------------------------------------------------------------
+# Tests for US Macro News, Hawkish vs Dovish Engine, and Event Sniper
+# -----------------------------------------------------------------------------
+from ai_engine.models.sentiment_lexicon import (
+    compute_macro_monetary_bias,
+    macro_monetary_to_gold_signal,
+)
+from data_pipeline.news_providers.us_macro_rss_provider import USMacroNewsProvider
+from ai_engine.auto_trader.session_models import parse_macro_event_mode_token
+
+
+def test_hawkish_vs_dovish_monetary_transmission_to_gold() -> None:
+    """
+    Verify institutional macro transmission logic:
+      - Strong US Inflation / Jobs (Hawkish) -> USD rallies -> Gold (XAUUSD) drops (SELL)
+      - Weak US Inflation / Jobs (Dovish) -> USD drops -> Gold (XAUUSD) rallies (BUY)
+    """
+    # Test 1: Hot PPI / CPI inflation beat -> Hawkish -> SELL Gold
+    hawkish_headline = "US Core PPI jumps 0.4% MoM beating forecasts on persistent sticky inflation, yields surge"
+    score_h, stance_h = compute_macro_monetary_bias(hawkish_headline)
+    gold_score_h, action_h = macro_monetary_to_gold_signal(score_h, "XAUUSD")
+    assert stance_h == "HAWKISH"
+    assert score_h > 0.0
+    assert gold_score_h < 0.0
+    assert action_h == "SELL"
+
+    # Test 2: Cool CPI / NFP disappointment -> Dovish -> BUY Gold
+    dovish_headline = "US Consumer Price Index cools sharply as jobless claims jump, fueling aggressive Fed rate cuts"
+    score_d, stance_d = compute_macro_monetary_bias(dovish_headline)
+    gold_score_d, action_d = macro_monetary_to_gold_signal(score_d, "XAUUSD")
+    assert stance_d == "DOVISH"
+    assert score_d < 0.0
+    assert gold_score_d > 0.0
+    assert action_d == "BUY"
+
+
+@pytest.mark.asyncio
+async def test_us_macro_rss_provider_parsing_and_tagging() -> None:
+    """Verify USMacroNewsProvider parses breaking RSS feeds and tags macro events (CPI, PPI, NFP)."""
+    provider = USMacroNewsProvider(settings=Settings(_env_file=None))
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+
+    sample_forexlive_rss = """<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0">
+      <channel>
+        <title>ForexLive US Macro News</title>
+        <item>
+          <title>US Core PPI jumps 0.3% vs 0.1% expected as producer price inflation accelerates</title>
+          <description>Hot producer prices indicate stubborn wholesale price pressures for the Fed.</description>
+          <link>https://www.forexlive.com/news/us-ppi-heat-2026</link>
+          <pubDate>Thu, 15 Oct 2026 12:30:00 +0000</pubDate>
+        </item>
+        <item>
+          <title>Non-farm payrolls miss expectations with 95k added as labor market cools</title>
+          <description>US employment slowdown prompts markets to price in 50bp rate cut.</description>
+          <link>https://www.forexlive.com/news/nfp-miss-2026</link>
+          <pubDate>Thu, 15 Oct 2026 12:31:00 +0000</pubDate>
+        </item>
+      </channel>
+    </rss>
+    """
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = sample_forexlive_rss
+    mock_client.get.return_value = mock_resp
+
+    items = await provider.fetch(mock_client, target_event="PPI")
+    assert len(items) >= 2
+    # First item is PPI
+    ppi_item = next(it for it in items if "PPI" in it.tickers)
+    assert ppi_item.publisher == "USMacro_ForexLive"
+    assert "[HAWKISH]" in ppi_item.title
+    # Transmitted polarity to Gold should be negative (SELL Gold)
+    assert ppi_item.provider_sentiment is not None and ppi_item.provider_sentiment < 0
+
+
+def test_event_sniper_blackout_bypass_logic() -> None:
+    """Verify is_in_high_impact_blackout bypasses blackout when user targets specific event mode."""
+    now = datetime.now(timezone.utc)
+    event_ppi = EconomicCalendarEvent(
+        title="Core PPI m/m",
+        country="USD",
+        timestamp=now + timedelta(minutes=5),  # 5 min away
+        impact=ImpactLevel.HIGH,
+    )
+    # Standard call without bypass -> True (Blackout active)
+    is_blackout, reason = ForexFactoryProvider.is_in_high_impact_blackout(
+        currencies=["USD"],
+        events=[event_ppi],
+        window_minutes=15,
+        as_of=now,
+    )
+    assert is_blackout is True
+    assert "Core PPI" in (reason or "")
+
+    # Event Sniper call with bypassed_event_mode="PPI" -> False (Blackout Bypassed!)
+    is_blackout_sniper, reason_sniper = ForexFactoryProvider.is_in_high_impact_blackout(
+        currencies=["USD"],
+        events=[event_ppi],
+        window_minutes=15,
+        as_of=now,
+        bypassed_event_mode="PPI",
+    )
+    assert is_blackout_sniper is False
+    assert reason_sniper is None
+
+
+def test_parse_macro_event_mode_tokens() -> None:
+    """Verify parsing /autotrade event arguments (FOMC, IMF, NFP, CPI, PPI, PCE, GDP, RETAIL, PMI, JOBLESS)."""
+    # Canonical tokens
+    assert parse_macro_event_mode_token("fomc") == "FOMC"
+    assert parse_macro_event_mode_token("IMF") == "IMF"
+    assert parse_macro_event_mode_token("nfp") == "NFP"
+    assert parse_macro_event_mode_token("CPI") == "CPI"
+    assert parse_macro_event_mode_token("ppi") == "PPI"
+    assert parse_macro_event_mode_token("event:pce") == "PCE"
+    assert parse_macro_event_mode_token("gdp") == "GDP"
+    assert parse_macro_event_mode_token("retail") == "RETAIL"
+    assert parse_macro_event_mode_token("pmi") == "PMI"
+    assert parse_macro_event_mode_token("jobless") == "JOBLESS"
+    # Common aliases
+    assert parse_macro_event_mode_token("powell") == "FOMC"
+    assert parse_macro_event_mode_token("fed") == "FOMC"
+    assert parse_macro_event_mode_token("weo") == "IMF"
+    assert parse_macro_event_mode_token("jobs") == "NFP"
+    assert parse_macro_event_mode_token("claims") == "JOBLESS"
+    assert parse_macro_event_mode_token("ism") == "PMI"
+    # Invalid non-event tokens
+    assert parse_macro_event_mode_token("BTCUSDT") is None
+    assert parse_macro_event_mode_token("0.05") is None
+
+
+def test_extended_macro_events_matching_and_transmission() -> None:
+    """Verify EconomicCalendarEvent matching and monetary transmission for FOMC, IMF, GDP, PMI."""
+    now = datetime.now(timezone.utc)
+    ev_fomc = EconomicCalendarEvent(
+        title="Federal Funds Rate Decision & Statement",
+        country="USD",
+        timestamp=now,
+        impact=ImpactLevel.HIGH,
+    )
+    assert ev_fomc.matches_event_mode("FOMC") is True
+    assert ev_fomc.matches_event_mode("CPI") is False
+
+    ev_imf = EconomicCalendarEvent(
+        title="IMF World Economic Outlook Press Conference",
+        country="USD",
+        timestamp=now,
+        impact=ImpactLevel.HIGH,
+    )
+    assert ev_imf.matches_event_mode("IMF") is True
+
+    # Test Hawkish FOMC headline -> SELL Gold
+    fomc_hawkish = "FOMC holds interest rates at 5.50% and Powell signals rate hike on table if inflation persists"
+    sc_fomc, stance_fomc = compute_macro_monetary_bias(fomc_hawkish)
+    gold_sc, act_fomc = macro_monetary_to_gold_signal(sc_fomc, "XAUUSD")
+    assert stance_fomc == "HAWKISH"
+    assert act_fomc == "SELL"
+
+    # Test Dovish IMF / Global Slowdown headline -> BUY Gold (Safe Haven + Fed Easing)
+    imf_dovish = "IMF warns global slowdown and cuts global growth forecast amid debt distress and recession fear"
+    sc_imf, stance_imf = compute_macro_monetary_bias(imf_dovish)
+    gold_imf, act_imf = macro_monetary_to_gold_signal(sc_imf, "XAUUSD")
+    assert stance_imf == "DOVISH"
+    assert act_imf == "BUY"
+
+
+def test_blackout_disabled_by_default_allows_early_setup() -> None:
+    """Verify blackout is disabled by default so AI builds setups early before news."""
+    cfg = Settings(_env_file=None, use_live_market_data=False, use_live_news_feed=True)
+    assert cfg.macro_blackout_enabled is False
+    agent = EnsembleDecisionAgent(settings=cfg)
+
+    mock_res = SentimentAnalysisResult(
+        symbol="BTCUSDT",
+        s_sent=0.0,
+        label="NEUTRAL",
+        bullish_ratio=0.0,
+        bearish_ratio=0.0,
+        neutral_ratio=1.0,
+        model_name="ProsusAI/finbert",
+        is_macro_blackout=True,  # Calendar has blackout, but system has it disabled!
+        blackout_event="USD CPI m/m",
+    )
+    with patch.object(agent.sentiment_analyzer, "analyze_headlines", return_value=mock_res):
+        decision = agent.analyze_symbol(symbol="BTCUSDT", timeframe="15m")
+        # Should NOT be rejected by blackout because blackout is disabled globally!
+        assert "HIGH_IMPACT_NEWS_BLACKOUT" not in (decision.rejection_reason or "")
+
+
+def test_event_mode_targets_removes_tp_and_calculates_anti_mc_sl() -> None:
+    """Verify event mode removes TP (TP=0.0) and tailors SL strictly to account capital to prevent Margin Call."""
+    from ai_engine.risk_management.stop_loss_manager import StopLossManager
+    sl_mgr = StopLossManager()
+
+    # 1. Gold (XAUUSD) BUY with $5,000 balance and 0.10 lot
+    targets_buy = sl_mgr.calculate_event_mode_targets(
+        entry_price=2650.0,
+        action="BUY",
+        account_balance=5000.0,
+        lot_size=0.10,
+        symbol="XAUUSD",
+        risk_pct=0.015,
+    )
+    assert targets_buy.take_profit_1 == 0.0
+    assert targets_buy.take_profit_2 == 0.0
+    assert targets_buy.stop_loss < 2650.0
+    # Dollar risk = distance * lot * 100
+    loss_buy = (2650.0 - targets_buy.stop_loss) * 0.10 * 100.0
+    assert loss_buy <= 5000.0 * 0.05  # Max loss <= 5% of balance -> NO MARGIN CALL!
+
+    # 2. Gold (XAUUSD) SELL with $10,000 balance and 0.20 lot
+    targets_sell = sl_mgr.calculate_event_mode_targets(
+        entry_price=2650.0,
+        action="SELL",
+        account_balance=10000.0,
+        lot_size=0.20,
+        symbol="XAUUSD",
+        risk_pct=0.015,
+    )
+    assert targets_sell.take_profit_1 == 0.0
+    assert targets_sell.take_profit_2 == 0.0
+    assert targets_sell.stop_loss > 2650.0
+    loss_sell = (targets_sell.stop_loss - 2650.0) * 0.20 * 100.0
+    assert loss_sell <= 10000.0 * 0.05  # Max loss <= 5% of balance -> NO MARGIN CALL!

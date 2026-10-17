@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -15,11 +15,13 @@ from ai_engine.auto_trader.mt5_exness_client import MT5ExnessClient
 from ai_engine.auto_trader.engine import SmartAutoTraderEngine
 from ai_engine.auto_trader.session_manager import (
     format_position_closed_notification,
-    parse_custom_lot_token,
 )
-from ai_engine.auto_trader.user_vault import UserVault
-from ai_engine.models.ensemble_agent import EnsembleDecisionAgent
-from config.settings import Settings, get_settings
+from ai_engine.auto_trader.session_models import (
+    AutoTradeSessionState,
+    parse_custom_lot_token,
+    parse_macro_event_mode_token,
+    parse_max_positions_token,
+)
 from data_pipeline.market_symbols import normalize_symbol
 from telegram_bot.handlers.handler_utils import (
     _PENDING_ADMIN_ACTION,
@@ -36,6 +38,18 @@ from telegram_bot.views.setup_formatters import (
     format_setup_success_card,
     format_timed_session_started_card,
 )
+
+async def _safe_answer_callback(
+    callback: CallbackQuery,
+    text: Optional[str] = None,
+    show_alert: bool = False,
+) -> None:
+    """Defensively answer callback query; suppresses timeout exceptions if query expired."""
+    try:
+        await callback.answer(text=text, show_alert=show_alert)
+    except Exception:
+        pass
+
 
 autotrade_router = Router(name="autotrade")
 
@@ -87,14 +101,28 @@ def build_setup_keyboard(has_creds: bool = False, autotrade_on: bool = False) ->
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-@autotrade_router.message(Command("autotrade"))
+@autotrade_router.message(
+    Command(
+        "autotrade",
+        "trade",
+        "ea-scp",
+        "ea_scp",
+        "eascp",
+        "ea-EA",
+        "ea_EA",
+        "ea-ea",
+        "ea_ea",
+        "eaea",
+        ignore_case=True,
+    )
+)
 async def handle_autotrade(message: Message, **data: Any) -> None:
     """
-    Handle /autotrade command:
-    - `/autotrade` or `/autotrade status` -> Show current auto-trade status (requires /setup)
-    - `/autotrade on` -> Enable auto-trade for this user (requires /setup)
-    - `/autotrade off` -> Disable auto-trade for this user
-    - `/autotrade scan [symbol] [timeframe]` or `/autotrade [symbol]` -> Run 6-Gate check & execute if passed
+    Handle /autotrade, /trade, /ea-scp, and /ea-EA commands:
+    - `/ea-EA {symbol} [lot]` -> Starts EA Expert Advisor MT5 (RSI 14 | SL 50p | TP 150p | 3 Anti-Ban Protections)
+    - `/ea-scp {symbol} [lot]` -> Starts EA Scalping M1/M5 (Fast Momentum | SL 20p | TP 40p)
+    - `/trade [scan] [symbol]` -> Strict 4-Indicator Confluence (UT Bot, Supertrend, Candle, OC Signals)
+    - `/autotrade [scan] [symbol]` -> 6-Gate Auto-Trader
     """
     settings: Settings = data.get("settings") or get_settings()
     vault: UserVault = data.get("user_vault") or UserVault(settings)
@@ -106,10 +134,26 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
     )
 
     user_id, user_name = extract_user_identity(message, default_name="Trader")
+    cmd_token = (message.text or "").strip().split()[0].lower() if message.text else "/autotrade"
+    is_trade_mode = cmd_token.startswith("/trade")
+    is_ea_scp = any(cmd_token.startswith(p) for p in ("/ea-scp", "/ea_scp", "/eascp"))
+    is_ea_ea = any(cmd_token.startswith(p) for p in ("/ea-ea", "/ea_ea", "/eaea"))
+    ea_mode: Optional[str] = "EA_SCALPING" if is_ea_scp else ("EA_EXPERT_ADVISOR" if is_ea_ea else None)
+    cmd_name = "/ea-scp" if is_ea_scp else ("/ea-EA" if is_ea_ea else ("/trade" if is_trade_mode else "/autotrade"))
+    args = parse_command_args(message.text)
+    sub = args[0].lower() if args else "status"
+    raw_tokens = args[1:] if sub == "scan" else args
+    req_symbol = (
+        normalize_symbol(raw_tokens[0])
+        if (len(raw_tokens) >= 1 and raw_tokens[0].lower() not in ("on", "off", "stop", "status"))
+        else "BTCUSDT"
+    )
     creds = vault.resolve_credentials(user_id)
 
     if creds is None:
-        report = await auto_trader.evaluate_and_execute(user_id=user_id, symbol="BTCUSDT")
+        report = await auto_trader.evaluate_and_execute(
+            user_id=user_id, symbol=req_symbol, trade_mode=is_trade_mode, ea_mode=ea_mode
+        )
         await message.answer(
             format_autotrade_report_card(report),
             parse_mode="HTML",
@@ -117,23 +161,78 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         )
         return
 
-    args = parse_command_args(message.text)
-    sub = args[0].lower() if args else "status"
-
     if sub == "on":
         vault.set_autotrade_enabled(user_id, True)
         await auto_trader.sync_live_mt5_positions(user_id)
         updated = vault.resolve_credentials(user_id)
         positions = vault.get_open_positions(user_id)
+        if is_ea_ea:
+            on_title = (
+                "🟢 <b>Mode EA Expert Advisor MT5 Diaktifkan!</b>\n"
+                "Eksekusi otomatis berbasis <b>RSI 14</b> (RSI >= 70 SELL, RSI <= 30 BUY), "
+                "SL 50 Pips, TP 150 Pips (1:3 RRR), dan 3 Proteksi Anti-Broker-Ban.\n\n"
+            )
+        elif is_ea_scp:
+            on_title = (
+                "🟢 <b>Mode EA Scalping M1/M5 Diaktifkan!</b>\n"
+                "Scalping mikro-momentum cepat (SL 20 Pips, TP 40 Pips) dengan proteksi anti-ban broker.\n\n"
+            )
+        elif is_trade_mode:
+            on_title = (
+                "🟢 <b>Mode /trade (4 Indikator Murni) Diaktifkan!</b>\n"
+                "AI siap memantau pasar dan <b>HANYA</b> akan membuka posisi BUY/SELL jika ke-4 Indikator "
+                "(UT Bot, Supertrend, Candlestick Patterns, OC Signals) selaras dan didukung pembacaan candle, tren MTF, serta berita.\n\n"
+            )
+        else:
+            on_title = (
+                "🟢 <b>Auto-Trade 24/7 Non-Stop Diaktifkan!</b>\n"
+                "AI siap menganalisis tren <b>1D, 1H, 15M, 5M</b> dan mengeksekusi open/close posisi di <b>1M</b> secara 24/7 pada akun Exness Go / MT5 Anda.\n\n"
+            )
         await message.answer(
-            "🟢 <b>Auto-Trade 24/7 Non-Stop Diaktifkan!</b>\n"
-            "AI siap menganalisis tren <b>1D, 1H, 15M, 5M</b> dan mengeksekusi open/close posisi di <b>1M</b> secara 24/7 pada akun Exness Go / MT5 Anda.\n\n"
-            + format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), updated, positions),
+            on_title + format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), updated, positions),
             parse_mode="HTML",
             reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=True),
         )
         return
     if sub in ("off", "stop"):
+        target_token = args[1].strip() if len(args) > 1 else None
+        if target_token and target_token.lower() not in ("all", "semua"):
+            stopped_one = auto_trader.stop_session_by_id(user_id, target_token)
+            if stopped_one is not None:
+                remaining_sess = auto_trader.get_user_sessions(user_id)
+                rem_note = f"\n\nSisa sesi aktif: {len(remaining_sess)} sesi." if remaining_sess else "\n\nSemua sesi Auto-Trade telah selesai."
+                if not remaining_sess:
+                    vault.set_autotrade_enabled(user_id, False)
+                await message.answer(
+                    f"🛑 <b>Sesi Auto-Trade [ID #{stopped_one.short_id}] ({stopped_one.symbol}) Telah Dihentikan.</b>\n"
+                    f"• <b>Status:</b> Nonaktif (Dibatalkan user)\n"
+                    f"• <b>Total Siklus:</b> <code>{stopped_one.cycles_completed}x</code>\n"
+                    f"• <b>Realized PnL:</b> <code>${stopped_one.realized_pnl_usdt:+.2f} USD</code>"
+                    + rem_note,
+                    parse_mode="HTML",
+                    reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=bool(remaining_sess)),
+                )
+                return
+            else:
+                stopped_sym = auto_trader.stop_user_sessions(user_id, symbol=target_token)
+                if stopped_sym:
+                    remaining_sess = auto_trader.get_user_sessions(user_id)
+                    if not remaining_sess:
+                        vault.set_autotrade_enabled(user_id, False)
+                    await message.answer(
+                        f"🛑 <b>{len(stopped_sym)} Sesi Auto-Trade pada {target_token.upper()} Telah Dihentikan.</b>",
+                        parse_mode="HTML",
+                        reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=bool(remaining_sess)),
+                    )
+                    return
+                else:
+                    await message.answer(
+                        f"⚠️ <b>Sesi Auto-Trade dengan ID '<code>{html.escape(target_token)}</code>' tidak ditemukan atau sudah nonaktif.</b>\n"
+                        f"Ketik <code>/autotrade status</code> untuk melihat daftar ID sesi yang sedang aktif.",
+                        parse_mode="HTML",
+                    )
+                    return
+
         stopped_sessions = auto_trader.stop_user_sessions(user_id)
         vault.set_autotrade_enabled(user_id, False)
         await auto_trader.sync_live_mt5_positions(user_id)
@@ -145,7 +244,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
             else ""
         )
         await message.answer(
-            f"⚪ <b>Auto-Trade Dinonaktifkan{stop_note}.</b>\n"
+            f"⚪ <b>Seluruh Sesi Auto-Trade Dinonaktifkan{stop_note}.</b>\n"
             f"Bot tidak akan membuka posisi otomatis baru sampai Anda mengaktifkannya kembali.\n\n"
             + format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), updated, positions),
             parse_mode="HTML",
@@ -160,11 +259,12 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         sess_lines = ""
         if active_sessions:
             s_items = [
-                f"• <b>{s.symbol} ({s.duration_label})</b>: Sisa <code>{s.remaining_human}</code> | "
-                f"Siklus: <code>{s.cycles_completed}x</code> | <i>{s.last_check_summary}</i>"
+                f"• <b>[ID #{s.short_id}] {s.symbol}</b> ({s.duration_label} | {s.custom_lot or 'Auto'} Lot | Max {s.max_positions} Posisi):\n"
+                f"   Sisa: <code>{s.remaining_human}</code> | Siklus: <code>{s.cycles_completed}x</code> | <i>{s.last_check_summary}</i>\n"
+                f"   👉 <i>Ketik <code>/autotrade stop {s.short_id}</code> untuk menghentikan sesi ini saja.</i>"
                 for s in active_sessions
             ]
-            sess_lines = "\n\n<b>⏱️ Sesi Auto-Trade Berjangka Aktif:</b>\n" + "\n".join(s_items)
+            sess_lines = "\n\n<b>⏱️ Sesi Auto-Trade Aktif Berdasarkan ID:</b>\n\n" + "\n\n".join(s_items)
         await message.answer(
             format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), creds, positions)
             + sess_lines,
@@ -173,16 +273,26 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         )
         return
 
-    # Parse `/autotrade <SYMBOL> [LOT]` -> Always starts 24/7 Non-Stop Auto-Trade (1D/1H/15M/5M trend -> 1m action)
+    # Parse `/autotrade <SYMBOL> [LOT] [EVENT_MODE] [MAX_POSITIONS]` -> Starts 24/7 Auto-Trade
     raw_tokens = args[1:] if sub == "scan" else args
     symbol = normalize_symbol(raw_tokens[0]) if len(raw_tokens) >= 1 else "BTCUSDT"
     custom_lot: float | None = None
+    macro_event_mode: str | None = None
+    max_positions: int = 1
 
     for tok in raw_tokens[1:]:
+        pos_val = parse_max_positions_token(tok)
+        if pos_val is not None and max_positions == 1:
+            max_positions = pos_val
+            continue
         lot_val = parse_custom_lot_token(tok)
         if lot_val is not None and custom_lot is None:
             custom_lot = lot_val
-
+            continue
+        ev_mode = parse_macro_event_mode_token(tok)
+        if ev_mode is not None and macro_event_mode is None:
+            macro_event_mode = ev_mode
+            continue
     if sub != "scan":
         live_msg_ref: list[Any] = []
         kb_markup = build_setup_keyboard(has_creds=True, autotrade_on=True)
@@ -212,6 +322,10 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
             notify_callback=_notify_user,
             custom_lot=custom_lot,
             live_card_callback=_update_live_card,
+            macro_event_mode=macro_event_mode,
+            max_positions=max_positions,
+            is_trade_mode=is_trade_mode,
+            ea_mode=ea_mode,
         )
         sent_card = await message.answer(
             format_timed_session_started_card(session_state, first_res),
@@ -260,6 +374,10 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         symbol=symbol,
         timeframe="1m",
         custom_lot=custom_lot,
+        macro_event_mode=macro_event_mode,
+        max_positions=max_positions,
+        trade_mode=is_trade_mode,
+        ea_mode=ea_mode,
     )
     await message.answer(
         format_autotrade_report_card(report),
@@ -284,8 +402,9 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
     )
 
     msg = callback.message
+    # Immediate answer to dismiss client spinning state (<20ms) and prevent timeout
+    await _safe_answer_callback(callback)
     if msg is None:
-        await callback.answer()
         return
 
     user_id, user_name = extract_user_identity(callback, default_name="Trader")
@@ -296,7 +415,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
         _PENDING_SETUP_MODE[user_id] = True
         _PENDING_SETUP_PROVIDER[user_id] = ("exness_mt5", "Exness-MT5Trial7")
         await msg.answer(format_setup_prompt_key_card(testnet=True, provider="exness_mt5"), parse_mode="HTML")
-        await callback.answer("Mode Exness Go / MT5 Trial dipilih")
+        await _safe_answer_callback(callback, "Mode Exness Go / MT5 Trial dipilih")
         return
 
     if cb_data in ("setup:mode:exness_live", "setup:mode:live"):
@@ -304,7 +423,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
         _PENDING_SETUP_MODE[user_id] = False
         _PENDING_SETUP_PROVIDER[user_id] = ("exness_mt5", "Exness-MT5Real")
         await msg.answer(format_setup_prompt_key_card(testnet=False, provider="exness_mt5"), parse_mode="HTML")
-        await callback.answer("Mode Exness Go / MT5 Real dipilih")
+        await _safe_answer_callback(callback, "Mode Exness Go / MT5 Real dipilih")
         return
 
     if cb_data in ("setup:demo:exness", "setup:demo"):
@@ -331,7 +450,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
             parse_mode="HTML",
             reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=True),
         )
-        await callback.answer("Akun Demo Exness Go / MT5 aktif!")
+        await _safe_answer_callback(callback, "Akun Demo Exness Go / MT5 aktif!")
         return
 
     if cb_data == "setup:myaccount":
@@ -346,7 +465,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
                 autotrade_on=bool(creds and creds.autotrade_enabled),
             ),
         )
-        await callback.answer()
+        await _safe_answer_callback(callback)
         return
 
     if cb_data == "setup:unlink":
@@ -358,7 +477,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
             parse_mode="HTML",
             reply_markup=build_setup_keyboard(has_creds=False),
         )
-        await callback.answer("Akun diputuskan")
+        await _safe_answer_callback(callback, "Akun diputuskan")
         return
 
     if cb_data in ("autotrade:toggle:on", "autotrade:toggle:off"):
@@ -371,7 +490,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
                 parse_mode="HTML",
                 reply_markup=build_setup_keyboard(has_creds=False),
             )
-            await callback.answer("Wajib /setup dulu", show_alert=True)
+            await _safe_answer_callback(callback, "Wajib /setup dulu", show_alert=True)
             return
         creds = vault.resolve_credentials(user_id)
         positions = vault.get_open_positions(user_id)
@@ -380,7 +499,7 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
             parse_mode="HTML",
             reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=enable),
         )
-        await callback.answer("Auto-Trade ON" if enable else "Auto-Trade OFF")
+        await _safe_answer_callback(callback, "Auto-Trade ON" if enable else "Auto-Trade OFF")
         return
 
     if cb_data.startswith("autotrade:scan:"):
@@ -395,4 +514,4 @@ async def handle_setup_callbacks(callback: CallbackQuery, **data: Any) -> None:
                 autotrade_on=bool(creds and creds.autotrade_enabled),
             ),
         )
-        await callback.answer()
+        await _safe_answer_callback(callback)
