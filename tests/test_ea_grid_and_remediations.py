@@ -230,3 +230,43 @@ def test_grid_scalper_multi_asset_levels() -> None:
     digits, pt = get_mt5_digits_and_point("USDJPY", 155.0)
     assert digits == 3
     assert pt == 0.001
+
+@pytest.mark.asyncio
+async def test_mt5_account_verification_live_and_investor() -> None:
+    """Verify verify_credentials populates testnet, balance_usdt, and handles investor mode without TypeError."""
+    from unittest.mock import AsyncMock, patch, MagicMock
+    from ai_engine.auto_trader.mt5_exness_client import MT5ExnessClient
+
+    client = MT5ExnessClient()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "balance": 2500.0,
+        "equity": 2550.0,
+        "freeMargin": 2300.0,
+        "margin": 250.0,
+        "leverage": 2000,
+        "isInvestor": False,
+        "type": "real",
+    }
+
+    with patch.object(client, "_get_or_connect_session_token", return_value=("mock_tok", None)):
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=mock_resp):
+            res = await client.verify_credentials("88889999", "pass1234", "Exness-Real10", testnet=False)
+            assert res.valid is True
+            assert res.can_trade is True
+            assert res.testnet is False
+            assert res.balance_usdt == 2500.0
+            assert res.total_usdt == 2550.0
+            assert res.usdt_free == 2300.0
+
+    # Test investor mode
+    mock_resp.json.return_value["isInvestor"] = True
+    with patch.object(client, "_get_or_connect_session_token", return_value=("mock_tok", None)):
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock, return_value=mock_resp):
+            inv_res = await client.verify_credentials("88889999", "pass1234", "Exness-Real10", testnet=False)
+            assert inv_res.valid is False
+            assert inv_res.can_trade is False
+            assert inv_res.testnet is False
+            assert inv_res.balance_usdt == 2500.0
+            assert "Investor" in (inv_res.error_message or "")

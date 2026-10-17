@@ -10,14 +10,14 @@ from data_pipeline.market_symbols import normalize_symbol
 class BinanceAccountVerification:
     """Result of verifying a user's Exness Go / MT5 account credentials."""
 
-    valid: bool
-    can_trade: bool
-    usdt_free: float
-    usdt_locked: float
-    total_usdt: float
-    asset_count: int
-    account_type: str
-    testnet: bool
+    valid: bool = False
+    can_trade: bool = False
+    usdt_free: float = 0.0
+    usdt_locked: float = 0.0
+    total_usdt: float = 0.0
+    asset_count: int = 0
+    account_type: str = "MT5"
+    testnet: bool = True
     balance_usdt: float = 0.0
     error_message: Optional[str] = None
 

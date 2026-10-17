@@ -270,6 +270,7 @@ class MT5ExnessClient:
                         balance_usdt=round(balance, 2),
                         asset_count=1,
                         account_type=f"EXNESS_MT5_INVESTOR ({server_name})",
+                        testnet=testnet,
                         error_message="Akun terhubung dengan Investor Password (Read-Only). Gunakan Master Trading Password agar bisa Auto-Trade.",
                     )
 
@@ -282,6 +283,7 @@ class MT5ExnessClient:
                     balance_usdt=round(balance, 2),
                     asset_count=5,
                     account_type=f"EXNESS_GO_MT5 ({server_name} • {acc_type} 1:{leverage})",
+                    testnet=testnet,
                 )
         except Exception as exc:
             err_msg = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
