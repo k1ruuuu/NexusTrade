@@ -85,9 +85,9 @@ class PositionSizer:
         portfolio_equity: Optional[float] = None,
         reward_risk_ratio: Optional[float] = None,
         daily_drawdown_override: Optional[float] = None,
+        enable_kelly: bool = False,
     ) -> PositionSizeResult:
         """
-        Calculate volatility- and confidence-adjusted position size enforcing:
           Position Size = Base Size * (1 - S_vol) * Confidence
           Max Account Risk Per Trade <= 1.5% of total portfolio capital
           Daily Drawdown Circuit Breaker < 4%
@@ -103,7 +103,7 @@ class PositionSizer:
         circuit_tripped = self.is_circuit_breaker_tripped(daily_drawdown_override)
         vol_suppressed = clamped_vol >= self.settings.max_volatility_threshold
 
-        kelly = self.compute_kelly_fraction(clamped_conf, reward_risk_ratio=rrr, half_kelly=True)
+        kelly = self.compute_kelly_fraction(clamped_conf, reward_risk_ratio=rrr, half_kelly=True) if enable_kelly else 0.0
         base_risk_capital = equity * self.settings.max_account_risk_per_trade
 
         if circuit_tripped:

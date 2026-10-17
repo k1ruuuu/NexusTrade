@@ -134,11 +134,22 @@ class EventDrivenBacktester:
                 exit_price: Optional[float] = None
                 exit_reason = ""
 
+                from ai_engine.auto_trader.mt5_symbols import get_mt5_contract_size
+                contract_sz = get_mt5_contract_size(symbol)
+
                 if direction == "BUY":
-                    if low_p <= stop_loss:
-                        exit_price = stop_loss
+                    hit_sl = low_p <= stop_loss
+                    hit_tp = high_p >= tp1
+                    if hit_sl and hit_tp:
+                        # Intrabar ambiguity (NT-10, R-14): Capital preservation assumes SL hit first!
+                        hit_tp = False
+
+                    if hit_sl:
+                        # Adverse gap slippage: if bar opened below stop_loss, exit at open_p - slippage
+                        slippage = open_p * 0.0002
+                        exit_price = min(stop_loss, open_p - slippage) if open_p < stop_loss else stop_loss
                         exit_reason = "STOP_LOSS"
-                    elif high_p >= tp1:
+                    elif hit_tp:
                         exit_price = tp1
                         exit_reason = "TAKE_PROFIT"
                     else:
@@ -148,10 +159,16 @@ class EventDrivenBacktester:
                             "BUY", high_p, stop_loss, open_position["trail_dist"]
                         )
                 elif direction == "SELL":
-                    if high_p >= stop_loss:
-                        exit_price = stop_loss
+                    hit_sl = high_p >= stop_loss
+                    hit_tp = low_p <= tp1
+                    if hit_sl and hit_tp:
+                        hit_tp = False
+
+                    if hit_sl:
+                        slippage = open_p * 0.0002
+                        exit_price = max(stop_loss, open_p + slippage) if open_p > stop_loss else stop_loss
                         exit_reason = "STOP_LOSS"
-                    elif low_p <= tp1:
+                    elif hit_tp:
                         exit_price = tp1
                         exit_reason = "TAKE_PROFIT"
                     else:
@@ -163,11 +180,11 @@ class EventDrivenBacktester:
 
                 if exit_price is not None:
                     raw_pnl = (
-                        (exit_price - entry_p) * units
+                        (exit_price - entry_p) * units * contract_sz
                         if direction == "BUY"
-                        else (entry_p - exit_price) * units
+                        else (entry_p - exit_price) * units * contract_sz
                     )
-                    fee = (entry_p + exit_price) * units * 0.0005
+                    fee = (entry_p + exit_price) * units * contract_sz * 0.0002
                     net_pnl = raw_pnl - fee
                     equity = max(0.0, equity + net_pnl)
                     self.position_sizer.current_equity = equity

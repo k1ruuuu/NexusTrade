@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 import os
+from pathlib import Path
 import sqlite3
+import time
 from typing import Any, Literal, Optional
 
 from ai_engine.auto_trader.vault_crypto import (
@@ -149,6 +150,58 @@ class UserVault:
                     realized_pnl REAL NOT NULL DEFAULT 0.0,
                     breaker_latched INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (account_id, utc_date)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS account_risk_state (
+                    account_id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    start_of_day_equity REAL NOT NULL,
+                    high_water_equity REAL NOT NULL,
+                    current_equity REAL NOT NULL,
+                    circuit_breaker_latched INTEGER NOT NULL DEFAULT 0,
+                    kill_switch_active INTEGER NOT NULL DEFAULT 0,
+                    latched_reason TEXT DEFAULT '',
+                    latched_at TEXT DEFAULT '',
+                    last_reset_utc TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS risk_reservations (
+                    intent_id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    reserved_loss_usd REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'RESERVED',
+                    created_at TEXT NOT NULL,
+                    expires_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS order_lifecycle_intents (
+                    intent_id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    account_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    requested_lots REAL NOT NULL,
+                    filled_lots REAL DEFAULT 0.0,
+                    price REAL NOT NULL,
+                    stop_loss REAL NOT NULL,
+                    take_profit REAL NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'SIGNAL_CREATED',
+                    broker_ticket TEXT DEFAULT '',
+                    rejection_code TEXT DEFAULT '',
+                    rejection_reason TEXT DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 )
                 """
             )
@@ -605,3 +658,247 @@ class UserVault:
                 enabled_ids.add(int(uid))
 
         return sorted(enabled_ids)
+
+    def get_account_risk_snapshot(
+        self,
+        account_id: str,
+        user_id: int,
+        live_balance: float,
+    ) -> Any:
+        """
+        Fetch or initialize persistent AccountRiskSnapshot for `account_id`:
+        - Automatically resets start_of_day_equity on new UTC date.
+        - Preserves circuit_breaker_latched and kill_switch_active across worker restarts.
+        - Tracks all-time high-water equity.
+        """
+        from ai_engine.risk_management.risk_policy import AccountRiskSnapshot
+        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        eff_bal = max(0.0, float(live_balance))
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM account_risk_state WHERE account_id = ?", (account_id,)
+            ).fetchone()
+
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO account_risk_state (
+                        account_id, user_id, start_of_day_equity, high_water_equity,
+                        current_equity, circuit_breaker_latched, kill_switch_active,
+                        latched_reason, latched_at, last_reset_utc
+                    ) VALUES (?, ?, ?, ?, ?, 0, 0, '', '', ?)
+                    """,
+                    (account_id, user_id, eff_bal, eff_bal, eff_bal, today_utc),
+                )
+                conn.commit()
+                sod_eq = eff_bal
+                hw_eq = eff_bal
+                latched = False
+                kill = False
+            else:
+                sod_eq = float(row["start_of_day_equity"])
+                hw_eq = max(float(row["high_water_equity"]), eff_bal)
+                latched = bool(row["circuit_breaker_latched"])
+                kill = bool(row["kill_switch_active"])
+                last_utc = str(row["last_reset_utc"])
+
+                # Daily rollover check
+                if last_utc != today_utc:
+                    sod_eq = eff_bal
+                    # Do NOT unlatch if high-water drawdown was the cause; only reset daily loss
+                    conn.execute(
+                        """
+                        UPDATE account_risk_state
+                        SET start_of_day_equity = ?, current_equity = ?, high_water_equity = ?, last_reset_utc = ?
+                        WHERE account_id = ?
+                        """,
+                        (sod_eq, eff_bal, hw_eq, today_utc, account_id),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE account_risk_state
+                        SET current_equity = ?, high_water_equity = ?
+                        WHERE account_id = ?
+                        """,
+                        (eff_bal, hw_eq, account_id),
+                    )
+                conn.commit()
+
+        reserved_risk = self.get_in_flight_reserved_risk(account_id)
+        open_loss = self.get_open_positions_worst_case_loss(account_id, user_id)
+
+        return AccountRiskSnapshot(
+            account_id=account_id,
+            balance=eff_bal,
+            equity=eff_bal,
+            free_margin=eff_bal,
+            start_of_day_equity=sod_eq,
+            high_water_equity=hw_eq,
+            open_positions_loss_at_stop=open_loss,
+            in_flight_reserved_risk=reserved_risk,
+            is_circuit_breaker_latched=latched,
+            kill_switch_active=kill,
+            last_reset_utc=today_utc,
+        )
+
+    def latch_circuit_breaker(self, account_id: str, reason: str = "") -> None:
+        """Persistently lock circuit breaker for account_id until manual authorized reset."""
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE account_risk_state
+                SET circuit_breaker_latched = 1, latched_reason = ?, latched_at = ?
+                WHERE account_id = ?
+                """,
+                (reason, now_iso, account_id),
+            )
+            conn.commit()
+
+    def reset_circuit_breaker(self, account_id: str) -> None:
+        """Audited reset of latched circuit breaker."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE account_risk_state
+                SET circuit_breaker_latched = 0, latched_reason = '', latched_at = ''
+                WHERE account_id = ?
+                """,
+                (account_id,),
+            )
+            conn.commit()
+
+    def set_kill_switch(self, account_id: str, active: bool) -> None:
+        """Activate or deactivate master kill switch for account_id."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE account_risk_state
+                SET kill_switch_active = ?
+                WHERE account_id = ?
+                """,
+                (1 if active else 0, account_id),
+            )
+            conn.commit()
+
+    def reserve_risk(
+        self,
+        intent_id: str,
+        account_id: str,
+        user_id: int,
+        symbol: str,
+        reserved_loss_usd: float,
+        ttl_seconds: float = 60.0,
+    ) -> bool:
+        """Atomically reserve risk allocation in SQLite before order submission."""
+        now_ts = time.time()
+        expires_ts = now_ts + ttl_seconds
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO risk_reservations (
+                    intent_id, account_id, user_id, symbol, reserved_loss_usd, status, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, 'RESERVED', ?, ?)
+                """,
+                (intent_id, account_id, user_id, symbol, float(reserved_loss_usd), now_iso, expires_ts),
+            )
+            conn.commit()
+        return True
+
+    def release_risk_reservation(self, intent_id: str) -> None:
+        """Release risk allocation upon order fill, rejection, or cancellation."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM risk_reservations WHERE intent_id = ?", (intent_id,))
+            conn.commit()
+
+    def get_in_flight_reserved_risk(self, account_id: str) -> float:
+        """Sum active, unexpired in-flight risk reservations for account_id."""
+        now_ts = time.time()
+        with self._connect() as conn:
+            # Clean expired reservations first
+            conn.execute("DELETE FROM risk_reservations WHERE expires_at < ?", (now_ts,))
+            conn.commit()
+            row = conn.execute(
+                "SELECT SUM(reserved_loss_usd) AS total FROM risk_reservations WHERE account_id = ?",
+                (account_id,),
+            ).fetchone()
+            if row and row["total"] is not None:
+                return float(row["total"])
+        return 0.0
+
+    def get_open_positions_worst_case_loss(self, account_id: str, user_id: int) -> float:
+        """Calculate aggregate worst-case loss across all active open positions for account_id."""
+        from ai_engine.auto_trader.mt5_symbols import get_mt5_contract_size
+        total_loss = 0.0
+        positions = self.get_open_positions(user_id=user_id, account_id=account_id)
+        for p in positions:
+            contract = get_mt5_contract_size(p.symbol)
+            if p.side == "BUY":
+                delta = max(0.0, p.entry_price - p.stop_loss) if p.stop_loss > 0 else (p.entry_price * 0.02)
+            else:
+                delta = max(0.0, p.stop_loss - p.entry_price) if p.stop_loss > 0 else (p.entry_price * 0.02)
+            pos_loss = delta * p.quantity * contract
+            total_loss += pos_loss
+        return round(total_loss, 2)
+
+    def record_order_intent(
+        self,
+        intent_id: str,
+        user_id: int,
+        account_id: str,
+        symbol: str,
+        side: str,
+        requested_lots: float,
+        price: float,
+        stop_loss: float,
+        take_profit: float,
+        state: str = "SIGNAL_CREATED",
+    ) -> None:
+        """Persist order lifecycle state transition into SQLite."""
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO order_lifecycle_intents (
+                    intent_id, user_id, account_id, symbol, side, requested_lots,
+                    price, stop_loss, take_profit, state, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    intent_id, user_id, account_id, symbol, side, requested_lots,
+                    price, stop_loss, take_profit, state, now_iso, now_iso
+                ),
+            )
+            conn.commit()
+
+    def update_order_intent_state(
+        self,
+        intent_id: str,
+        state: str,
+        broker_ticket: str = "",
+        rejection_code: str = "",
+        rejection_reason: str = "",
+        filled_lots: float = 0.0,
+    ) -> None:
+        """Update state machine transition with audit trail."""
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE order_lifecycle_intents
+                SET state = ?, broker_ticket = CASE WHEN ? != '' THEN ? ELSE broker_ticket END,
+                    rejection_code = ?, rejection_reason = ?,
+                    filled_lots = CASE WHEN ? > 0 THEN ? ELSE filled_lots END,
+                    updated_at = ?
+                WHERE intent_id = ?
+                """,
+                (
+                    state, broker_ticket, broker_ticket, rejection_code,
+                    rejection_reason, filled_lots, filled_lots, now_iso, intent_id
+                ),
+            )
+            conn.commit()

@@ -694,7 +694,28 @@ class MT5ExnessClient:
                 error_message=f"Exness/MT5 menolak order ({last_err})",
             )
         except Exception as exc:
-            logger.warning("MT5/Exness order execution failed", symbol=mt5_symbol_m, error=str(exc))
+            logger.warning("MT5/Exness order execution failed; initiating reconciliation", symbol=mt5_symbol_m, error=str(exc))
+            # NT-05 / R-07: Query live open orders to reconcile if broker actually filled despite transport timeout
+            try:
+                live_orders = await self.get_live_open_orders(account_id_or_login, token_or_password, server_name)
+                for cand in live_orders:
+                    if cand.get("symbol") in (mt5_symbol_m, mt5_symbol_raw) and cand.get("side") == side:
+                        cand_time = float(cand.get("time_setup") or cand.get("time") or time.time())
+                        if abs(time.time() - cand_time) < 60.0:
+                            logger.info("Reconciled filled order after transport timeout", ticket=cand.get("ticket"))
+                            return BinanceOrderResult(
+                                executed=True,
+                                order_id=str(cand.get("ticket")),
+                                symbol=cand.get("symbol", mt5_symbol_m),
+                                side=side,
+                                executed_qty=float(cand.get("lots", lots)),
+                                avg_price=float(cand.get("price_open", reference_price)),
+                                notional_usdt=round(quantity * reference_price, 2),
+                                testnet=testnet,
+                                status=f"RECONCILED_FILLED (Ticket #{cand.get('ticket')})",
+                            )
+            except Exception as rec_err:
+                logger.debug("Reconciliation query after timeout failed", error=str(rec_err))
             return BinanceOrderResult(
                 executed=False,
                 order_id="NONE",
@@ -704,6 +725,6 @@ class MT5ExnessClient:
                 avg_price=reference_price,
                 notional_usdt=0.0,
                 testnet=testnet,
-                status="MT5_ERROR",
-                error_message=f"Gagal mengirim order ke Exness/MT5 ({type(exc).__name__})",
+                status="MT5_TIMEOUT_UNCONFIRMED",
+                error_message=f"Transport timeout ke Exness/MT5 ({type(exc).__name__}); rekonsiliasi tidak menemukan tiket baru.",
             )

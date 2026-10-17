@@ -36,6 +36,12 @@ from ai_engine.auto_trader.user_vault import (
     refresh_live_exness_balance,
 )
 from ai_engine.models.ensemble_agent import EnsembleDecisionAgent, SignalDecision
+from ai_engine.risk_management.risk_policy import (
+    AccountRiskSnapshot,
+    PreflightRiskResult,
+    RiskPolicy,
+    SymbolTradingSpec,
+)
 from config.logging_config import get_logger
 from config.settings import Settings, get_settings
 from data_pipeline.market_symbols import normalize_symbol, normalize_timeframe
@@ -408,24 +414,39 @@ class SmartAutoTraderEngine:
             loss = -delta.clip(upper=0.0)
             avg_gain = gain.ewm(alpha=1.0 / 14, min_periods=14, adjust=False).mean()
             avg_loss = loss.ewm(alpha=1.0 / 14, min_periods=14, adjust=False).mean()
-            rs = avg_gain / avg_loss.replace(0.0, np.nan)
-            rsi_series = 100.0 - (100.0 / (1.0 + rs))
-            latest_rsi = float(rsi_series.iloc[-1]) if len(rsi_series) > 0 and not np.isnan(rsi_series.iloc[-1]) else 50.0
+            g_val = float(avg_gain.iloc[-1])
+            l_val = float(avg_loss.iloc[-1])
+            if l_val <= 1e-12:
+                latest_rsi = 100.0 if g_val > 0 else 50.0
+            elif g_val <= 1e-12:
+                latest_rsi = 0.0
+            else:
+                rs = g_val / l_val
+                latest_rsi = round(100.0 - (100.0 / (1.0 + rs)), 2)
             latest_price = float(closes.iloc[-1])
 
-            if latest_rsi >= 70.0:
+            # NT-08: Require closed-bar reversal confirmation, not blind overbought/oversold counter-trend entries
+            candle_reversal_sell = (len(closes) >= 2 and float(closes.iloc[-1]) < float(closes.iloc[-2]))
+            candle_reversal_buy = (len(closes) >= 2 and float(closes.iloc[-1]) > float(closes.iloc[-2]))
+
+            if latest_rsi >= 70.0 and candle_reversal_sell:
                 ea_action = "SELL"
-                ea_conf = min(0.95, 0.70 + (latest_rsi - 70.0) * 0.015)
-                ea_detail = f"RSI 14 Overbought ({latest_rsi:.1f} ≥ 70) ➔ Sinyal SELL (SL 50 Pips | TP 150 Pips)"
-            elif latest_rsi <= 30.0:
+                rsi_excess = (latest_rsi - 70.0) / 30.0
+                ea_conf = round(min(0.88, 0.70 + (rsi_excess * 0.15)), 4)
+                ea_detail = f"RSI 14 Overbought ({latest_rsi:.1f} ≥ 70) + Konfirmasi Reversal Bearish ➔ Sinyal SELL"
+            elif latest_rsi <= 30.0 and candle_reversal_buy:
                 ea_action = "BUY"
-                ea_conf = min(0.95, 0.70 + (30.0 - latest_rsi) * 0.015)
-                ea_detail = f"RSI 14 Oversold ({latest_rsi:.1f} ≤ 30) ➔ Sinyal BUY (SL 50 Pips | TP 150 Pips)"
+                rsi_deficit = (30.0 - latest_rsi) / 30.0
+                ea_conf = round(min(0.88, 0.70 + (rsi_deficit * 0.15)), 4)
+                ea_detail = f"RSI 14 Oversold ({latest_rsi:.1f} ≤ 30) + Konfirmasi Reversal Bullish ➔ Sinyal BUY"
+            elif latest_rsi >= 70.0 or latest_rsi <= 30.0:
+                ea_action = "HOLD"
+                ea_conf = 0.50
+                ea_detail = f"RSI 14 Ekstrem ({latest_rsi:.1f}), Menunggu Konfirmasi Penutupan Candle Reversal"
             else:
                 ea_action = "HOLD"
                 ea_conf = 0.50
                 ea_detail = f"Menunggu RSI 14 ({latest_rsi:.1f}) mencapai Overbought (≥70) atau Oversold (≤30)"
-
             ea_sl, ea_tp, _ = calculate_ea_sl_tp(
                 symbol=clean_sym,
                 side=ea_action if ea_action in ("BUY", "SELL") else "BUY",
@@ -465,23 +486,29 @@ class SmartAutoTraderEngine:
             latest_price = float(closes.iloc[-1])
             e9 = float(ema9.iloc[-1])
             e21 = float(ema21.iloc[-1])
+            e9_prev = float(ema9.iloc[-2]) if len(ema9) >= 2 else e9
+            e21_prev = float(ema21.iloc[-2]) if len(ema21) >= 2 else e21
 
-            bull_cross = (e9 > e21) and (latest_price >= e9 * 0.9990)
-            bear_cross = (e9 < e21) and (latest_price <= e9 * 1.0010)
+            # NT-06: Distinguish actual EMA crossover on closed candles from mere EMA state
+            bull_cross = (e9_prev <= e21_prev) and (e9 > e21)
+            bear_cross = (e9_prev >= e21_prev) and (e9 < e21)
+
+            # NT-07: Compute dynamic heuristic confidence instead of fixed 0.85
+            ema_spread_ratio = abs(e9 - e21) / max(e21, 1e-6) * 100.0
+            dynamic_conf = round(min(0.88, max(0.68, 0.70 + min(0.15, ema_spread_ratio * 0.5))), 4)
 
             if bull_cross:
                 ea_action = "BUY"
-                ea_conf = 0.85
-                ea_detail = f"EMA Ribbon Bullish (EMA9 {e9:,.2f} > EMA21 {e21:,.2f}) ➔ Scalping BUY (SL 20 Pips | TP 40 Pips)"
+                ea_conf = dynamic_conf
+                ea_detail = f"EMA Crossover Bullish Terkonfirmasi (EMA9 {e9:,.2f} melintas naik di atas EMA21 {e21:,.2f}) ➔ Scalping BUY"
             elif bear_cross:
                 ea_action = "SELL"
-                ea_conf = 0.85
-                ea_detail = f"EMA Ribbon Bearish (EMA9 {e9:,.2f} < EMA21 {e21:,.2f}) ➔ Scalping SELL (SL 20 Pips | TP 40 Pips)"
+                ea_conf = dynamic_conf
+                ea_detail = f"EMA Crossover Bearish Terkonfirmasi (EMA9 {e9:,.2f} melintas turun di bawah EMA21 {e21:,.2f}) ➔ Scalping SELL"
             else:
                 ea_action = "HOLD"
                 ea_conf = 0.50
-                ea_detail = f"Menunggu Momentum Scalping M1 (EMA9: {e9:,.2f} vs EMA21: {e21:,.2f})"
-
+                ea_detail = f"Menunggu Crossover Baru M1 (EMA9: {e9:,.2f} vs EMA21: {e21:,.2f}, Belum ada perpotongan lilin)"
             ea_sl, ea_tp, _ = calculate_ea_sl_tp(
                 symbol=clean_sym,
                 side=ea_action if ea_action in ("BUY", "SELL") else "BUY",
@@ -743,32 +770,47 @@ class SmartAutoTraderEngine:
             has_duplicate = len(open_positions) >= effective_max_pos
             user_dd, start_eq, curr_eq = self.vault.get_user_daily_drawdown(user_id, account_id=creds.account_id or None)
             eff_dd = user_dd
-            is_micro_account = 0.0 < float(creds.verified_usdt_balance) < 100.0
-            eff_dd_limit = (
-                max(float(self.settings.max_daily_drawdown_limit), 0.20)
-                if is_micro_account
-                else float(self.settings.max_daily_drawdown_limit)
+            user_equity = float(creds.verified_usdt_balance)
+
+            # Persistent Account Risk Snapshot (NT-04, NT-11, R-16)
+            acct_snapshot = self.vault.get_account_risk_snapshot(
+                account_id=acct_key, user_id=int(user_id), live_balance=user_equity
             )
+
+            # Check persistent latched circuit breaker
             cb_tripped = (
-                eff_dd >= eff_dd_limit
-                if is_micro_account
-                else self.ensemble_agent.position_sizer.is_circuit_breaker_tripped(eff_dd)
+                acct_snapshot.is_circuit_breaker_latched
+                or (eff_dd >= self.settings.max_daily_drawdown_limit)
             )
+            if eff_dd >= self.settings.max_daily_drawdown_limit and not acct_snapshot.is_circuit_breaker_latched:
+                self.vault.latch_circuit_breaker(
+                    acct_key, reason=f"Drawdown {eff_dd*100:.2f}% >= batas {self.settings.max_daily_drawdown_limit*100:.1f}%"
+                )
+                acct_snapshot.is_circuit_breaker_latched = True
+
+            all_acct_positions = self.vault.get_open_positions(user_id, symbol=None, account_id=creds.account_id or None)
+            has_unprotected = any(p.status == "FILLED_UNPROTECTED" for p in all_acct_positions)
             risk_ok = (
                 decision.approved
                 and not cb_tripped
+                and not acct_snapshot.kill_switch_active
+                and not has_unprotected
                 and decision.volatility_regime != "EXTREME"
                 and not has_duplicate
             )
-            if has_duplicate:
+            if acct_snapshot.kill_switch_active:
+                risk_detail = "DITOLAK: Master Kill Switch aktif. Eksekusi dibekukan."
+            elif has_unprotected:
+                risk_detail = "DITOLAK (INCIDENT_UNPROTECTED): Terdapat posisi terbuka tanpa proteksi Stop Loss di broker."
+            elif has_duplicate:
                 risk_detail = (
                     f"DITOLAK (BATAS LAYER TERCAPAI): Sudah ada {len(open_positions)}/{effective_max_pos} "
                     f"posisi {clean_sym} yang sedang OPEN di akun Anda"
                 )
             elif cb_tripped:
                 risk_detail = (
-                    f"DITOLAK: Circuit Breaker Rugi Harian aktif "
-                    f"(Drawdown {eff_dd * 100:.2f}% >= batas {eff_dd_limit * 100:.1f}%)"
+                    f"DITOLAK: Circuit Breaker Rugi Harian aktif (terkunci persisten) "
+                    f"(Drawdown {eff_dd * 100:.2f}% >= batas {self.settings.max_daily_drawdown_limit * 100:.1f}%)"
                 )
             elif not decision.approved or decision.volatility_regime == "EXTREME":
                 risk_detail = f"DITOLAK: {decision.rejection_reason or 'Volatilitas pasar terlalu ekstrem'}"
@@ -804,71 +846,20 @@ class SmartAutoTraderEngine:
                     ea_mode=ea_mode,
                 )
 
-            # Gate 6: Strict min(user_limit, global_limit) risk cap & NO SL narrowing (R01, R02, NT-02)
-            user_equity = float(creds.verified_usdt_balance)
-            user_sizing = self.ensemble_agent.position_sizer.calculate_position(
-                entry_price=decision.entry_price,
-                stop_loss=decision.stop_loss,
-                confidence=decision.confidence,
-                s_vol=decision.s_vol,
-                portfolio_equity=user_equity,
-                reward_risk_ratio=self.settings.min_risk_reward_ratio,
-                daily_drawdown_override=(
-                    eff_dd if not is_micro_account else (eff_dd if eff_dd >= eff_dd_limit else 0.0)
-                ),
-            )
-            if not user_sizing.approved:
-                gates.append(
-                    AutoTradeGateCheck(
-                        gate_number=6,
-                        name="Validasi Risiko & Ukuran Lot",
-                        passed=False,
-                        detail=f"DITOLAK: {user_sizing.rejection_reason or 'Tidak lolos validasi risiko posisi.'}",
-                    )
-                )
-                return AutoTradeExecutionReport(
-                    user_id=int(user_id),
-                    symbol=clean_sym,
-                    timeframe=clean_tf,
-                    setup_required=False,
-                    executed=False,
-                    decision=decision,
-                    credentials=creds,
-                    gates=gates,
-                    rejection_summary=user_sizing.rejection_reason or "Ditolak oleh PositionSizer.",
-                    trade_mode=trade_mode,
-                    ea_mode=ea_mode,
-                )
-
+            # Gate 6: Centralized Non-Bypassable Risk Policy Preflight (NT-01, NT-02, NT-03, NT-11)
             order_side = "BUY" if decision.action == "BUY" else "SELL"
-            qty = user_sizing.position_units
-            candidate_lots = (
-                round(max(0.01, min(float(custom_lot), 50.0)), 2)
-                if (custom_lot is not None and custom_lot > 0)
-                else calculate_mt5_lots(clean_sym, qty, decision.entry_price)
-            )
             eff_risk_rate = (
                 0.01
                 if ea_mode
                 else min(float(creds.risk_per_trade_pct), float(self.settings.max_account_risk_per_trade))
             )
-            trade_budget = user_equity * eff_risk_rate
-            if is_micro_account:
-                # Rekomendasi 1 & Saldo Mikro: Dukung jarak Stop Loss 5M yang sehat pada lot minimum broker (0.01)
-                micro_min_lot_budget = min(user_equity * 0.45, 4.50) if candidate_lots <= 0.01 else min(user_equity * 0.12, 1.20)
-                trade_budget = max(trade_budget, micro_min_lot_budget)
-            daily_headroom = (
-                max(0.0, start_eq * eff_dd_limit - max(0.0, start_eq - curr_eq))
-                if start_eq > 0
-                else trade_budget
-            )
-            max_risk_budget = min(trade_budget, daily_headroom)
+
             if macro_event_mode:
                 event_targets = self.ensemble_agent.stop_loss_manager.calculate_event_mode_targets(
                     entry_price=decision.entry_price,
                     action=decision.action,
                     account_balance=user_equity,
-                    lot_size=candidate_lots,
+                    lot_size=0.01,
                     symbol=clean_sym,
                     risk_pct=eff_risk_rate,
                 )
@@ -881,65 +872,104 @@ class SmartAutoTraderEngine:
                 eff_stop_loss = decision.stop_loss
                 eff_take_profit = decision.take_profit_1
 
-            loss_at_stop = abs(
-                estimate_mt5_pnl_usdt(
-                    clean_sym, order_side, decision.entry_price, eff_stop_loss, candidate_lots
-                )
-            )
-            if not macro_event_mode and loss_at_stop > max_risk_budget + 1e-6:
-                loss_per_lot = abs(
-                    estimate_mt5_pnl_usdt(
-                        clean_sym, order_side, decision.entry_price, eff_stop_loss, 1.0
-                    )
-                )
-                affordable_lots = (
-                    math.floor((max_risk_budget / max(loss_per_lot, 1e-9)) * 100.0 + 1e-9) / 100.0
-                )
-                if custom_lot is None and affordable_lots >= 0.01:
-                    candidate_lots = round(affordable_lots, 2)
-                else:
-                    # R02 / NT-02: NEVER narrow stop_loss to force 0.01 lot; reject with MIN_LOT_EXCEEDS_RISK
-                    rej_code = "CUSTOM_LOT_EXCEEDS_RISK" if custom_lot is not None else "MIN_LOT_EXCEEDS_RISK"
-                    gates.append(
-                        AutoTradeGateCheck(
-                            gate_number=6,
-                            name=f"Batas Risiko Lot ({rej_code})",
-                            passed=False,
-                            detail=(
-                                f"DITOLAK ({rej_code}): Risiko {candidate_lots:.2f} Lot ke SL (${loss_at_stop:,.2f}) "
-                                f"melampaui anggaran risiko efektif (${max_risk_budget:,.2f})."
-                            ),
-                        )
-                    )
-                    return AutoTradeExecutionReport(
-                        user_id=int(user_id),
-                        symbol=clean_sym,
-                        timeframe=clean_tf,
-                        setup_required=False,
-                        executed=False,
-                        decision=decision,
-                        credentials=creds,
-                        gates=gates,
-                        rejection_summary=f"{rej_code}: Risiko {candidate_lots:.2f} Lot (${loss_at_stop:,.2f}) > budget (${max_risk_budget:,.2f}).",
-                        trade_mode=trade_mode,
-                        ea_mode=ea_mode,
-                    )
-
-            # Anti-Broker-Ban Protection 1: Request Throttle (InpThrottleMs = 500ms to 1500ms)
-            await self._enforce_broker_throttle(acct_key, 500, 1500)
-            order_res = await self.mt5_client.place_market_order(
-                account_id_or_login=creds.api_key,
-                token_or_password=creds.api_secret,
+            digits = 2 if decision.entry_price >= 10.0 else (4 if decision.entry_price >= 0.1 else 5)
+            spec = SymbolTradingSpec(
                 symbol=clean_sym,
+                digits=digits,
+                point=10.0 ** (-digits),
+                contract_size=get_mt5_contract_size(clean_sym),
+                volume_min=0.01,
+                volume_max=100.0,
+                volume_step=0.01,
+                spread_points=15,
+            )
+
+            policy = RiskPolicy(
+                max_risk_per_trade_pct=eff_risk_rate,
+                max_daily_drawdown_limit=self.settings.max_daily_drawdown_limit,
+                max_total_drawdown_limit=self.settings.max_total_drawdown_limit,
+                max_open_risk_fraction=self.settings.max_open_risk_fraction,
+                live_trading_enabled=self.settings.live_trading_enabled,
+            )
+
+            preflight = policy.evaluate_preflight(
+                spec=spec,
+                account=acct_snapshot,
                 side=order_side,
-                quantity=qty,
-                reference_price=decision.entry_price,
+                entry_price=decision.entry_price,
                 stop_loss=eff_stop_loss,
                 take_profit=eff_take_profit,
-                server_name=creds.server_name,
-                testnet=creds.testnet,
-                custom_lot=candidate_lots,
+                requested_lots=float(custom_lot) if custom_lot is not None and custom_lot > 0 else None,
+                is_live_account=not creds.testnet,
             )
+
+            if not preflight.approved:
+                rej_code = preflight.rejection_code or "RISK_REJECTED"
+                gates.append(
+                    AutoTradeGateCheck(
+                        gate_number=6,
+                        name=f"Batas Risiko Lot ({rej_code})",
+                        passed=False,
+                        detail=f"DITOLAK ({rej_code}): {preflight.rejection_reason}",
+                    )
+                )
+                return AutoTradeExecutionReport(
+                    user_id=int(user_id),
+                    symbol=clean_sym,
+                    timeframe=clean_tf,
+                    setup_required=False,
+                    executed=False,
+                    decision=decision,
+                    credentials=creds,
+                    gates=gates,
+                    rejection_summary=f"{rej_code}: {preflight.rejection_reason}",
+                    trade_mode=trade_mode,
+                    ea_mode=ea_mode,
+                )
+
+            candidate_lots = preflight.allowed_lots
+
+            # NT-04: Persisted Order Lifecycle Intent & Atomic Risk Reservation
+            intent_id = f"INT-{int(user_id)}-{clean_sym}-{int(time.time()*1000)}"
+            self.vault.record_order_intent(
+                intent_id=intent_id,
+                user_id=int(user_id),
+                account_id=acct_key,
+                symbol=clean_sym,
+                side=order_side,
+                requested_lots=candidate_lots,
+                price=decision.entry_price,
+                stop_loss=eff_stop_loss,
+                take_profit=eff_take_profit,
+                state="RISK_RESERVED",
+            )
+            self.vault.reserve_risk(
+                intent_id=intent_id,
+                account_id=acct_key,
+                user_id=int(user_id),
+                symbol=clean_sym,
+                reserved_loss_usd=preflight.estimated_risk_usd,
+            )
+            self.vault.update_order_intent_state(intent_id, state="SUBMITTING")
+
+            try:
+                # Anti-Broker-Ban Protection 1: Request Throttle (InpThrottleMs = 500ms to 1500ms)
+                await self._enforce_broker_throttle(acct_key, 500, 1500)
+                order_res = await self.mt5_client.place_market_order(
+                    account_id_or_login=creds.api_key,
+                    token_or_password=creds.api_secret,
+                    symbol=clean_sym,
+                    side=order_side,
+                    quantity=candidate_lots,
+                    reference_price=decision.entry_price,
+                    stop_loss=eff_stop_loss,
+                    take_profit=eff_take_profit,
+                    server_name=creds.server_name,
+                    testnet=creds.testnet,
+                    custom_lot=candidate_lots,
+                )
+            finally:
+                self.vault.release_risk_reservation(intent_id)
 
             if not order_res.executed:
                 unprotected_rec: Optional[UserPositionRecord] = None
@@ -1009,6 +1039,10 @@ class SmartAutoTraderEngine:
                 testnet=creds.testnet,
                 account_id=creds.account_id,
                 status="OPEN",
+            )
+            # NT-04 / NT-05: Update intent state machine
+            self.vault.update_order_intent_state(
+                intent_id, state="PROTECTION_VERIFIED", broker_ticket=order_res.order_id, filled_lots=order_res.executed_qty
             )
         gates.append(
             AutoTradeGateCheck(

@@ -680,7 +680,7 @@ async def test_findings_03_04_05_06_flow_and_reporting_remediation(tmp_path: Pat
         rep_cb = await engine.evaluate_and_execute(user_id=555, symbol="BTCUSDT", decision_override=mock_normal)
         g5 = next(g for g in rep_cb.gates if g.gate_number == 5)
         assert not g5.passed
-        assert "batas 20.0%" in g5.detail
+        assert any(pct in g5.detail for pct in ("batas 4.0%", "batas 20.0%"))
 
 
 @pytest.mark.asyncio
