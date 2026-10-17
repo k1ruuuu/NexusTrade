@@ -424,12 +424,16 @@ class SmartAutoTraderEngine:
                 )
             elif conf_ok:
                 ut_ts = float(decision.indicators.get("ut_trailing_stop", 0.0))
-                ut_info = f" • UT Bot Trailing: ${ut_ts:,.2f}" if ut_ts > 0 else ""
+                st_val = float(decision.indicators.get("supertrend", 0.0))
+                st_dir = float(decision.indicators.get("supertrend_dir", 0.0))
+                st_tag = " [Supertrend Bull]" if st_dir > 0 else (" [Supertrend Bear]" if st_dir < 0 else "")
+                strat_info = f" • UT TS: ${ut_ts:,.2f} | ST: ${st_val:,.2f}" if ut_ts > 0 else ""
                 tech_detail = (
-                    f"Strategi UT Bot Alerts & Sinyal {decision.badge} Kuat (Keyakinan {decision.confidence * 100:.1f}%, "
-                    f"MTF [{decision.mtf_aligned_count}/4 Selaras]: {decision.mtf_summary}{ut_info}, "
+                    f"Strategi UT Bot & Supertrend Selaras ({decision.badge}{st_tag} • Keyakinan {decision.confidence * 100:.1f}%, "
+                    f"MTF [{decision.mtf_aligned_count}/4]: {decision.mtf_summary}{strat_info}, "
                     f"Struktur: {decision.market_structure_status}, Konfluensi {decision.confluence_pillars}/6 Pilar)"
                 )
+            else:
                 tech_detail = (
                     f"DITOLAK: Keyakinan {decision.confidence * 100:.1f}% (Min {min_conf * 100:.0f}%), "
                     f"MTF [{decision.mtf_aligned_count}/4]: {decision.mtf_summary}, "
@@ -438,7 +442,7 @@ class SmartAutoTraderEngine:
         gates.append(
             AutoTradeGateCheck(
                 gate_number=3,
-                name="Strategi UT Bot Alerts & Tren Multi-Timeframe (1D•1H•15M•5M ➔ 1M)",
+                name="Strategi UT Bot Alerts + Supertrend & Tren Multi-Timeframe",
                 passed=conf_ok,
                 detail=tech_detail,
             )

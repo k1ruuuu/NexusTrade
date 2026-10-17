@@ -270,3 +270,29 @@ def test_ut_bot_alerts_strategy_indicators_and_triggers() -> None:
     # Bar 7 crosses back up to 98.5 above trailing stop -> ut_buy must be True
     assert ut_df["ut_buy"].iloc[7] is True or ut_df["ut_buy"].iloc[7] == 1
     assert ut_df["ut_pos"].iloc[7] == 1
+
+
+def test_supertrend_strategy_indicators_and_triggers() -> None:
+    from data_pipeline.preprocessor_ohlcv import OHLCVPreprocessor
+
+    df = pd.DataFrame({
+        "open": [100.0, 102.0, 105.0, 108.0, 104.0, 99.0, 95.0, 92.0, 93.0, 97.0, 105.0],
+        "high": [102.5, 106.0, 109.0, 110.0, 105.0, 100.0, 96.5, 94.0, 98.0, 106.0, 108.0],
+        "low":  [99.5, 101.5, 104.5, 103.0, 99.0, 94.0, 91.0, 90.0, 93.0, 97.0, 103.0],
+        "close": [102.0, 105.0, 108.0, 104.0, 99.0, 95.0, 92.0, 93.0, 97.0, 105.0, 107.0],
+        "volume": [1000.0] * 11,
+    })
+
+    st_df = OHLCVPreprocessor.compute_supertrend_indicators(df, period=3, multiplier=2.0)
+    assert "supertrend" in st_df.columns
+    assert "supertrend_dir" in st_df.columns
+    assert "supertrend_buy" in st_df.columns
+    assert "supertrend_sell" in st_df.columns
+
+    # Bar 4 drops to 99.0 breaking down -> sell must trigger and dir == -1
+    assert st_df["supertrend_dir"].iloc[4] == -1
+    assert st_df["supertrend_sell"].iloc[4] is True or st_df["supertrend_sell"].iloc[4] == 1
+
+    # Bar 9 breaks out to 105.0 -> buy must trigger and dir == 1
+    assert st_df["supertrend_dir"].iloc[9] == 1
+    assert st_df["supertrend_buy"].iloc[9] is True or st_df["supertrend_buy"].iloc[9] == 1

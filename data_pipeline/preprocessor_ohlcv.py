@@ -63,6 +63,10 @@ class OHLCVPreprocessor:
         "ut_trend",
         "ut_buy",
         "ut_sell",
+        "supertrend",
+        "supertrend_dir",
+        "supertrend_buy",
+        "supertrend_sell",
     )
     def __init__(
         self,
@@ -257,6 +261,94 @@ class OHLCVPreprocessor:
         out["ut_sell"] = (src < out["ut_trailing_stop"]) & crossunder
         out["ut_trend"] = np.where(src > out["ut_trailing_stop"], 1, -1)
         return out
+    @staticmethod
+    def compute_supertrend_indicators(
+        df: pd.DataFrame,
+        period: int = 10,
+        multiplier: float = 3.0,
+        change_atr: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Algorithmic implementation of the 'Supertrend' Pine Script indicator:
+          Periods = 10, Multiplier = 3.0, Source = hl2 = (high + low) / 2
+          atr = changeATR ? atr(Periods) : sma(tr, Periods)
+          up = src - Multiplier * atr, dn = src + Multiplier * atr
+          Recursive trailing band clamping
+          trend: +1 (Bullish) or -1 (Bearish)
+          buySignal / sellSignal breakout triggers
+        """
+        out = df.copy()
+        high = pd.to_numeric(out["high"], errors="coerce").astype(np.float64)
+        low = pd.to_numeric(out["low"], errors="coerce").astype(np.float64)
+        close = pd.to_numeric(out["close"], errors="coerce").astype(np.float64)
+
+        src = (high + low) / 2.0
+        prev_close = close.shift(1).fillna(close)
+        tr = pd.concat([
+            (high - low).abs(),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ], axis=1).max(axis=1)
+
+        if change_atr:
+            atr = tr.ewm(alpha=1.0 / max(period, 1), adjust=False).mean()
+        else:
+            atr = tr.rolling(window=max(period, 1), min_periods=1).mean()
+
+        n = len(df)
+        src_v = src.to_numpy()
+        close_v = close.to_numpy()
+        atr_v = atr.to_numpy()
+
+        up = np.zeros(n, dtype=np.float64)
+        dn = np.zeros(n, dtype=np.float64)
+        trend = np.ones(n, dtype=np.int32)
+        st_line = np.zeros(n, dtype=np.float64)
+        buy_sig = np.zeros(n, dtype=bool)
+        sell_sig = np.zeros(n, dtype=bool)
+
+        if n > 0:
+            up[0] = src_v[0] - float(multiplier) * atr_v[0]
+            dn[0] = src_v[0] + float(multiplier) * atr_v[0]
+            trend[0] = 1 if close_v[0] >= up[0] else -1
+            st_line[0] = up[0] if trend[0] == 1 else dn[0]
+
+        for t in range(1, n):
+            up_raw = src_v[t] - float(multiplier) * atr_v[t]
+            dn_raw = src_v[t] + float(multiplier) * atr_v[t]
+
+            up1 = up[t - 1]
+            dn1 = dn[t - 1]
+
+            if close_v[t - 1] > up1:
+                up[t] = max(up_raw, up1)
+            else:
+                up[t] = up_raw
+
+            if close_v[t - 1] < dn1:
+                dn[t] = min(dn_raw, dn1)
+            else:
+                dn[t] = dn_raw
+
+            prev_t = trend[t - 1]
+            if prev_t == -1 and close_v[t] > dn1:
+                curr_t = 1
+            elif prev_t == 1 and close_v[t] < up1:
+                curr_t = -1
+            else:
+                curr_t = prev_t
+
+            trend[t] = curr_t
+            st_line[t] = up[t] if curr_t == 1 else dn[t]
+            buy_sig[t] = (curr_t == 1 and prev_t == -1)
+            sell_sig[t] = (curr_t == -1 and prev_t == 1)
+
+        out["supertrend"] = pd.Series(st_line, index=out.index)
+        out["supertrend_dir"] = pd.Series(trend, index=out.index)
+        out["supertrend_buy"] = pd.Series(buy_sig, index=out.index)
+        out["supertrend_sell"] = pd.Series(sell_sig, index=out.index)
+        return out
+
 
     @staticmethod
     def compute_raw_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -377,6 +469,12 @@ class OHLCVPreprocessor:
         out["ut_trend"] = ut_df["ut_trend"].astype(np.float32)
         out["ut_buy"] = ut_df["ut_buy"].astype(np.float32)
         out["ut_sell"] = ut_df["ut_sell"].astype(np.float32)
+        # Supertrend (10, 3.0) Indicator
+        st_df = OHLCVPreprocessor.compute_supertrend_indicators(out, period=10, multiplier=3.0)
+        out["supertrend"] = st_df["supertrend"]
+        out["supertrend_dir"] = st_df["supertrend_dir"].astype(np.float32)
+        out["supertrend_buy"] = st_df["supertrend_buy"].astype(np.float32)
+        out["supertrend_sell"] = st_df["supertrend_sell"].astype(np.float32)
 
         return out
 

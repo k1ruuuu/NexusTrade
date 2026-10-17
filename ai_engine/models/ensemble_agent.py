@@ -553,7 +553,13 @@ class EnsembleDecisionAgent:
             ut_sell = bool(last.get("ut_sell", False))
             ut_score = 0.85 if ut_buy else (-0.85 if ut_sell else (0.50 * ut_trend))
 
-            score = float(np.clip(0.35 * ema_score + 0.35 * ut_score + 0.20 * mom_score + 0.10 * flow_score, -1.0, 1.0))
+            st_dir = float(last.get("supertrend_dir", 0.0))
+            st_buy = bool(last.get("supertrend_buy", False))
+            st_sell = bool(last.get("supertrend_sell", False))
+            st_score = 0.85 if st_buy else (-0.85 if st_sell else (0.50 * st_dir))
+
+            strategy_score = 0.50 * ut_score + 0.50 * st_score
+            score = float(np.clip(0.30 * ema_score + 0.35 * strategy_score + 0.20 * mom_score + 0.15 * flow_score, -1.0, 1.0))
             lbl = "🟢 BULL" if score >= 0.12 else ("🔴 BEAR" if score <= -0.12 else "🟡 FLAT")
             return round(score, 3), max(atr14, close_p * 0.0015), lbl
         except Exception:
@@ -650,7 +656,7 @@ class EnsembleDecisionAgent:
         )
         blended_atr = raw_robust_atr
 
-        # UT Bot Alerts Strategy on 5M Execution Timeframe
+        # UT Bot Alerts & Supertrend Strategy on 5M Execution Timeframe
         ut_source_df = df_5m if (df_5m is not None and len(df_5m) >= 10) else (df_15m if df_15m is not None else df_1d)
         ut_5m_df = self.ohlcv_preprocessor.compute_ut_bot_indicators(ut_source_df.tail(40), key_value=1.0, atr_period=10)
         last_ut = ut_5m_df.iloc[-1]
@@ -663,6 +669,17 @@ class EnsembleDecisionAgent:
         ut_recent_buy = ut_buy_trigger or bool(prev_ut.get("ut_buy", False))
         ut_recent_sell = ut_sell_trigger or bool(prev_ut.get("ut_sell", False))
 
+        st_5m_df = self.ohlcv_preprocessor.compute_supertrend_indicators(ut_source_df.tail(40), period=10, multiplier=3.0)
+        last_st = st_5m_df.iloc[-1]
+        st_level = float(last_st.get("supertrend", 0.0))
+        st_dir = int(last_st.get("supertrend_dir", 0))
+        st_buy_trigger = bool(last_st.get("supertrend_buy", False))
+        st_sell_trigger = bool(last_st.get("supertrend_sell", False))
+
+        prev_st = st_5m_df.iloc[-2] if len(st_5m_df) >= 2 else last_st
+        st_recent_buy = st_buy_trigger or bool(prev_st.get("supertrend_buy", False))
+        st_recent_sell = st_sell_trigger or bool(prev_st.get("supertrend_sell", False))
+
         # Market Chop filter only triggers when higher timeframes lack a clear trend (aligned_count < 3)
         has_htf_trend = (aligned_count >= 3) or (htf_bull_locked or htf_bear_locked)
         is_market_chop = bool(
@@ -670,8 +687,19 @@ class EnsembleDecisionAgent:
             and (base_15m.is_sideways or (abs(s_1h) < 0.08 and abs(s_15m) < 0.08 and abs(s_5m) < 0.08))
         )
 
-        # UT Bot Strategy Acuan Eksekusi:
-        if ut_recent_buy or (ut_trend_dir == 1 and dom_sign > 0 and not is_market_chop):
+        # Dual Strategy Confluence (UT Bot + Supertrend) Acuan Eksekusi:
+        is_dual_buy = (ut_recent_buy or ut_trend_dir == 1) and (st_recent_buy or st_dir == 1)
+        is_dual_sell = (ut_recent_sell or ut_trend_dir == -1) and (st_recent_sell or st_dir == -1)
+
+        if is_dual_buy and dom_sign > 0 and not is_market_chop:
+            act_5m_tag = f"🟢 UT BOT + SUPERTREND BUY (ST: ${st_level:,.2f} | UT: ${ut_ts_level:,.2f})"
+            if blended_s_tech < 0.28 and dom_sign > 0:
+                blended_s_tech = max(0.32, blended_s_tech + 0.40)
+        elif is_dual_sell and dom_sign < 0 and not is_market_chop:
+            act_5m_tag = f"🔴 UT BOT + SUPERTREND SELL (ST: ${st_level:,.2f} | UT: ${ut_ts_level:,.2f})"
+            if blended_s_tech > -0.28 and dom_sign < 0:
+                blended_s_tech = min(-0.32, blended_s_tech - 0.40)
+        elif ut_recent_buy or (ut_trend_dir == 1 and dom_sign > 0 and not is_market_chop):
             act_5m_tag = f"🟢 UT BOT BUY (Trailing Stop: ${ut_ts_level:,.2f})"
             if blended_s_tech < 0.25 and dom_sign > 0:
                 blended_s_tech = max(0.28, blended_s_tech + 0.35)
@@ -689,7 +717,7 @@ class EnsembleDecisionAgent:
             blended_s_tech *= 0.45
             act_5m_tag = f"⏳ TUNGGU LONJAKAN 5M REDA ({s_5m:+.2f})"
         else:
-            act_5m_tag = f"⚡ UT BOT TRAILING ${ut_ts_level:,.2f} ({lbl_5m})"
+            act_5m_tag = f"⚡ UT: ${ut_ts_level:,.2f} | ST: ${st_level:,.2f} ({lbl_5m})"
         sr_levels = self.sr_detector.detect_levels(
             df_15m if (df_15m is not None and len(df_15m) >= 20) else df_1h,
             current_price=entry_px_5m,
@@ -709,6 +737,10 @@ class EnsembleDecisionAgent:
                 "ut_trend": float(ut_trend_dir),
                 "ut_buy": 1.0 if ut_recent_buy else 0.0,
                 "ut_sell": 1.0 if ut_recent_sell else 0.0,
+                "supertrend": round(st_level, 4),
+                "supertrend_dir": float(st_dir),
+                "supertrend_buy": 1.0 if st_recent_buy else 0.0,
+                "supertrend_sell": 1.0 if st_recent_sell else 0.0,
             },
             headlines=[h.headline for h in sent_90d.headline_scores],
             newly_learned_headlines=sent_90d.newly_learned_count,

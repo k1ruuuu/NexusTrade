@@ -527,6 +527,10 @@ class OHLCVPredictor:
             "r_wick": round(float(latest_row["r_wick"].iloc[0]), 4),
             "rel_spread": round(float(latest_row["rel_spread"].iloc[0]), 4),
             "score_pinbar": round(float(latest_row["score_pinbar"].iloc[0]), 4),
+            "ut_trailing_stop": round(float(latest_row.get("ut_trailing_stop", pd.Series([0.0])).iloc[0]), 4),
+            "ut_trend": float(latest_row.get("ut_trend", pd.Series([0.0])).iloc[0]),
+            "ut_buy": float(latest_row.get("ut_buy", pd.Series([0.0])).iloc[0]),
+            "ut_sell": float(latest_row.get("ut_sell", pd.Series([0.0])).iloc[0]),
         }
         return TechnicalPrediction(
             symbol=symbol.upper(),
