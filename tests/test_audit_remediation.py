@@ -405,3 +405,113 @@ def test_round2_flat_volume_tolerance() -> None:
     )
     # Flat volume must not block the breakout on bar 3
     assert res["oc_signal"].iloc[3] == 1
+
+
+@pytest.mark.asyncio
+async def test_trade_mode_4_indicators_confluence_logic(tmp_path: Path) -> None:
+    """Verify /trade mode enforces strict 4-indicator confluence (UT Bot, Supertrend, Candle, OC Signals)."""
+    from ai_engine.auto_trader.engine import SmartAutoTraderEngine
+    from ai_engine.auto_trader.user_vault import UserVault
+    from ai_engine.models.ensemble_agent import SignalDecision
+    from config.settings import Settings
+
+    db_p = tmp_path / "test_trade.db"
+    cfg = Settings(_env_file=None, user_vault_db_path=str(db_p), use_live_market_data=False)
+    vault = UserVault(settings=cfg, db_path=str(db_p))
+    vault.save_user_credentials(
+        user_id=888,
+        api_key="12345",
+        api_secret="secret",
+        username="Trader888",
+        server_name="Exness-MT5Trial7",
+        testnet=True,
+        verified_usdt_balance=1000.0,
+        autotrade_enabled=True,
+    )
+
+    engine = SmartAutoTraderEngine(settings=cfg, user_vault=vault)
+
+    # Scenario A: Decision is BUY, but Supertrend is Bearish (st_dir = -1) -> Must REJECT in /trade mode
+    mock_dec_conflicted = SignalDecision(
+        symbol="BTCUSDT",
+        timeframe="15m",
+        action="BUY",
+        badge="STRONG BUY",
+        confidence=0.85,
+        s_tech=0.45,
+        s_vol=0.10,
+        s_sent=0.20,
+        risk_multiplier=1.0,
+        entry_price=90000.0,
+        stop_loss=89500.0,
+        take_profit_1=91000.0,
+        take_profit_2=92000.0,
+        expectancy_r=1.5,
+        confluence_pillars=4,
+        is_sideways=False,
+        dist_to_r1_pct=0.50,
+        dist_to_s1_pct=0.50,
+        resistance_1=95000.0,
+        support_1=85000.0,
+        indicators={
+            "ut_trend": 1.0,
+            "supertrend_dir": -1.0,  # CONFLICT! Supertrend is Bearish
+            "oc_signal": 1.0,
+            "candlestick_score": 0.0,
+            "candlestick_pattern": "",
+        },
+    )
+
+    rep_fail = await engine.evaluate_and_execute(
+        user_id=888,
+        symbol="BTCUSDT",
+        decision_override=mock_dec_conflicted,
+        trade_mode=True,
+    )
+    g3_fail = next(g for g in rep_fail.gates if g.gate_number == 3)
+    assert not g3_fail.passed
+    assert "DITOLAK (/trade): Menunggu Konfluensi 4 Indikator Murni" in g3_fail.detail
+
+    # Scenario B: All 4 Indicators ALIGNED for BUY -> Gate 3 must PASS
+    mock_dec_aligned = SignalDecision(
+        symbol="BTCUSDT",
+        timeframe="15m",
+        action="BUY",
+        badge="STRONG BUY",
+        confidence=0.85,
+        s_tech=0.45,
+        s_vol=0.10,
+        s_sent=0.20,
+        risk_multiplier=1.0,
+        entry_price=90000.0,
+        stop_loss=89500.0,
+        take_profit_1=91000.0,
+        take_profit_2=92000.0,
+        expectancy_r=1.5,
+        confluence_pillars=4,
+        is_sideways=False,
+        dist_to_r1_pct=0.50,
+        dist_to_s1_pct=0.50,
+        resistance_1=95000.0,
+        support_1=85000.0,
+        indicators={
+            "ut_trend": 1.0,
+            "supertrend_dir": 1.0,  # All 4 indicators aligned Bullish!
+            "oc_signal": 1.0,
+            "candlestick_score": 1.0,
+            "candlestick_pattern": "Bullish Engulfing",
+            "ut_trailing_stop": 89500.0,
+            "supertrend": 89400.0,
+        },
+    )
+
+    rep_pass = await engine.evaluate_and_execute(
+        user_id=888,
+        symbol="BTCUSDT",
+        decision_override=mock_dec_aligned,
+        trade_mode=True,
+    )
+    g3_pass = next(g for g in rep_pass.gates if g.gate_number == 3)
+    assert g3_pass.passed
+    assert "💎 4 INDIKATOR MURNI TERKONFIRMASI" in g3_pass.detail
+    assert rep_pass.trade_mode is True

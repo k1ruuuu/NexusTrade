@@ -58,7 +58,7 @@ class AutoTradeExecutionReport:
     order_result: Optional[BinanceOrderResult] = None
     position_record: Optional[UserPositionRecord] = None
     rejection_summary: Optional[str] = None
-
+    trade_mode: bool = False
 
 class SmartAutoTraderEngine:
     """
@@ -102,6 +102,7 @@ class SmartAutoTraderEngine:
         live_card_callback: Optional[NotifyCallback] = None,
         macro_event_mode: Optional[str] = None,
         max_positions: int = 1,
+        is_trade_mode: bool = False,
     ) -> tuple[AutoTradeSessionState, object]:
         """Start a 24/7 autonomous trading session on 1m action + 1D/1H/15M/5M analysis."""
         return await self.session_manager.start_timed_session(
@@ -115,6 +116,7 @@ class SmartAutoTraderEngine:
             live_card_callback=live_card_callback,
             macro_event_mode=macro_event_mode,
             max_positions=max_positions,
+            is_trade_mode=is_trade_mode,
         )
 
     def stop_session_by_id(
@@ -273,6 +275,7 @@ class SmartAutoTraderEngine:
         custom_lot: Optional[float] = None,
         macro_event_mode: Optional[str] = None,
         max_positions: int = 1,
+        trade_mode: bool = False,
     ) -> AutoTradeExecutionReport:
         """
         Run the complete 6-Gate Pre-Trade Checklist for `user_id` on `symbol` (`timeframe`)
@@ -301,6 +304,7 @@ class SmartAutoTraderEngine:
                 executed=False,
                 gates=gates,
                 rejection_summary="Wajib mengatur akun Exness Go / MT5 pribadi melalui /setup sebelum memakai fitur Auto-Trade.",
+                trade_mode=trade_mode,
             )
         if require_autotrade_toggle and not creds.autotrade_enabled:
             gates.append(
@@ -320,6 +324,7 @@ class SmartAutoTraderEngine:
                 credentials=creds,
                 gates=gates,
                 rejection_summary="Saklar Auto-Trade sedang OFF.",
+                trade_mode=trade_mode,
             )
 
         await refresh_live_exness_balance(self.vault, self.mt5_client, user_id, creds)
@@ -341,6 +346,7 @@ class SmartAutoTraderEngine:
                 credentials=creds,
                 gates=gates,
                 rejection_summary=f"Saldo Akun (${creds.verified_usdt_balance:,.2f}) di bawah batas minimum $10.00 USD.",
+                trade_mode=trade_mode,
             )
         mode_str = f"EXNESS MT5 ({creds.server_name})"
         src_str = "Setup Pribadi" if creds.source == "user_setup" else "Admin (.env)"
@@ -398,7 +404,48 @@ class SmartAutoTraderEngine:
             (decision.action == "BUY" and decision.s_tech > 0.15)
             or (decision.action == "SELL" and decision.s_tech < -0.15)
         )
-        if is_event_sniper:
+        ut_ts = float(decision.indicators.get("ut_trailing_stop", 0.0))
+        st_val = float(decision.indicators.get("supertrend", 0.0))
+        st_dir = float(decision.indicators.get("supertrend_dir", 0.0))
+        oc_sig = int(decision.indicators.get("oc_signal", 0))
+        oc_sl = float(decision.indicators.get("oc_sl", 0.0))
+        oc_tp = float(decision.indicators.get("oc_tp", 0.0))
+        ut_trend = float(decision.indicators.get("ut_trend", 0.0))
+        cp_score = float(decision.indicators.get("candlestick_score", 0.0))
+        cp_pat = str(decision.indicators.get("candlestick_pattern", "")).strip()
+
+        if trade_mode:
+            # Mode /trade: Open posisi HANYA jika ke-4 Indikator Murni (UT Bot, Supertrend, Candle Pattern, OC Signals) selaras!
+            if decision.action == "BUY":
+                quad_ok = (ut_trend >= 0) and (st_dir >= 0) and (oc_sig >= 0) and (cp_score >= -0.5)
+            elif decision.action == "SELL":
+                quad_ok = (ut_trend <= 0) and (st_dir <= 0) and (oc_sig <= 0) and (cp_score <= 0.5)
+            else:
+                quad_ok = False
+
+            conf_ok = (
+                decision.action in ("BUY", "SELL")
+                and quad_ok
+                and not decision.is_sideways
+                and decision.confidence >= min_conf
+                and tech_aligned
+                and decision.expectancy_r > 0.0
+            )
+            if not quad_ok:
+                tech_detail = (
+                    f"DITOLAK (/trade): Menunggu Konfluensi 4 Indikator Murni "
+                    f"(UT Bot: {int(ut_trend):+d}, Supertrend: {int(st_dir):+d}, OC: {oc_sig:+d}, Candle: {cp_pat or 'Netral'})"
+                )
+            elif conf_ok:
+                pat_str = f"[{cp_pat}] " if cp_pat else ""
+                oc_info = f" • OC: {('BUY' if oc_sig == 1 else 'SELL')}" if oc_sig != 0 else ""
+                tech_detail = (
+                    f"💎 4 INDIKATOR MURNI TERKONFIRMASI ({pat_str}{decision.badge}) ➔ "
+                    f"UT TS: ${ut_ts:,.2f} | ST: ${st_val:,.2f}{oc_info} (Keyakinan {decision.confidence * 100:.1f}%)"
+                )
+            else:
+                tech_detail = f"DITOLAK (/trade): Keyakinan {decision.confidence * 100:.1f}% < {min_conf * 100:.0f}%"
+        elif is_event_sniper:
             conf_ok = (
                 decision.action in ("BUY", "SELL")
                 and decision.confidence >= min_conf
@@ -446,7 +493,7 @@ class SmartAutoTraderEngine:
         gates.append(
             AutoTradeGateCheck(
                 gate_number=3,
-                name="Strategi UT Bot + Supertrend + OC Signals (1D•1H•15M•5M ➔ 1M)",
+                name="Strategi 4 Indikator Murni (/trade)" if trade_mode else "Strategi UT Bot + Supertrend + OC Signals (1D•1H•15M•5M ➔ 1M)",
                 passed=conf_ok,
                 detail=tech_detail,
             )
@@ -547,6 +594,7 @@ class SmartAutoTraderEngine:
                     credentials=creds,
                     gates=gates,
                     rejection_summary=f"Gerbang {first_fail.gate_number} ({first_fail.name}) belum terpenuhi: {first_fail.detail}",
+                    trade_mode=trade_mode,
                 )
 
             # Gate 6: Strict min(user_limit, global_limit) risk cap & NO SL narrowing (R01, R02, NT-02)
@@ -581,6 +629,7 @@ class SmartAutoTraderEngine:
                     credentials=creds,
                     gates=gates,
                     rejection_summary=user_sizing.rejection_reason or "Ditolak oleh PositionSizer.",
+                    trade_mode=trade_mode,
                 )
 
             order_side = "BUY" if decision.action == "BUY" else "SELL"
@@ -663,6 +712,7 @@ class SmartAutoTraderEngine:
                         credentials=creds,
                         gates=gates,
                         rejection_summary=f"{rej_code}: Risiko {candidate_lots:.2f} Lot (${loss_at_stop:,.2f}) > budget (${max_risk_budget:,.2f}).",
+                        trade_mode=trade_mode,
                     )
 
             order_res = await self.mt5_client.place_market_order(
@@ -719,6 +769,7 @@ class SmartAutoTraderEngine:
                     order_result=order_res,
                     position_record=unprotected_rec,
                     rejection_summary=order_res.error_message or "Eksekusi order ditolak oleh Exness MT5.",
+                    trade_mode=trade_mode,
                 )
 
             anchored_sl, anchored_tp1, anchored_tp2 = anchor_targets_to_fill_price(
@@ -769,4 +820,5 @@ class SmartAutoTraderEngine:
             gates=gates,
             order_result=order_res,
             position_record=pos_record,
+            trade_mode=trade_mode,
         )

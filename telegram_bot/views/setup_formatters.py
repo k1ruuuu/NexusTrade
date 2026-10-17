@@ -267,15 +267,28 @@ def format_timed_session_started_card(
         if session.macro_event_mode
         else ""
     )
+    hdr_title = "TRADE (4 INDIKATOR MURNI) —" if session.is_trade_mode else "AUTO-TRADE 24/7 NON-STOP AKTIF —"
+    sub_title = "SESI TRADE 4 INDIKATOR MURNI" if session.is_trade_mode else f"SESI AUTO-TRADE OTOMATIS ({dur.upper()})"
+    cmd_prefix = "/trade" if session.is_trade_mode else "/autotrade"
+    strat_line = (
+        "💎 <b>4 Indikator Murni (UT Bot + Supertrend + Candle + OC Signals)</b>"
+        if session.is_trade_mode
+        else "🤖 <b>UT Bot + Supertrend + OC Signals + Candles</b>"
+    )
+    mode_line = (
+        f"🟢 <b>4 Indikator Murni</b> (<code>{html.escape(session.remaining_human)}</code>)"
+        if session.is_trade_mode
+        else f"🟢 <b>24/7 Non-Stop</b> (<code>{html.escape(session.remaining_human)}</code>)"
+    )
     return (
-        f"🤖 <b>AUTO-TRADE 24/7 NON-STOP AKTIF — {sym} (ACTION 5M)</b>\n"
-        f"⏱️ <i>SESI AUTO-TRADE OTOMATIS ({dur.upper()}) AKTIF</i>\n"
+        f"🤖 <b>{hdr_title} {sym} (ACTION 5M)</b>\n"
+        f"⏱️ <i>{sub_title} AKTIF</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• <b>ID Sesi:</b> <code>#AT-{session.short_id}</code> <i>(Ketik <code>/autotrade stop {session.short_id}</code> untuk menghentikan)</i>\n"
-        f"• <b>Mode Sistem:</b> 🟢 <b>24/7 Non-Stop</b> (<code>{html.escape(session.remaining_human)}</code>)\n"
+        f"• <b>ID Sesi:</b> <code>#AT-{session.short_id}</code> <i>(Ketik <code>{cmd_prefix} stop {session.short_id}</code> untuk menghentikan)</i>\n"
+        f"• <b>Mode Sistem:</b> {mode_line}\n"
         f"{event_line}"
         f"• <b>Batas Layer Bersamaan:</b> <b>{session.max_positions} Posisi</b>\n"
-        f"• <b>Indikator Strategi:</b> 🤖 <b>UT Bot + Supertrend + OC Signals + Candles</b>\n"
+        f"• <b>Indikator Strategi:</b> {strat_line}\n"
         f"• <b>Analisa Tren:</b> <code>1D • 1H • 15M • 5M</code> ➔ <b>Action Open/Close:</b> <code>5M</code>\n"
         f"• <b>Ukuran Lot Order:</b> {lot_lbl}\n"
         f"• <b>Peta Tren MTF:</b> <i>{html.escape(session.mtf_status_line)}</i>\n\n"
@@ -285,7 +298,7 @@ def format_timed_session_started_card(
         f"• <b>Total Akumulasi Profit:</b> {net_icon} <b><code>${total_net_pnl:+.2f} USD</code></b>\n"
         f"• <b>Harga Live (5m) &amp; Siklus:</b> <code>{format_price(live_px)}</code> | Siklus <code>#{session.cycles_completed}</code> (<code>{upd_str}</code>)\n\n"
         f"{cycle_block}\n\n"
-        f"<i>💡 Data profit di atas diperbarui otomatis secara real-time. Ketik <code>/autotrade off</code> untuk menonaktifkan Auto-Trade 24/7.</i>"
+        f"<i>💡 Data profit di atas diperbarui otomatis secara real-time. Ketik <code>{cmd_prefix} off</code> untuk menonaktifkan sesi ini.</i>"
     )
 
 def format_autotrade_report_card(report: AutoTradeExecutionReport) -> str:
@@ -294,8 +307,10 @@ def format_autotrade_report_card(report: AutoTradeExecutionReport) -> str:
     tf = html.escape(report.timeframe)
 
     if report.setup_required:
+        is_trade = getattr(report, "trade_mode", False)
+        prefix_title = "TRADE" if is_trade else "AUTO-TRADE"
         return (
-            f"🔒 <b>AUTO-TRADE DITOLAK — WAJIB /SETUP DULU</b>\n"
+            f"🔒 <b>{prefix_title} DITOLAK — WAJIB /SETUP DULU</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"Akun Telegram Anda (ID: <code>{report.user_id}</code>) belum terhubung ke akun Exness Go / MT5 pribadi.\n\n"
             f"• <b>Aturan Sistem:</b> Kredensial pada <code>.env</code> hanya berlaku untuk <b>Role Admin</b>.\n"
@@ -352,8 +367,16 @@ def format_autotrade_report_card(report: AutoTradeExecutionReport) -> str:
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
         )
 
+    is_trade = getattr(report, "trade_mode", False)
+    header_name = "NEXUSTRADE ALGO-TRADE (4 INDIKATOR MURNI)" if is_trade else "LAPORAN AUTO-TRADE 6 GERBANG"
+    sub_rule = (
+        "💎 <i>Eksekusi HANYA jika ke-4 Indikator Murni (UT Bot, Supertrend, Candle, OC Signals) selaras</i>\n"
+        if is_trade
+        else ""
+    )
     return (
-        f"🤖 <b>LAPORAN AUTO-TRADE 6 GERBANG — {sym} ({tf})</b>\n"
+        f"🤖 <b>{header_name} — {sym} ({tf})</b>\n"
+        f"{sub_rule}"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         + event_header
         + f"<b>Status Eksekusi:</b> {header_badge}\n\n"

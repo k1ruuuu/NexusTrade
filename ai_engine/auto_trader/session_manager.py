@@ -112,6 +112,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
         live_card_callback: Optional[NotifyCallback] = None,
         macro_event_mode: Optional[str] = None,
         max_positions: int = 1,
+        is_trade_mode: bool = False,
     ) -> tuple[AutoTradeSessionState, Any]:
         """
         Start a 24/7 Non-Stop autonomous trading session for `(user_id, symbol)`
@@ -156,6 +157,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
             macro_event_mode=macro_event_mode,
             short_id=short_id,
             max_positions=max(1, int(max_positions)),
+            is_trade_mode=is_trade_mode,
         )
         self._sessions[sess.session_id] = sess
 
@@ -243,6 +245,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
                 custom_lot=sess.custom_lot,
                 macro_event_mode=sess.macro_event_mode,
                 max_positions=sess.max_positions,
+                trade_mode=sess.is_trade_mode,
             )
             if report.decision is not None:
                 sess.live_current_price = report.decision.entry_price

@@ -209,6 +209,7 @@ class AutoTradeSessionState:
     macro_event_mode: Optional[str] = None
     short_id: str = ""
     max_positions: int = 1
+    is_trade_mode: bool = False
     task: Optional[asyncio.Task[Any]] = field(default=None, repr=False)
 
     @property

@@ -101,14 +101,15 @@ def build_setup_keyboard(has_creds: bool = False, autotrade_on: bool = False) ->
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-@autotrade_router.message(Command("autotrade"))
+@autotrade_router.message(Command("autotrade", "trade"))
 async def handle_autotrade(message: Message, **data: Any) -> None:
     """
-    Handle /autotrade command:
-    - `/autotrade` or `/autotrade status` -> Show current auto-trade status (requires /setup)
-    - `/autotrade on` -> Enable auto-trade for this user (requires /setup)
-    - `/autotrade off` -> Disable auto-trade for this user
-    - `/autotrade scan [symbol] [timeframe]` or `/autotrade [symbol]` -> Run 6-Gate check & execute if passed
+    Handle /autotrade and /trade commands:
+    - `/autotrade` / `/trade` or status -> Show current auto-trade / trade status (requires /setup)
+    - `/autotrade on` / `/trade on` -> Enable automated execution
+    - `/autotrade off` / `/trade off` -> Disable automated execution
+    - `/trade scan [symbol]` -> Run 6-Gate check with strict 4-Indicator Confluence (UT Bot, Supertrend, Candle, OC Signals)
+    - `/autotrade scan [symbol]` -> Run generic 6-Gate check
     """
     settings: Settings = data.get("settings") or get_settings()
     vault: UserVault = data.get("user_vault") or UserVault(settings)
@@ -120,10 +121,14 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
     )
 
     user_id, user_name = extract_user_identity(message, default_name="Trader")
+    cmd_token = (message.text or "").strip().split()[0].lower() if message.text else "/autotrade"
+    is_trade_mode = cmd_token.startswith("/trade")
     creds = vault.resolve_credentials(user_id)
 
     if creds is None:
-        report = await auto_trader.evaluate_and_execute(user_id=user_id, symbol="BTCUSDT")
+        report = await auto_trader.evaluate_and_execute(
+            user_id=user_id, symbol="BTCUSDT", trade_mode=is_trade_mode
+        )
         await message.answer(
             format_autotrade_report_card(report),
             parse_mode="HTML",
@@ -139,10 +144,16 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         await auto_trader.sync_live_mt5_positions(user_id)
         updated = vault.resolve_credentials(user_id)
         positions = vault.get_open_positions(user_id)
-        await message.answer(
-            "🟢 <b>Auto-Trade 24/7 Non-Stop Diaktifkan!</b>\n"
+        on_title = (
+            "🟢 <b>Mode /trade (4 Indikator Murni) Diaktifkan!</b>\n"
+            "AI siap memantau pasar dan <b>HANYA</b> akan membuka posisi BUY/SELL jika ke-4 Indikator "
+            "(UT Bot, Supertrend, Candlestick Patterns, OC Signals) selaras dan didukung pembacaan candle, tren MTF, serta berita.\n\n"
+            if is_trade_mode
+            else "🟢 <b>Auto-Trade 24/7 Non-Stop Diaktifkan!</b>\n"
             "AI siap menganalisis tren <b>1D, 1H, 15M, 5M</b> dan mengeksekusi open/close posisi di <b>1M</b> secara 24/7 pada akun Exness Go / MT5 Anda.\n\n"
-            + format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), updated, positions),
+        )
+        await message.answer(
+            on_title + format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), updated, positions),
             parse_mode="HTML",
             reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=True),
         )
@@ -277,6 +288,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
             live_card_callback=_update_live_card,
             macro_event_mode=macro_event_mode,
             max_positions=max_positions,
+            is_trade_mode=is_trade_mode,
         )
         sent_card = await message.answer(
             format_timed_session_started_card(session_state, first_res),
@@ -327,6 +339,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
         custom_lot=custom_lot,
         macro_event_mode=macro_event_mode,
         max_positions=max_positions,
+        trade_mode=is_trade_mode,
     )
     await message.answer(
         format_autotrade_report_card(report),
