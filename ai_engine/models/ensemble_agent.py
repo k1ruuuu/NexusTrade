@@ -733,6 +733,20 @@ class EnsembleDecisionAgent:
         struct_res = MarketStructureAnalyzer.analyze_structure(
             ut_source_df.tail(60), symbol=clean_sym, timeframe="5m"
         )
+        top_down = MarketStructureAnalyzer.evaluate_top_down_htf_ltf(
+            htf_df=df_1h if (df_1h is not None and len(df_1h) >= 15) else df_15m,
+            ltf_df=ut_source_df.tail(60),
+            symbol=clean_sym,
+            htf_name="H1",
+            ltf_name="M5",
+            proposed_action="BUY" if dom_sign > 0 else ("SELL" if dom_sign < 0 else None),
+        )
+
+        # Disiplin HTF vs LTF: Jangan melawan arah arus tren HTF
+        if top_down.macro_bias == "BUY_ONLY" and dom_sign < 0:
+            blended_s_tech = max(-0.10, blended_s_tech)
+        elif top_down.macro_bias == "SELL_ONLY" and dom_sign > 0:
+            blended_s_tech = min(0.10, blended_s_tech)
         last_cp = cp_5m_df.iloc[-1]
         active_pattern = str(last_cp.get("cp_pattern_name", "")).strip() or cs_analysis.latest_candle.pattern_label
         cp_score = float(last_cp.get("cp_score", 0.0))
@@ -833,6 +847,9 @@ class EnsembleDecisionAgent:
                 "market_structure_3checks": struct_res.three_checks_display,
                 "latest_swing_high": struct_res.latest_swing_high,
                 "latest_swing_low": struct_res.latest_swing_low,
+                "htf_macro_bias": top_down.macro_bias,
+                "htf_macro_instruction": top_down.macro_instruction,
+                "htf_ltf_verdict": top_down.execution_verdict,
             },
             headlines=[h.headline for h in sent_90d.headline_scores],
             newly_learned_headlines=sent_90d.newly_learned_count,

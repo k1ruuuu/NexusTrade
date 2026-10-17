@@ -64,6 +64,21 @@ class MarketStructureResult:
     entry_allowed: bool = False
     three_checks_display: str = ""
 
+@dataclass
+class TopDownStructureAnalysis:
+    """Hasil integrasi analisa HTF (Arah/Tren Utama) vs LTF (Eksekusi)."""
+    symbol: str
+    htf_name: str
+    ltf_name: str
+    htf_regime: Literal["UPTREND", "DOWNTREND", "RANGE_SIDEWAYS"]
+    htf_pattern: Literal["HH-HL", "LH-LL", "RANGE"]
+    macro_bias: Literal["BUY_ONLY", "SELL_ONLY", "NEUTRAL"]
+    macro_instruction: str
+    htf_structure: MarketStructureResult
+    ltf_structure: MarketStructureResult
+    is_aligned: bool
+    execution_verdict: str
+
 
 class MarketStructureAnalyzer:
     """Mesin analisis struktur pasar (Market Structure Engine)."""
@@ -272,4 +287,74 @@ class MarketStructureAnalyzer:
             structural_bias=bias,
             entry_allowed=allowed,
             three_checks_display=checks_text,
+        )
+
+    @classmethod
+    def evaluate_top_down_htf_ltf(
+        cls,
+        htf_df: pd.DataFrame,
+        ltf_df: pd.DataFrame,
+        symbol: str = "XAUUSD",
+        htf_name: str = "H1",
+        ltf_name: str = "M5",
+        proposed_action: Optional[Literal["BUY", "SELL"]] = None,
+    ) -> TopDownStructureAnalysis:
+        """
+        Filosofi Timeframe Besar (HTF) vs Timeframe Kecil (LTF):
+        - Timeframe Besar (H1/D1) = HTF. Dipakai untuk menentukan arah/tren utama market.
+          Di timeframe besar, jika puncak dan lembahnya makin tinggi (HH-HL) -> Struktur Uptrend -> Arah utama: CARI NAIK.
+          Sebaliknya, jika puncak dan lembahnya makin rendah (LH-LL) -> Struktur Downtrend -> Arah utama: CARI TURUN.
+        - Timeframe Kecil (M5/M15/M1) = LTF. Dipakai khusus untuk timing eksekusi.
+        - Syarat Eksekusi: LTF dilarang keras melawan arah arus tren HTF!
+        """
+        htf_struct = cls.analyze_structure(htf_df, symbol=symbol, timeframe=htf_name, window=3)
+        ltf_struct = cls.analyze_structure(ltf_df, symbol=symbol, timeframe=ltf_name, window=2)
+
+        if htf_struct.regime == "UPTREND":
+            macro_bias: Literal["BUY_ONLY", "SELL_ONLY", "NEUTRAL"] = "BUY_ONLY"
+            macro_inst = "📈 ARAH UTAMA HTF: UPTREND (Puncak & Lembah Meninggi) ➔ CARI NAIK (BUY ONLY)"
+        elif htf_struct.regime == "DOWNTREND":
+            macro_bias = "SELL_ONLY"
+            macro_inst = "📉 ARAH UTAMA HTF: DOWNTREND (Puncak & Lembah Menurun) ➔ CARI TURUN (SELL ONLY)"
+        else:
+            macro_bias = "NEUTRAL"
+            macro_inst = "↔️ ARAH UTAMA HTF: RANGE / SIDEWAYS ➔ Menunggu Breakout Valid"
+
+        # Verifikasi Keselarasan Aksi Eksekusi
+        if proposed_action == "BUY":
+            if macro_bias == "BUY_ONLY":
+                is_aligned = True
+                verdict = f"✅ EKSEKUSI BUY DIIZINKAN: Selaras dengan Arah Utama {htf_name} (Cari Naik)."
+            elif macro_bias == "SELL_ONLY":
+                is_aligned = False
+                verdict = f"🚫 EKSEKUSI BUY DITOLAK: Melawan Arah Utama {htf_name} yang sedang Downtrend (Cari Turun)!"
+            else:
+                is_aligned = True
+                verdict = f"⚠️ EKSEKUSI BUY DIIZINKAN DENGAN HATI-HATI ({htf_name} sedang Sideways/Range)."
+        elif proposed_action == "SELL":
+            if macro_bias == "SELL_ONLY":
+                is_aligned = True
+                verdict = f"✅ EKSEKUSI SELL DIIZINKAN: Selaras dengan Arah Utama {htf_name} (Cari Turun)."
+            elif macro_bias == "BUY_ONLY":
+                is_aligned = False
+                verdict = f"🚫 EKSEKUSI SELL DITOLAK: Melawan Arah Utama {htf_name} yang sedang Uptrend (Cari Naik)!"
+            else:
+                is_aligned = True
+                verdict = f"⚠️ EKSEKUSI SELL DIIZINKAN DENGAN HATI-HATI ({htf_name} sedang Sideways/Range)."
+        else:
+            is_aligned = True
+            verdict = f"💡 Menunggu Setup Eksekusi di {ltf_name} yang Selaras dengan {macro_bias}."
+
+        return TopDownStructureAnalysis(
+            symbol=symbol,
+            htf_name=htf_name,
+            ltf_name=ltf_name,
+            htf_regime=htf_struct.regime,
+            htf_pattern=htf_struct.pattern_label,
+            macro_bias=macro_bias,
+            macro_instruction=macro_inst,
+            htf_structure=htf_struct,
+            ltf_structure=ltf_struct,
+            is_aligned=is_aligned,
+            execution_verdict=verdict,
         )

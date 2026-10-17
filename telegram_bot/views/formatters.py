@@ -180,6 +180,9 @@ def format_signal_card(decision: SignalDecision) -> str:
         ms_line = f"• <b>Struktur Pasar:</b> {ms_badge}\n• <b>Penjaga Tren:</b> 🛡️ <i>{html.escape(ms_guard)}</i>\n"
     else:
         ms_line = ""
+    htf_inst = str(decision.indicators.get("htf_macro_instruction", "")).strip()
+    htf_verdict = str(decision.indicators.get("htf_ltf_verdict", "")).strip()
+    htf_line = f"• <b>Tren Utama (HTF):</b> {html.escape(htf_inst)}\n• <b>Keselarasan LTF:</b> {html.escape(htf_verdict)}\n" if htf_inst else ""
     oc_sig = int(decision.indicators.get("oc_signal", 0))
     oc_entry = decision.indicators.get("oc_entry", 0.0)
     oc_sl = decision.indicators.get("oc_sl", 0.0)
@@ -210,6 +213,7 @@ def format_signal_card(decision: SignalDecision) -> str:
         f"{ms_line}"
         f"• <b>Kondisi Tren:</b> <i>{html.escape(decision.market_structure_status)}</i>\n\n"
         f"<b>🧠 Analisis 6 Pilar:</b>\n"
+        f"{htf_line}"
         f"• <b>Teknikal &amp; CVD:</b> <code>{decision.s_tech:+.2f}</code> | <i>{html.escape(decision.cvd_status)}</i> (RVOL <code>{decision.relative_volume:.1f}x</code>)\n"
         f"• <b>Sentimen &amp; Vol:</b> <code>{decision.s_sent:+.2f}</code> ({sent_desc}) | Vol <code>{decision.s_vol:.2f}</code>\n"
         f"• <b>Konfluensi:</b> <code>{decision.confluence_pillars}/6 Pilar</code> | Exp <code>{decision.expectancy_r:+.2f}R</code>\n"

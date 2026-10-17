@@ -118,3 +118,44 @@ def test_market_structure_three_checks_display():
     assert "1. 🎯 SWING HIGH & LOW MENONJOL:" in res.three_checks_display
     assert "2. 📊 POLA STRUKTUR:" in res.three_checks_display
     assert "3. 🛡️ SWING PENJAGA TREN:" in res.three_checks_display
+
+def test_top_down_htf_uptrend_cari_naik():
+    """Verify HTF uptrend enforces 'CARI NAIK (BUY ONLY)' bias and rejects counter-trend SELL."""
+    wave_htf_up = [100.0, 130.0, 115.0, 145.0, 135.0, 160.0]
+    df_htf = create_zigzag_ohlcv(wave_htf_up, bars_per_segment=6)
+    df_ltf = create_zigzag_ohlcv([140.0, 150.0, 145.0, 155.0], bars_per_segment=4)
+
+    td_buy = MarketStructureAnalyzer.evaluate_top_down_htf_ltf(
+        htf_df=df_htf, ltf_df=df_ltf, symbol="XAUUSD", htf_name="H1", ltf_name="M5", proposed_action="BUY"
+    )
+    assert td_buy.macro_bias == "BUY_ONLY"
+    assert "CARI NAIK (BUY ONLY)" in td_buy.macro_instruction
+    assert td_buy.is_aligned is True
+    assert "DIIZINKAN" in td_buy.execution_verdict
+
+    td_sell = MarketStructureAnalyzer.evaluate_top_down_htf_ltf(
+        htf_df=df_htf, ltf_df=df_ltf, symbol="XAUUSD", htf_name="H1", ltf_name="M5", proposed_action="SELL"
+    )
+    assert td_sell.is_aligned is False
+    assert "DITOLAK" in td_sell.execution_verdict
+
+
+def test_top_down_htf_downtrend_cari_turun():
+    """Verify HTF downtrend enforces 'CARI TURUN (SELL ONLY)' bias and rejects counter-trend BUY."""
+    wave_htf_dn = [200.0, 160.0, 180.0, 140.0, 160.0, 120.0]
+    df_htf = create_zigzag_ohlcv(wave_htf_dn, bars_per_segment=6)
+    df_ltf = create_zigzag_ohlcv([150.0, 130.0, 140.0, 125.0], bars_per_segment=4)
+
+    td_sell = MarketStructureAnalyzer.evaluate_top_down_htf_ltf(
+        htf_df=df_htf, ltf_df=df_ltf, symbol="XAUUSD", htf_name="H1", ltf_name="M5", proposed_action="SELL"
+    )
+    assert td_sell.macro_bias == "SELL_ONLY"
+    assert "CARI TURUN (SELL ONLY)" in td_sell.macro_instruction
+    assert td_sell.is_aligned is True
+    assert "DIIZINKAN" in td_sell.execution_verdict
+
+    td_buy = MarketStructureAnalyzer.evaluate_top_down_htf_ltf(
+        htf_df=df_htf, ltf_df=df_ltf, symbol="XAUUSD", htf_name="H1", ltf_name="M5", proposed_action="BUY"
+    )
+    assert td_buy.is_aligned is False
+    assert "DITOLAK" in td_buy.execution_verdict
