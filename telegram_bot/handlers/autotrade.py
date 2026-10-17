@@ -116,6 +116,9 @@ def build_setup_keyboard(has_creds: bool = False, autotrade_on: bool = False) ->
         "ea-scp",
         "ea_scp",
         "eascp",
+        "ea_scalping",
+        "eascalping",
+        "scalping",
         "ea-EA",
         "ea_EA",
         "ea-ea",
@@ -164,7 +167,7 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
     user_id, user_name = extract_user_identity(message, default_name="Trader")
     cmd_token = (message.text or "").strip().split()[0].lower() if message.text else "/autotrade"
     is_trade_mode = cmd_token.startswith("/trade")
-    is_ea_scp = any(cmd_token.startswith(p) for p in ("/ea-scp", "/ea_scp", "/eascp"))
+    is_ea_scp = any(cmd_token.startswith(p) for p in ("/ea-scp", "/ea_scp", "/eascp", "/ea_scalping", "/eascalping", "/scalping"))
     is_ea_ea = any(cmd_token.startswith(p) for p in ("/ea-ea", "/ea_ea", "/eaea"))
     is_ea_grid = any(cmd_token.startswith(p) for p in ("/ea_grid", "/ea-grid", "/eagrid", "/grid"))
     is_nx_break = any(cmd_token.startswith(p) for p in ("/ea_break", "/ea-break", "/eabreak", "/nxbreak"))
@@ -273,8 +276,12 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
             )
         elif is_ea_scp:
             on_title = (
-                "🟢 <b>Mode EA Scalping M1/M5 Diaktifkan!</b>\n"
-                "Scalping mikro-momentum cepat (SL 20 Pips, TP 40 Pips) dengan proteksi anti-ban broker.\n\n"
+                "🟢 <b>Mode EA Scalping Diaktifkan!</b>\n"
+                "• <b>Membaca Arah Trend:</b> EMA 9/21/50 M1/M5 momentum.\n"
+                "• <b>Membaca Candlestick:</b> Rejection Pinbar, Engulfing, & Momentum Body.\n"
+                "• <b>Membaca Pergerakan Market:</b> Prediksi ekspansi arah selanjutnya.\n"
+                "• <b>SL & TP Berdekatan:</b> SL 12 Pips / TP 14 Pips untuk eksekusi kilat.\n"
+                "• <b>Auto Re-Entry Seketika:</b> Langsung entry kembali saat terkena TP maupun SL.\n\n"
             )
         elif is_trade_mode:
             on_title = (

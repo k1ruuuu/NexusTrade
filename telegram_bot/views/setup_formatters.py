@@ -304,10 +304,10 @@ def format_timed_session_started_card(
         strat_line = "🤖 <b>RSI 14 (RSI ≥ 70 SELL, RSI ≤ 30 BUY | SL 50p, TP 150p)</b>"
         mode_line = f"🟢 <b>EA Expert Advisor</b> (<code>{html.escape(session.remaining_human)}</code>)"
     elif session.ea_mode == "EA_SCALPING":
-        hdr_title = "EA SCALPING M1/M5 (FAST MOMENTUM) —"
-        sub_title = "SESI EA SCALPING (M1 MOMENTUM | SL 20 PIPS | TP 40 PIPS)"
+        hdr_title = "EA SCALPING M1 (TREND + CANDLE + PREDIKSI) —"
+        sub_title = "SESI EA SCALPING (TIGHT SL & TP BERDEKATAN | AUTO RE-ENTRY)"
         cmd_prefix = "/ea-scp"
-        strat_line = "⚡ <b>EMA Ribbon + Momentum Pullback (SL 20p, TP 40p)</b>"
+        strat_line = "⚡ <b>Trend (EMA 9/21/50) + Candle Anatomy + Prediksi Arah + Auto Re-Entry</b>"
         mode_line = f"🟢 <b>EA Scalping</b> (<code>{html.escape(session.remaining_human)}</code>)"
     elif session.is_trade_mode:
         hdr_title = "TRADE (4 INDIKATOR MURNI) —"
@@ -428,8 +428,8 @@ def format_autotrade_report_card(report: AutoTradeExecutionReport) -> str:
         header_name = "EA EXPERT ADVISOR MT5 (RSI 14)"
         sub_rule = "🤖 <i>Open BUY jika RSI 14 ≤ 30, Open SELL jika RSI 14 ≥ 70 • SL 50 Pips / TP 150 Pips</i>\n"
     elif getattr(report, "ea_mode", None) == "EA_SCALPING":
-        header_name = "EA SCALPING M1/M5 (MOMENTUM)"
-        sub_rule = "⚡ <i>Fast Scalping M1/M5 Micro-Momentum • SL 20 Pips / TP 40 Pips</i>\n"
+        header_name = "EA SCALPING (TREND + CANDLE + PREDIKSI)"
+        sub_rule = "⚡ <i>Membaca Trend + Candlestick + Prediksi Arah • SL & TP Berdekatan • Auto Re-Entry</i>\n"
     elif getattr(report, "trade_mode", False):
         header_name = "NEXUSTRADE ALGO-TRADE (4 INDIKATOR MURNI)"
         sub_rule = "💎 <i>Eksekusi HANYA jika ke-4 Indikator Murni (UT Bot, Supertrend, Candle, OC Signals) selaras</i>\n"

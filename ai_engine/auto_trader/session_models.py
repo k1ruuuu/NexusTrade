@@ -225,6 +225,7 @@ class AutoTradeSessionState:
     min_step_points: float = 10.0
     stops_level_pips: float = 3.0
     max_spread_pips: float = 4.0
+    last_exit_reason: Optional[str] = None
     task: Optional[asyncio.Task[Any]] = field(default=None, repr=False)
 
     @property

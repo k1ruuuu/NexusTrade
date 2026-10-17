@@ -195,6 +195,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
             )
             if mon.action_taken in ("CLOSED_TP", "CLOSED_SL") and mon.position is not None:
                 sess.positions_closed += 1
+                sess.last_exit_reason = mon.action_taken
                 if mon.realized_pnl_usdt >= 0:
                     sess.winning_trades += 1
                 else:
@@ -257,6 +258,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
                 max_positions=sess.max_positions,
                 trade_mode=sess.is_trade_mode,
                 ea_mode=sess.ea_mode,
+                last_exit_reason=sess.last_exit_reason,
             )
             if report.decision is not None:
                 sess.live_current_price = report.decision.entry_price
@@ -264,6 +266,7 @@ class AutoTradeSessionManager(PositionMonitorMixin):
 
             if report.executed and report.order_result is not None and report.position_record is not None:
                 sess.positions_opened += 1
+                sess.last_exit_reason = None
                 sess.live_open_position = report.position_record
                 sess.live_current_price = report.order_result.avg_price
                 curr_layer = len(open_positions) + 1

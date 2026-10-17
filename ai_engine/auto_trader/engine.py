@@ -27,6 +27,7 @@ from ai_engine.auto_trader.mt5_exness_client import (
     get_mt5_contract_size,
 )
 from ai_engine.auto_trader.nx_ea_engine import NXEAEngine, NXSignalResult
+from ai_engine.auto_trader.ea_scalping_engine import EAScalpingEngine, EAScalpingSignal
 from ai_engine.auto_trader.session_manager import (
     AutoTradeSessionManager,
     AutoTradeSessionState,
@@ -362,6 +363,7 @@ class SmartAutoTraderEngine:
         max_positions: int = 1,
         trade_mode: bool = False,
         ea_mode: Optional[str] = None,
+        last_exit_reason: Optional[str] = None,
     ) -> AutoTradeExecutionReport:
         """
         Run the complete 6-Gate Pre-Trade Checklist for `user_id` on `symbol` (`timeframe`)
@@ -526,48 +528,25 @@ class SmartAutoTraderEngine:
             )
         elif ea_mode == "EA_SCALPING":
             market_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="1m", limit=100)
-            closes = pd.to_numeric(market_df["close"], errors="coerce").ffill()
-            ema9 = closes.ewm(span=9, adjust=False).mean()
-            ema21 = closes.ewm(span=21, adjust=False).mean()
-            latest_price = float(closes.iloc[-1])
-            e9 = float(ema9.iloc[-1])
-            e21 = float(ema21.iloc[-1])
-            e9_prev = float(ema9.iloc[-2]) if len(ema9) >= 2 else e9
-            e21_prev = float(ema21.iloc[-2]) if len(ema21) >= 2 else e21
+            latest_price = float(market_df["close"].iloc[-1]) if len(market_df) > 0 else 2650.0
 
-            # NT-06: Distinguish actual EMA crossover on closed candles from mere EMA state
-            bull_cross = (e9_prev <= e21_prev) and (e9 > e21)
-            bear_cross = (e9_prev >= e21_prev) and (e9 < e21)
-
-            # NT-07: Compute dynamic heuristic confidence instead of fixed 0.85
-            ema_spread_ratio = abs(e9 - e21) / max(e21, 1e-6) * 100.0
-            dynamic_conf = round(min(0.88, max(0.68, 0.70 + min(0.15, ema_spread_ratio * 0.5))), 4)
-
-            if bull_cross:
-                ea_action = "BUY"
-                ea_conf = dynamic_conf
-                ea_detail = f"EMA Crossover Bullish Terkonfirmasi (EMA9 {e9:,.2f} melintas naik di atas EMA21 {e21:,.2f}) ➔ Scalping BUY"
-            elif bear_cross:
-                ea_action = "SELL"
-                ea_conf = dynamic_conf
-                ea_detail = f"EMA Crossover Bearish Terkonfirmasi (EMA9 {e9:,.2f} melintas turun di bawah EMA21 {e21:,.2f}) ➔ Scalping SELL"
-            else:
-                ea_action = "HOLD"
-                ea_conf = 0.50
-                ea_detail = f"Menunggu Crossover Baru M1 (EMA9: {e9:,.2f} vs EMA21: {e21:,.2f}, Belum ada perpotongan lilin)"
-            ea_sl, ea_tp, _ = calculate_ea_sl_tp(
+            # Evaluasi EA Scalping: Trend reading + Candlestick reading + Forward prediction + Tight SL/TP
+            scalp_res = EAScalpingEngine.evaluate_scalping(
+                df=market_df,
                 symbol=clean_sym,
-                side=ea_action if ea_action in ("BUY", "SELL") else "BUY",
-                entry_price=latest_price,
-                sl_pips=20.0,
-                tp_pips=40.0,
-                stops_level_pips=3.0,
+                sl_pips=12.0,
+                tp_pips=14.0,
+                last_exit_reason=last_exit_reason,
             )
+            ea_action = scalp_res.action
+            ea_conf = scalp_res.confidence
+            ea_detail = scalp_res.details
+
             decision = SignalDecision(
                 symbol=clean_sym,
                 timeframe="1m",
                 action=ea_action,
-                badge=f"EA-SCP {ea_action}" if ea_action in ("BUY", "SELL") else "NEUTRAL / HOLD",
+                badge=f"EA-SCALPING {ea_action}" if ea_action in ("BUY", "SELL") else "NEUTRAL / HOLD",
                 confidence=round(ea_conf, 4),
                 s_tech=0.60 if ea_action == "BUY" else (-0.60 if ea_action == "SELL" else 0.0),
                 s_vol=0.10,
@@ -575,17 +554,23 @@ class SmartAutoTraderEngine:
                 risk_multiplier=1.0,
                 entry_price=latest_price,
                 position_units=round(0.01 * get_mt5_contract_size(clean_sym), 4),
-                stop_loss=ea_sl,
-                take_profit_1=ea_tp,
-                take_profit_2=ea_tp,
-                expectancy_r=1.0,
+                stop_loss=scalp_res.stop_loss,
+                take_profit_1=scalp_res.take_profit,
+                take_profit_2=scalp_res.take_profit,
+                expectancy_r=1.2,
                 confluence_pillars=5,
                 is_sideways=False,
                 resistance_1=latest_price * 1.05,
                 resistance_2=latest_price * 1.10,
                 support_1=latest_price * 0.95,
                 support_2=latest_price * 0.90,
-                indicators={"ema9": e9, "ema21": e21, "ea_mode": "EA_SCALPING", "ea_detail": ea_detail},
+                indicators={
+                    "ea_mode": "EA_SCALPING",
+                    "trend": scalp_res.trend_direction,
+                    "candle": scalp_res.candle_pattern,
+                    "prediction": scalp_res.forward_prediction,
+                    "ea_detail": ea_detail,
+                },
             )
         elif ea_mode == "EA_GRID_SCALPER":
             market_df = self.ensemble_agent.load_market_series(clean_sym, timeframe="1m", limit=100)
@@ -739,9 +724,9 @@ class SmartAutoTraderEngine:
             ea_ok = decision.action in ("BUY", "SELL")
             ea_detail_str = decision.indicators.get("ea_detail", "")
             if ea_ok:
-                tech_detail = f"⚡ EA SCALPING M1/M5: {ea_detail_str} • SL 20 Pips | TP 40 Pips (1:2 RRR)"
+                tech_detail = f"⚡ EA SCALPING (TREND + CANDLE): {ea_detail_str}"
             else:
-                tech_detail = f"DITOLAK (EA-SCP): {ea_detail_str}"
+                tech_detail = f"DITOLAK (EA-SCALPING): {ea_detail_str}"
             conf_ok = ea_ok
         elif ea_mode == "EA_GRID_SCALPER":
             ea_ok = True
@@ -852,7 +837,7 @@ class SmartAutoTraderEngine:
                             "EA Expert Advisor MT5 (RSI 14)"
                             if ea_mode == "EA_EXPERT_ADVISOR"
                             else (
-                                "EA Scalping M1/M5 (Micro Momentum)"
+                                "EA Scalping (Trend + Candle + Prediksi)"
                                 if ea_mode == "EA_SCALPING"
                                 else ("Strategi 4 Indikator Murni (/trade)" if trade_mode else "Strategi UT Bot + Supertrend + OC Signals (1D•1H•15M•5M ➔ 1M)")
                             )
