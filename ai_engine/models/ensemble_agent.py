@@ -245,10 +245,27 @@ class EnsembleDecisionAgent:
                 symbol=symbol,
                 risk_pct=self.settings.max_account_risk_per_trade,
             )
+        oc_sig_val = int(indicators.get("oc_signal", 0)) if indicators else 0
+        oc_sl_val = float(indicators.get("oc_sl", 0.0)) if indicators else 0.0
+        oc_tp_val = float(indicators.get("oc_tp", 0.0)) if indicators else 0.0
+        if not event_mode and oc_sig_val != 0 and oc_sl_val > 0 and oc_tp_val > 0 and (
+            (raw_action == "BUY" and oc_sig_val == 1) or (raw_action == "SELL" and oc_sig_val == -1)
+        ):
+            # Recommend Entry, SL, and TP levels directly from OC Buy/Sell Signals
+            targets = StopLossTargets(
+                action=raw_action,
+                entry_price=round(entry_price, 4),
+                atr_14=round(effective_atr, 4),
+                stop_loss=round(oc_sl_val, 4),
+                take_profit_1=round(oc_tp_val, 4),
+                take_profit_2=round(oc_tp_val * 1.05 if raw_action == "BUY" else oc_tp_val * 0.95, 4),
+                trailing_stop_distance=round(abs(entry_price - oc_sl_val) * 0.60, 4),
+                risk_per_unit=round(abs(entry_price - oc_sl_val), 4),
+                reward_risk_ratio_1=2.0,
+                reward_risk_ratio_2=3.0,
+            )
         elif sr_levels is not None:
             targets = self.stop_loss_manager.calculate_realistic_targets(
-                entry_price=entry_price,
-                atr_14=effective_atr,
                 action=raw_action,
                 support_1=resolved_sr.support_1,
                 support_2=resolved_sr.support_2,
@@ -557,8 +574,10 @@ class EnsembleDecisionAgent:
             st_buy = bool(last.get("supertrend_buy", False))
             st_sell = bool(last.get("supertrend_sell", False))
             st_score = 0.85 if st_buy else (-0.85 if st_sell else (0.50 * st_dir))
+            oc_sig = float(last.get("oc_signal", 0.0))
+            oc_score = 0.85 if oc_sig == 1 else (-0.85 if oc_sig == -1 else 0.0)
 
-            strategy_score = 0.50 * ut_score + 0.50 * st_score
+            strategy_score = 0.40 * ut_score + 0.40 * st_score + 0.20 * oc_score
             score = float(np.clip(0.30 * ema_score + 0.35 * strategy_score + 0.20 * mom_score + 0.15 * flow_score, -1.0, 1.0))
             lbl = "🟢 BULL" if score >= 0.12 else ("🔴 BEAR" if score <= -0.12 else "🟡 FLAT")
             return round(score, 3), max(atr14, close_p * 0.0015), lbl
@@ -679,6 +698,23 @@ class EnsembleDecisionAgent:
         prev_st = st_5m_df.iloc[-2] if len(st_5m_df) >= 2 else last_st
         st_recent_buy = st_buy_trigger or bool(prev_st.get("supertrend_buy", False))
         st_recent_sell = st_sell_trigger or bool(prev_st.get("supertrend_sell", False))
+        # OC Buy/Sell Signals (Pine Script v6) on 5M Execution Timeframe
+        oc_5m_df = self.ohlcv_preprocessor.compute_oc_signals(ut_source_df.tail(40), body_len=20, body_mult=1.5)
+        last_oc = oc_5m_df.iloc[-1]
+        oc_sig = int(last_oc.get("oc_signal", 0))
+        oc_entry = float(last_oc.get("oc_entry", 0.0))
+        oc_sl = float(last_oc.get("oc_sl", 0.0))
+        oc_tp = float(last_oc.get("oc_tp", 0.0))
+        if oc_sig == 0 and len(oc_5m_df) >= 2:
+            prev_oc = oc_5m_df.iloc[-2]
+            if int(prev_oc.get("oc_signal", 0)) != 0:
+                oc_sig = int(prev_oc.get("oc_signal", 0))
+                oc_entry = float(prev_oc.get("oc_entry", 0.0))
+                oc_sl = float(prev_oc.get("oc_sl", 0.0))
+                oc_tp = float(prev_oc.get("oc_tp", 0.0))
+
+        oc_tag = f" • OC: {('BUY' if oc_sig == 1 else 'SELL')} (SL: ${oc_sl:,.2f} | TP: ${oc_tp:,.2f})" if oc_sig != 0 else ""
+
         # Candlestick Pattern Identification on 5M Execution Timeframe
         cp_5m_df = self.ohlcv_preprocessor.identify_candlestick_patterns(ut_source_df.tail(40), trend_bars=5)
         last_cp = cp_5m_df.iloc[-1]
@@ -690,7 +726,6 @@ class EnsembleDecisionAgent:
             if prev_pname:
                 active_pattern = f"{prev_pname} (Konfirmasi)"
                 cp_score = float(prev_cp.get("cp_score", 0.0))
-
         pat_prefix = f"[🕯️ {active_pattern}] " if active_pattern else ""
 
         # Market Chop filter only triggers when higher timeframes lack a clear trend (aligned_count < 3)
@@ -760,6 +795,10 @@ class EnsembleDecisionAgent:
                 "supertrend_sell": 1.0 if st_recent_sell else 0.0,
                 "candlestick_pattern": active_pattern,
                 "candlestick_score": float(cp_score),
+                "oc_signal": float(oc_sig),
+                "oc_entry": round(oc_entry, 4),
+                "oc_sl": round(oc_sl, 4),
+                "oc_tp": round(oc_tp, 4),
             },
             headlines=[h.headline for h in sent_90d.headline_scores],
             newly_learned_headlines=sent_90d.newly_learned_count,

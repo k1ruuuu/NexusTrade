@@ -156,6 +156,16 @@ def format_signal_card(decision: SignalDecision) -> str:
 
     cp_pat = str(decision.indicators.get("candlestick_pattern", "")).strip()
     cp_line = f"• <b>Pola Candlestick:</b> 🕯️ <b>{html.escape(cp_pat)}</b>\n" if cp_pat else ""
+
+    oc_sig = int(decision.indicators.get("oc_signal", 0))
+    oc_entry = decision.indicators.get("oc_entry", 0.0)
+    oc_sl = decision.indicators.get("oc_sl", 0.0)
+    oc_tp = decision.indicators.get("oc_tp", 0.0)
+    if oc_sig != 0 and oc_entry > 0 and oc_sl > 0 and oc_tp > 0:
+        oc_badge = "🟢 BUY" if oc_sig == 1 else "🔴 SELL"
+        oc_line = f"• <b>Rekomendasi OC Signals:</b> {oc_badge} @ <code>{format_price(oc_entry)}</code> (SL: <code>{format_price(oc_sl)}</code> | TP: <code>{format_price(oc_tp)}</code>)\n"
+    else:
+        oc_line = ""
     return (
         f"📡 <b>SINYAL AI NEXUSTRADE — {sym} ({tf})</b>\n"
         f"━━━━━━━━━━━━━━━━\n"
@@ -169,6 +179,7 @@ def format_signal_card(decision: SignalDecision) -> str:
         f"{ut_line}"
         f"{st_line}"
         f"{cp_line}"
+        f"{oc_line}"
         f"• <b>Resistance Atas (R1 | R2):</b> <code>{format_price(decision.resistance_1)}</code> (<code>{r1_pct}</code>) | <code>{format_price(decision.resistance_2)}</code>\n"
         f"• <b>Support Bawah (S1 | S2):</b> <code>{format_price(decision.support_1)}</code> (<code>{s1_pct}</code>) | <code>{format_price(decision.support_2)}</code>\n"
         f"• <b>Posisi S/R:</b> <i>{html.escape(decision.sr_status)}</i>\n"

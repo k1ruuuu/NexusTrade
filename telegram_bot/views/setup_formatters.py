@@ -275,7 +275,7 @@ def format_timed_session_started_card(
         f"• <b>Mode Sistem:</b> 🟢 <b>24/7 Non-Stop</b> (<code>{html.escape(session.remaining_human)}</code>)\n"
         f"{event_line}"
         f"• <b>Batas Layer Bersamaan:</b> <b>{session.max_positions} Posisi</b>\n"
-        f"• <b>Indikator Strategi:</b> 🤖 <b>UT Bot + Supertrend + Candlestick Patterns</b>\n"
+        f"• <b>Indikator Strategi:</b> 🤖 <b>UT Bot + Supertrend + OC Signals + Candles</b>\n"
         f"• <b>Analisa Tren:</b> <code>1D • 1H • 15M • 5M</code> ➔ <b>Action Open/Close:</b> <code>5M</code>\n"
         f"• <b>Ukuran Lot Order:</b> {lot_lbl}\n"
         f"• <b>Peta Tren MTF:</b> <i>{html.escape(session.mtf_status_line)}</i>\n\n"

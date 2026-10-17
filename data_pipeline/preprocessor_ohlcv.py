@@ -67,6 +67,10 @@ class OHLCVPreprocessor:
         "supertrend_dir",
         "supertrend_buy",
         "supertrend_sell",
+        "oc_signal",
+        "oc_entry",
+        "oc_sl",
+        "oc_tp",
     )
     def __init__(
         self,
@@ -578,6 +582,116 @@ class OHLCVPreprocessor:
                 names.append("")
         out["cp_pattern_name"] = pd.Series(names, index=out.index)
         return out
+    @staticmethod
+    def compute_oc_signals(
+        df: pd.DataFrame,
+        body_len: int = 50,
+        body_mult: float = 2.0,
+        vol_mult: float = 0.0,
+        sl_mode: str = "Candle wick",
+        tp_rmult: float = 2.0,
+        atr_len: int = 14,
+        alternate: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Algorithmic implementation of 'OC Buy/Sell Signals' Pine Script indicator:
+          - Bullish breakout: close > open and close > max(open[1], close[1]) and body >= avgBody * bodyMult and volOk
+          - Bearish breakout: close < open and close < min(open[1], close[1]) and body >= avgBody * bodyMult and volOk
+          - Entry price = signal candle close
+          - Stop loss = candle wick low (Buy) / high (Sell)
+          - Take profit = entry +/- (risk_dist * tp_rmult) [Default 1:2 RRR]
+        """
+        out = df.copy()
+        open_p = pd.to_numeric(out["open"], errors="coerce").astype(np.float64)
+        high = pd.to_numeric(out["high"], errors="coerce").astype(np.float64)
+        low = pd.to_numeric(out["low"], errors="coerce").astype(np.float64)
+        close = pd.to_numeric(out["close"], errors="coerce").astype(np.float64)
+        volume = (
+            pd.to_numeric(out["volume"], errors="coerce").fillna(1.0).astype(np.float64)
+            if "volume" in out.columns
+            else pd.Series(1.0, index=out.index, dtype=np.float64)
+        )
+
+        body_hi = np.maximum(open_p, close)
+        body_lo = np.minimum(open_p, close)
+        body = (close - open_p).abs()
+
+        eff_body_len = max(5, min(body_len, len(df)))
+        avg_body = body.rolling(window=eff_body_len, min_periods=1).mean()
+        avg_vol = volume.rolling(window=eff_body_len, min_periods=1).mean()
+        vol_ok = (vol_mult <= 0.0) | (volume >= avg_vol * vol_mult)
+
+        prev_close = close.shift(1).fillna(close)
+        tr = pd.concat([
+            (high - low).abs(),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1.0 / max(atr_len, 1), adjust=False).mean()
+
+        body_hi_1 = body_hi.shift(1).fillna(body_hi)
+        body_lo_1 = body_lo.shift(1).fillna(body_lo)
+
+        bull_break = (close > open_p) & (close > body_hi_1) & (body >= avg_body * body_mult) & vol_ok
+        bear_break = (close < open_p) & (close < body_lo_1) & (body >= avg_body * body_mult) & vol_ok
+
+        n = len(df)
+        entry_px = np.zeros(n, dtype=np.float64)
+        sl_px = np.zeros(n, dtype=np.float64)
+        tp_px = np.zeros(n, dtype=np.float64)
+        sig_dir = np.zeros(n, dtype=np.int32)
+        current_dir = 0
+        curr_entry = 0.0
+        curr_sl = 0.0
+        curr_tp = 0.0
+
+        c_vals = close.to_numpy()
+        h_vals = high.to_numpy()
+        l_vals = low.to_numpy()
+        atr_vals = atr.to_numpy()
+        bull_b = bull_break.to_numpy()
+        bear_b = bear_break.to_numpy()
+
+        for t in range(n):
+            c_t = c_vals[t]
+            h_t = h_vals[t]
+            l_t = l_vals[t]
+            atr_t = max(atr_vals[t], 1e-4)
+
+            buy = bull_b[t] and (not alternate or current_dir != 1)
+            sell = bear_b[t] and (not alternate or current_dir != -1)
+
+            if buy:
+                current_dir = 1
+                curr_entry = c_t
+                if sl_mode == "ATR":
+                    curr_sl = curr_entry - (atr_t * 1.5)
+                else:
+                    curr_sl = l_t
+                risk_dist = max(abs(curr_entry - curr_sl), c_t * 0.001)
+                curr_tp = curr_entry + (risk_dist * tp_rmult)
+                sig_dir[t] = 1
+            elif sell:
+                current_dir = -1
+                curr_entry = c_t
+                if sl_mode == "ATR":
+                    curr_sl = curr_entry + (atr_t * 1.5)
+                else:
+                    curr_sl = h_t
+                risk_dist = max(abs(curr_sl - curr_entry), c_t * 0.001)
+                curr_tp = max(c_t * 0.01, curr_entry - (risk_dist * tp_rmult))
+                sig_dir[t] = -1
+
+            entry_px[t] = curr_entry
+            sl_px[t] = curr_sl
+            tp_px[t] = curr_tp
+
+        out["oc_signal"] = pd.Series(sig_dir, index=out.index)
+        out["oc_entry"] = pd.Series(entry_px, index=out.index)
+        out["oc_sl"] = pd.Series(sl_px, index=out.index)
+        out["oc_tp"] = pd.Series(tp_px, index=out.index)
+        return out
+
 
 
 
@@ -714,6 +828,12 @@ class OHLCVPreprocessor:
         out["cp_bear_engulf"] = cp_df["cp_bear_engulf"].astype(np.float32)
         out["cp_hammer"] = cp_df["cp_hammer"].astype(np.float32)
         out["cp_shooting_star"] = cp_df["cp_shooting_star"].astype(np.float32)
+        # OC Buy/Sell Signals (Pine Script v6)
+        oc_df = OHLCVPreprocessor.compute_oc_signals(out, body_len=50, body_mult=2.0)
+        out["oc_signal"] = oc_df["oc_signal"].astype(np.float32)
+        out["oc_entry"] = oc_df["oc_entry"].astype(np.float64)
+        out["oc_sl"] = oc_df["oc_sl"].astype(np.float64)
+        out["oc_tp"] = oc_df["oc_tp"].astype(np.float64)
 
         return out
 

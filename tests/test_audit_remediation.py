@@ -325,3 +325,35 @@ def test_candlestick_patterns_identified_pine_script() -> None:
     res_ham = OHLCVPreprocessor.identify_candlestick_patterns(df_hammer, trend_bars=5)
     assert res_ham["cp_hammer"].iloc[-1] is True or res_ham["cp_hammer"].iloc[-1] == 1
     assert "Hammer" in res_ham["cp_pattern_name"].iloc[-1]
+
+
+def test_oc_signals_pine_script_entry_sl_tp() -> None:
+    from data_pipeline.preprocessor_ohlcv import OHLCVPreprocessor
+
+    sample_df = pd.DataFrame({
+        "open":  [100.0, 101.0, 100.0, 99.0, 104.0, 103.0, 97.0],
+        "high":  [101.5, 102.0, 101.0, 105.0, 105.5, 104.0, 98.0],
+        "low":   [99.5,  100.0,  98.5,  98.0, 103.0,  96.5, 96.0],
+        "close": [101.0, 100.5,  99.0, 104.5, 103.5,  97.0, 97.5],
+        "volume": [1000.0] * 7,
+    })
+
+    res = OHLCVPreprocessor.compute_oc_signals(
+        sample_df, body_len=3, body_mult=1.2, sl_mode="Candle wick", tp_rmult=2.0
+    )
+    assert "oc_signal" in res.columns
+    assert "oc_entry" in res.columns
+    assert "oc_sl" in res.columns
+    assert "oc_tp" in res.columns
+
+    # Bar 2 breaks down below previous body -> SELL signal
+    assert res["oc_signal"].iloc[2] == -1
+    assert res["oc_entry"].iloc[2] == 99.0
+    assert res["oc_sl"].iloc[2] == 101.0  # wick high
+    assert res["oc_tp"].iloc[2] == 95.0   # entry - (2 * 2.0) = 95.0
+
+    # Bar 3 breaks out above previous body -> BUY signal
+    assert res["oc_signal"].iloc[3] == 1
+    assert res["oc_entry"].iloc[3] == 104.5
+    assert res["oc_sl"].iloc[3] == 98.0   # wick low
+    assert res["oc_tp"].iloc[3] == 117.5  # entry + (6.5 * 2.0) = 117.5

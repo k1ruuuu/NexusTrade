@@ -426,10 +426,14 @@ class SmartAutoTraderEngine:
                 ut_ts = float(decision.indicators.get("ut_trailing_stop", 0.0))
                 st_val = float(decision.indicators.get("supertrend", 0.0))
                 st_dir = float(decision.indicators.get("supertrend_dir", 0.0))
+                oc_sig = int(decision.indicators.get("oc_signal", 0))
+                oc_sl = float(decision.indicators.get("oc_sl", 0.0))
+                oc_tp = float(decision.indicators.get("oc_tp", 0.0))
+                oc_info = f" • OC Signals: {('BUY' if oc_sig == 1 else 'SELL')} (SL: ${oc_sl:,.2f} | TP: ${oc_tp:,.2f})" if oc_sig != 0 else ""
                 st_tag = " [Supertrend Bull]" if st_dir > 0 else (" [Supertrend Bear]" if st_dir < 0 else "")
-                strat_info = f" • UT TS: ${ut_ts:,.2f} | ST: ${st_val:,.2f}" if ut_ts > 0 else ""
+                strat_info = f" • UT TS: ${ut_ts:,.2f} | ST: ${st_val:,.2f}{oc_info}" if ut_ts > 0 else oc_info
                 tech_detail = (
-                    f"Strategi UT Bot & Supertrend Selaras ({decision.badge}{st_tag} • Keyakinan {decision.confidence * 100:.1f}%, "
+                    f"Strategi UT Bot, Supertrend & OC Signals Selaras ({decision.badge}{st_tag} • Keyakinan {decision.confidence * 100:.1f}%, "
                     f"MTF [{decision.mtf_aligned_count}/4]: {decision.mtf_summary}{strat_info}, "
                     f"Struktur: {decision.market_structure_status}, Konfluensi {decision.confluence_pillars}/6 Pilar)"
                 )
@@ -442,7 +446,7 @@ class SmartAutoTraderEngine:
         gates.append(
             AutoTradeGateCheck(
                 gate_number=3,
-                name="Strategi UT Bot Alerts + Supertrend & Tren Multi-Timeframe",
+                name="Strategi UT Bot + Supertrend + OC Signals (1D•1H•15M•5M ➔ 1M)",
                 passed=conf_ok,
                 detail=tech_detail,
             )
