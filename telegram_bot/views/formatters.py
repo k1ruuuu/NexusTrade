@@ -221,7 +221,10 @@ def format_signal_card(decision: SignalDecision) -> str:
         f"• <b>Sentimen &amp; Vol:</b> <code>{decision.s_sent:+.2f}</code> ({sent_desc}) | Vol <code>{decision.s_vol:.2f}</code>\n"
         f"• <b>Konfluensi:</b> <code>{decision.confluence_pillars}/6 Pilar</code> | Exp <code>{decision.expectancy_r:+.2f}R</code>\n"
         f"• <b>Meta-Model:</b> <code>P(Sukses) {decision.meta_probability * 100:.1f}%</code> | Makro: {html.escape(decision.macro_regime)}\n"
-        f"<b>🛡️ Ukuran:</b> <code>{decision.position_units:,.4f} {sym}</code> (<code>${decision.position_notional:,.2f}</code> | Risiko <code>{decision.account_risk_pct * 100:.2f}%</code>)\n"
+        f"<b>🛡️ Manajemen Risiko:</b>\n"
+        f"• <b>Risiko (1R):</b> <code>{format_price(abs(decision.entry_price - decision.stop_loss))}</code> ({sl_pct}) | <b>Reward (2R):</b> <code>{format_price(abs(decision.take_profit_1 - decision.entry_price) if decision.take_profit_1 > 0 else 0.0)}</code>\n"
+        f"• <b>Rasio R:R:</b> <code>1:{round(abs(decision.take_profit_1 - decision.entry_price) / max(abs(decision.entry_price - decision.stop_loss), 1e-6), 1):.1f}R</code> (1x benar menutup 2x salah)\n"
+        f"• <b>Alokasi Posisi:</b> <code>{decision.position_units:,.4f} {sym}</code> (<code>${decision.position_notional:,.2f}</code> | Risiko <code>{decision.account_risk_pct * 100:.2f}%</code> Modal)\n"
         f"⏱️ <i>UTC: {html.escape(decision.timestamp)}</i>"
     )
 

@@ -83,6 +83,7 @@ class PositionSizer:
         confidence: float,
         s_vol: float,
         portfolio_equity: Optional[float] = None,
+        take_profit: Optional[float] = None,
         reward_risk_ratio: Optional[float] = None,
         daily_drawdown_override: Optional[float] = None,
         enable_kelly: bool = False,
@@ -161,13 +162,45 @@ class PositionSizer:
             base_risk_capital,
             base_risk_capital * scaling_factor,
         )
-
         stop_distance = abs(entry_price - stop_loss)
         if stop_distance <= 1e-9 or entry_price <= 0:
             stop_distance = max(entry_price * 0.02, 1e-4)
 
+        # Aturan Risk Management: Hitung Risk-Reward (RR) nya dulu. Kalau jelek (< 1.5R), lewati!
+        if take_profit is not None and take_profit > 0 and stop_distance > 1e-9:
+            reward_distance = abs(take_profit - entry_price)
+            actual_rrr = round(reward_distance / stop_distance, 2)
+            req_rrr = max(1.5, rrr if rrr is not None else self.settings.min_risk_reward_ratio)
+            if actual_rrr < req_rrr:
+                logger.info(
+                    "Trade dilewati: Risk-Reward Ratio tidak menguntungkan",
+                    actual_rrr=actual_rrr,
+                    required_min=req_rrr,
+                )
+                return PositionSizeResult(
+                    approved=False,
+                    rejection_reason=(
+                        f"Risk-Reward Ratio tidak menguntungkan (1:{actual_rrr:.2f}R < minimal 1:{req_rrr:.1f}R). "
+                        f"Sesuai aturan Risk Management, trade dilewati."
+                    ),
+                    portfolio_equity=round(equity, 2),
+                    base_risk_capital=round(base_risk_capital, 2),
+                    adjusted_risk_capital=0.0,
+                    position_units=0.0,
+                    position_notional=0.0,
+                    account_risk_pct=0.0,
+                    kelly_fraction=kelly,
+                    risk_multiplier=risk_multiplier,
+                    confidence=clamped_conf,
+                    s_vol=clamped_vol,
+                    circuit_breaker_active=False,
+                    volatility_suppressed=False,
+                )
+
+        # Aturan Sederhana: Risiko per trade kecil dan konsisten (e.g. 1.0% - 1.5% modal).
+        # SL Jauh > posisinya diperkecil. SL Dekat > posisinya lebih besar.
+        # Yang dijaga bukan ukuran posisinya, tapi besar risikonya ($ / risk budget)!
         raw_units = adjusted_risk_capital / stop_distance
-        # Cap total notional exposure to 100% of unlevered portfolio equity
         max_units_by_equity = equity / max(entry_price, 1e-6)
         position_units = min(raw_units, max_units_by_equity)
         position_notional = position_units * entry_price

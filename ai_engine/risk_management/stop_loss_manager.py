@@ -136,6 +136,77 @@ class StopLossManager:
             reward_risk_ratio_2=3.0,
         )
 
+    def calculate_structural_targets(
+        self,
+        entry_price: float,
+        action: TradeDirection,
+        latest_hl: float = 0.0,
+        latest_lh: float = 0.0,
+        atr_14: float = 0.0,
+        min_rrr: float = 2.0,
+        buffer_atr_mult: float = 0.15,
+    ) -> StopLossTargets:
+        """
+        Hitung Stop-Loss Berdasarkan Invalidation Point Struktur Market (Pullback):
+        - BUY di Pullback: Ide kita Higher Low (HL) terjaga.
+          Stop-Loss ditaruh sedikit di bawah lembah itu (latest_hl - buffer).
+          Jika harga menembus ke bawah, ide salah -> Cut loss kecil, terukur, dan diterima dari awal.
+        - SELL di Pullback: Ide kita Lower High (LH) terjaga.
+          Stop-Loss ditaruh sedikit di atas puncak itu (latest_lh + buffer).
+          Jika harga menembus ke atas, ide salah -> Cut loss kecil, terukur, dan diterima dari awal.
+        - Jarak Entry ke Stop-Loss adalah Risiko = 1R.
+        - Jarak Entry ke Take-Profit 1 = 2x Risiko = 2R (Rasio 1R:2R). Satu kali benar menutup 2x salah!
+        - Take-Profit 2 = 3R (Rasio 1R:3R).
+        """
+        if entry_price <= 0:
+            raise ValueError(f"entry_price must be positive, got {entry_price}")
+
+        effective_atr = atr_14 if atr_14 > 0 else entry_price * 0.002
+        buffer = max(buffer_atr_mult * effective_atr, entry_price * 0.0005)
+        min_risk = max(0.50 * effective_atr, entry_price * 0.001)
+        max_risk = min(3.0 * effective_atr, entry_price * 0.05)
+
+        if action == "BUY":
+            if latest_hl > 0 and latest_hl < entry_price:
+                raw_sl = latest_hl - buffer
+                raw_dist = entry_price - raw_sl
+                risk_dist = min(max(raw_dist, min_risk), max_risk)
+                stop_loss = entry_price - risk_dist
+            else:
+                risk_dist = min(0.65 * effective_atr, entry_price * 0.04)
+                stop_loss = entry_price - risk_dist
+            tp1 = entry_price + (risk_dist * min_rrr)
+            tp2 = entry_price + (risk_dist * (min_rrr + 1.0))
+        elif action == "SELL":
+            if latest_lh > 0 and latest_lh > entry_price:
+                raw_sl = latest_lh + buffer
+                raw_dist = raw_sl - entry_price
+                risk_dist = min(max(raw_dist, min_risk), max_risk)
+                stop_loss = entry_price + risk_dist
+            else:
+                risk_dist = min(0.65 * effective_atr, entry_price * 0.04)
+                stop_loss = entry_price + risk_dist
+            tp1 = max(entry_price * 0.05, entry_price - (risk_dist * min_rrr))
+            tp2 = max(entry_price * 0.02, entry_price - (risk_dist * (min_rrr + 1.0)))
+        else:
+            risk_dist = min(0.65 * effective_atr, entry_price * 0.04)
+            stop_loss = entry_price - risk_dist
+            tp1 = entry_price + (risk_dist * min_rrr)
+            tp2 = entry_price + (risk_dist * (min_rrr + 1.0))
+
+        return StopLossTargets(
+            action=action,
+            entry_price=round(entry_price, 4),
+            atr_14=round(effective_atr, 4),
+            stop_loss=round(stop_loss, 4),
+            take_profit_1=round(tp1, 4),
+            take_profit_2=round(tp2, 4),
+            trailing_stop_distance=round(risk_dist * 0.55, 4),
+            risk_per_unit=round(risk_dist, 4),
+            reward_risk_ratio_1=round(min_rrr, 2),
+            reward_risk_ratio_2=round(min_rrr + 1.0, 2),
+        )
+
     def calculate_event_mode_targets(
         self,
         entry_price: float,

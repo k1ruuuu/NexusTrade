@@ -289,6 +289,7 @@ class EnsembleDecisionAgent:
         sizing: PositionSizeResult = self.position_sizer.calculate_position(
             entry_price=entry_price,
             stop_loss=targets.stop_loss,
+            take_profit=targets.take_profit_1,
             confidence=confidence,
             s_vol=clamped_vol,
             portfolio_equity=portfolio_equity,
