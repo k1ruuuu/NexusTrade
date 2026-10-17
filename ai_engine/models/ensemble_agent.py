@@ -35,6 +35,7 @@ from data_pipeline.market_symbols import normalize_symbol
 from data_pipeline.preprocessor_ohlcv import OHLCVPreprocessor
 from data_pipeline.candlestick_reader import CandlestickReader
 from data_pipeline.market_structure_analyzer import MarketStructureAnalyzer, MarketStructureResult
+from data_pipeline.liquidity_analyzer import LiquidityAnalyzer, LiquidityAnalysisResult
 from src.features.structure_extractor import CandleStructuralExtractor
 from src.models.macro_regime import MacroRegimeDetector
 from ai_engine.models.meta_label_engine import (
@@ -748,6 +749,13 @@ class EnsembleDecisionAgent:
             blended_s_tech = max(-0.10, blended_s_tech)
         elif top_down.macro_bias == "SELL_ONLY" and dom_sign > 0:
             blended_s_tech = min(0.10, blended_s_tech)
+        liq_res = LiquidityAnalyzer.analyze_liquidity(ut_source_df.tail(60), symbol=clean_sym, timeframe="5m")
+        if liq_res.recent_sweep is not None:
+            if liq_res.recent_sweep.sweep_type == "BULLISH_SSL_SWEEP":
+                blended_s_tech = min(0.96, blended_s_tech + 0.15)
+            elif liq_res.recent_sweep.sweep_type == "BEARISH_BSL_SWEEP":
+                blended_s_tech = max(-0.96, blended_s_tech - 0.15)
+
         last_cp = cp_5m_df.iloc[-1]
         active_pattern = str(last_cp.get("cp_pattern_name", "")).strip() or cs_analysis.latest_candle.pattern_label
         cp_score = float(last_cp.get("cp_score", 0.0))
@@ -854,6 +862,11 @@ class EnsembleDecisionAgent:
                 "pullback_phase": struct_res.pullback_analysis.current_phase if struct_res.pullback_analysis else "UNKNOWN",
                 "pullback_health": ("SEHAT" if struct_res.pullback_analysis.is_healthy else "RUSAK") if struct_res.pullback_analysis else "NORMAL",
                 "pullback_explanation": struct_res.pullback_analysis.phase_explanation if struct_res.pullback_analysis else "",
+                "liquidity_bsl": liq_res.nearest_bsl,
+                "liquidity_ssl": liq_res.nearest_ssl,
+                "liquidity_eq_summary": liq_res.rule_1_eq_summary,
+                "liquidity_sweep_desc": liq_res.recent_sweep.details if liq_res.recent_sweep else "Tidak ada sapuan instan",
+                "liquidity_sl_guide": liq_res.rule_3_sl_placement_guide,
             },
             headlines=[h.headline for h in sent_90d.headline_scores],
             newly_learned_headlines=sent_90d.newly_learned_count,

@@ -145,6 +145,8 @@ class StopLossManager:
         atr_14: float = 0.0,
         min_rrr: float = 2.0,
         buffer_atr_mult: float = 0.15,
+        obvious_ssl_level: Optional[float] = None,
+        obvious_bsl_level: Optional[float] = None,
     ) -> StopLossTargets:
         """
         Hitung Stop-Loss Berdasarkan Invalidation Point Struktur Market (Pullback):
@@ -164,11 +166,15 @@ class StopLossManager:
         effective_atr = atr_14 if atr_14 > 0 else entry_price * 0.002
         buffer = max(buffer_atr_mult * effective_atr, entry_price * 0.0005)
         min_risk = max(0.50 * effective_atr, entry_price * 0.001)
-        max_risk = min(3.0 * effective_atr, entry_price * 0.05)
+        max_risk = min(3.0 * effective_atr, entry_price * 0.15)
 
         if action == "BUY":
             if latest_hl > 0 and latest_hl < entry_price:
                 raw_sl = latest_hl - buffer
+                # Aturan 3 Likuiditas: Jangan taruh SL di tempat yang terlalu jelas!
+                # Jika raw_sl jatuh terlalu dekat dengan Equal Lows / SSL ritel, beri Anti-Stop-Hunt Buffer
+                if obvious_ssl_level is not None and abs(raw_sl - obvious_ssl_level) <= (0.40 * effective_atr):
+                    raw_sl = min(raw_sl, obvious_ssl_level - (0.35 * effective_atr))
                 raw_dist = entry_price - raw_sl
                 risk_dist = min(max(raw_dist, min_risk), max_risk)
                 stop_loss = entry_price - risk_dist
@@ -180,6 +186,10 @@ class StopLossManager:
         elif action == "SELL":
             if latest_lh > 0 and latest_lh > entry_price:
                 raw_sl = latest_lh + buffer
+                # Aturan 3 Likuiditas: Jangan taruh SL di tempat yang terlalu jelas!
+                # Jika raw_sl jatuh terlalu dekat dengan Equal Highs / BSL ritel, beri Anti-Stop-Hunt Buffer
+                if obvious_bsl_level is not None and abs(raw_sl - obvious_bsl_level) <= (0.40 * effective_atr):
+                    raw_sl = max(raw_sl, obvious_bsl_level + (0.35 * effective_atr))
                 raw_dist = raw_sl - entry_price
                 risk_dist = min(max(raw_dist, min_risk), max_risk)
                 stop_loss = entry_price + risk_dist

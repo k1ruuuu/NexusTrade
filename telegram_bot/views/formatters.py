@@ -183,6 +183,14 @@ def format_signal_card(decision: SignalDecision) -> str:
         ms_line = f"• <b>Struktur Pasar:</b> {ms_badge}{pb_text}\n• <b>Penjaga Tren:</b> 🛡️ <i>{html.escape(ms_guard)}</i>\n"
     else:
         ms_line = ""
+    bsl_val = float(decision.indicators.get("liquidity_bsl", 0.0))
+    ssl_val = float(decision.indicators.get("liquidity_ssl", 0.0))
+    liq_sweep = str(decision.indicators.get("liquidity_sweep_desc", "")).strip()
+    if bsl_val > 0 and ssl_val > 0:
+        sweep_tag = f"\n• <b>Sapuan Likuiditas:</b> <i>{html.escape(liq_sweep)}</i>" if ("BULLISH" in liq_sweep or "BEARISH" in liq_sweep) else ""
+        liq_line = f"• <b>Peta Likuiditas:</b> 🧲 BSL (Atas) <code>${bsl_val:,.2f}</code> | SSL (Bawah) <code>${ssl_val:,.2f}</code>{sweep_tag}\n"
+    else:
+        liq_line = ""
     htf_inst = str(decision.indicators.get("htf_macro_instruction", "")).strip()
     htf_verdict = str(decision.indicators.get("htf_ltf_verdict", "")).strip()
     htf_line = f"• <b>Tren Utama (HTF):</b> {html.escape(htf_inst)}\n• <b>Keselarasan LTF:</b> {html.escape(htf_verdict)}\n" if htf_inst else ""
@@ -214,6 +222,7 @@ def format_signal_card(decision: SignalDecision) -> str:
         f"• <b>Support Bawah (S1 | S2):</b> <code>{format_price(decision.support_1)}</code> (<code>{s1_pct}</code>) | <code>{format_price(decision.support_2)}</code>\n"
         f"• <b>Posisi S/R:</b> <i>{html.escape(decision.sr_status)}</i>\n"
         f"{ms_line}"
+        f"{liq_line}"
         f"• <b>Kondisi Tren:</b> <i>{html.escape(decision.market_structure_status)}</i>\n\n"
         f"<b>🧠 Analisis 6 Pilar:</b>\n"
         f"{htf_line}"
