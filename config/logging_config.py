@@ -11,6 +11,16 @@ from rich.logging import RichHandler
 from config.settings import Settings, get_settings
 
 
+class TransientNetworkFilter(logging.Filter):
+    """Downgrade transient 1-second long-polling socket retries from ERROR to WARNING."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.ERROR and "Failed to fetch updates" in str(record.msg):
+            record.levelno = logging.WARNING
+            record.levelname = "WARNING"
+        return True
+
+
 def setup_logging(
     settings: Optional[Settings] = None,
     log_level: Optional[str] = None,
@@ -25,7 +35,7 @@ def setup_logging(
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
     root_logger.setLevel(effective_level)
-
+    root_logger.addFilter(TransientNetworkFilter())
     shared_processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_logger_name,

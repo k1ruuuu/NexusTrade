@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Optional
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.types import FSInputFile
 
@@ -56,8 +57,10 @@ class NexusTradeBotService:
         self.backtester = backtester or EventDrivenBacktester(self.settings)
         self.user_vault = user_vault or UserVault(self.settings)
         self.admin_store = admin_store or AdminStore(self.settings, db_path=self.user_vault.db_path)
+        session = AiohttpSession(timeout=120.0)
         self.bot = bot or Bot(
             token=self.settings.telegram_bot_token,
+            session=session,
             default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         )
         self.auto_trader = auto_trader or SmartAutoTraderEngine(
