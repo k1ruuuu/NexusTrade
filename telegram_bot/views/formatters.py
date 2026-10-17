@@ -175,9 +175,12 @@ def format_signal_card(decision: SignalDecision) -> str:
     ms_lbl = str(decision.indicators.get("market_structure_label", "")).strip()
     ms_guard = str(decision.indicators.get("market_structure_guardian", "")).strip()
     ms_detail = str(decision.indicators.get("market_structure_detail", "")).strip()
+    pb_phase = str(decision.indicators.get("pullback_phase", "")).strip()
+    pb_health = str(decision.indicators.get("pullback_health", "")).strip()
     if ms_lbl:
         ms_badge = "📈 UPTREND (HH-HL)" if ms_lbl == "HH-HL" else ("📉 DOWNTREND (LH-LL)" if ms_lbl == "LH-LL" else "↔️ RANGE / SIDEWAYS")
-        ms_line = f"• <b>Struktur Pasar:</b> {ms_badge}\n• <b>Penjaga Tren:</b> 🛡️ <i>{html.escape(ms_guard)}</i>\n"
+        pb_text = f" • Gelombang: {pb_phase} ({pb_health})" if pb_phase and pb_phase != "UNKNOWN" else ""
+        ms_line = f"• <b>Struktur Pasar:</b> {ms_badge}{pb_text}\n• <b>Penjaga Tren:</b> 🛡️ <i>{html.escape(ms_guard)}</i>\n"
     else:
         ms_line = ""
     htf_inst = str(decision.indicators.get("htf_macro_instruction", "")).strip()

@@ -159,3 +159,70 @@ def test_top_down_htf_downtrend_cari_turun():
     )
     assert td_buy.is_aligned is False
     assert "DITOLAK" in td_buy.execution_verdict
+
+def test_impulse_vs_pullback_detection():
+    """Verify distinction between impulse (large, fast bars) and pullback (slow, overlapping bars)."""
+    # Build uptrend wave: base 100 -> 120 -> 110 (HL) -> 130 (HH) -> 125 (HL) -> 138 (HH)
+    wave = [100.0, 120.0, 110.0, 130.0, 125.0, 138.0]
+    df_uptrend = create_zigzag_ohlcv(wave, bars_per_segment=6)
+
+    # 1. Impuls: lilin putih bodi besar melaju di dekat puncak
+    pb_imp = MarketStructureAnalyzer.analyze_impulse_and_pullback(
+        df=df_uptrend,
+        regime="UPTREND",
+        latest_sh=138.0,
+        latest_sl=110.0,
+        latest_hl=125.0,
+        latest_lh=130.0,
+    )
+    assert pb_imp.current_phase in ("IMPULSE", "PULLBACK_COMPLETED")
+    assert pb_imp.is_healthy is True
+
+    # 2. Koreksi/Pullback: Tambah lilin-lilin merah kecil turun pelan (136, 135, 134)
+    records_pullback = df_uptrend.to_dict("records")
+    for px in [136.0, 135.0, 134.0]:
+        records_pullback.append({
+            "open": px + 0.4,
+            "high": px + 0.6,
+            "low": px - 0.4,
+            "close": px - 0.2,
+            "volume": 800.0,
+        })
+    df_pullback = pd.DataFrame(records_pullback)
+
+    pb_corr = MarketStructureAnalyzer.analyze_impulse_and_pullback(
+        df=df_pullback,
+        regime="UPTREND",
+        latest_sh=138.0,
+        latest_sl=110.0,
+        latest_hl=125.0,
+        latest_lh=130.0,
+    )
+    assert pb_corr.current_phase == "PULLBACK"
+    assert pb_corr.is_healthy is True  # HL 125.0 terjaga karena harga di 133.8
+    assert "HL $125.00 terjaga" in pb_corr.phase_explanation
+
+
+def test_pullback_health_unhealthy_when_hl_broken():
+    """Verify pullback becomes unhealthy / broken when price dumps below latest HL."""
+    wave = [100.0, 120.0, 110.0, 130.0, 125.0, 138.0]
+    df = create_zigzag_ohlcv(wave, bars_per_segment=6)
+
+    # Append dump bars dropping below HL 125.0 (down to 120.0)
+    recs = df.to_dict("records")
+    recs.append({"open": 126.0, "high": 126.5, "low": 119.5, "close": 120.0, "volume": 5000.0})
+    df_dump = pd.DataFrame(recs)
+
+    pb_dump = MarketStructureAnalyzer.analyze_impulse_and_pullback(
+        df=df_dump,
+        regime="UPTREND",
+        latest_sh=138.0,
+        latest_sl=110.0,
+        latest_hl=125.0,
+        latest_lh=130.0,
+    )
+    assert pb_dump.is_healthy is False
+    assert "RUSAK" in pb_dump.phase_explanation or "ABNORMAL" in pb_dump.phase_explanation
+    assert "1. KARAKTER GELOMBANG:" in pb_dump.three_golden_rules
+    assert "2. TUNGGU PULLBACK:" in pb_dump.three_golden_rules
+    assert "3. KESEHATAN PULLBACK:" in pb_dump.three_golden_rules

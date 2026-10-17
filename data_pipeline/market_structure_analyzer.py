@@ -34,6 +34,18 @@ class SwingPoint:
 
 
 @dataclass
+class PullbackWaveAnalysis:
+    """Hasil diagnosis karakter gelombang Impuls vs Koreksi/Pullback dan Kesehatannya."""
+    current_phase: Literal["IMPULSE", "PULLBACK", "PULLBACK_COMPLETED", "CONSOLIDATION"]
+    is_healthy: bool
+    retest_depth_pct: float
+    overlap_ratio: float
+    guardian_level: float
+    guardian_kind: str
+    phase_explanation: str
+    three_golden_rules: str
+
+@dataclass
 class MarketStructureResult:
     """Hasil diagnosis struktur pasar komprehensif sebelum entry."""
     symbol: str
@@ -62,6 +74,7 @@ class MarketStructureResult:
     # Rekomendasi Arah Entry Berdasarkan Struktur
     structural_bias: Literal["BUY", "SELL", "WAIT"] = "WAIT"
     entry_allowed: bool = False
+    pullback_analysis: Optional[PullbackWaveAnalysis] = None
     three_checks_display: str = ""
 
 @dataclass
@@ -261,13 +274,24 @@ class MarketStructureAnalyzer:
             allowed = False
             summary = "↔️ RANGE / SIDEWAYS: Puncak & Lembah Sejajar, Struktur Belum Memberi Arah Pasti"
 
-        # Tampilan 3 Checklist Wajib
+        # Analisa Karakter Gelombang: Impuls vs Koreksi/Pullback & Kesehatannya
+        pb_res = cls.analyze_impulse_and_pullback(
+            df=df,
+            regime=regime,
+            latest_sh=lat_sh,
+            latest_sl=lat_sl,
+            latest_hl=latest_hl,
+            latest_lh=latest_lh,
+        )
+
+        # Tampilan 3 Checklist Wajib + 3 Aturan Trend & Pullback
         checks_text = (
             f"1. 🎯 SWING HIGH & LOW MENONJOL: Swing High ${lat_sh:,.2f} | Swing Low ${lat_sl:,.2f}\n"
             f"2. 📊 POLA STRUKTUR: {pattern_label} ({summary})\n"
-            f"3. 🛡️ SWING PENJAGA TREN: {guardian_kind} @ ${guardian_price:,.2f} ➔ {status_detail}"
+            f"3. 🛡️ SWING PENJAGA TREN: {guardian_kind} @ ${guardian_price:,.2f} ➔ {status_detail}\n"
+            f"4. 🌊 FASE GELOMBANG: {pb_res.current_phase} ➔ {pb_res.phase_explanation}\n"
+            f"5. ☕ KESEHATAN PULLBACK: {'🟢 SEHAT (HL/LH Terjaga)' if pb_res.is_healthy else '🔴 RUSAK / ABNORMAL'}"
         )
-
         return MarketStructureResult(
             symbol=clean_sym,
             timeframe=timeframe,
@@ -287,6 +311,7 @@ class MarketStructureAnalyzer:
             structural_bias=bias,
             entry_allowed=allowed,
             three_checks_display=checks_text,
+            pullback_analysis=pb_res,
         )
 
     @classmethod
@@ -357,4 +382,133 @@ class MarketStructureAnalyzer:
             ltf_structure=ltf_struct,
             is_aligned=is_aligned,
             execution_verdict=verdict,
+        )
+
+    @classmethod
+    def analyze_impulse_and_pullback(
+        cls,
+        df: pd.DataFrame,
+        regime: Literal["UPTREND", "DOWNTREND", "RANGE_SIDEWAYS"],
+        latest_sh: float,
+        latest_sl: float,
+        latest_hl: float,
+        latest_lh: float,
+        lookback_bars: int = 10,
+    ) -> PullbackWaveAnalysis:
+        """
+        Filosofi Trend & Pullback:
+        1. Bedakan Impuls dan Koreksi:
+           - Impuls: Searah tren, candle besar, cepat, jaraknya jauh.
+           - Koreksi/Pullback: Berlawanan arah tren, candle lebih kecil, pelan, dan saling tumpang tindih.
+           - Uptrend sehat: Impuls lebih panjang dari koreksi (naik cepat, turun pelan).
+        2. Tunggu Pullback:
+           - Jangan entry di puncak ekstensi impuls. Tunggu pasar istirahat dan menyelesaikan pullback.
+        3. Pastikan Pullback Sehat (HL/LH Terjaga):
+           - Uptrend: Selama harga bertahan di atas HL terakhir -> Pullback sehat!
+           - Downtrend: Selama harga bertahan di bawah LH terakhir -> Pullback sehat!
+        """
+        curr_price = float(df["close"].iloc[-1]) if len(df) > 0 else 2650.0
+        subset = df.tail(lookback_bars)
+        opens = pd.to_numeric(subset["open"], errors="coerce").astype(np.float64).values
+        highs = pd.to_numeric(subset["high"], errors="coerce").astype(np.float64).values
+        lows = pd.to_numeric(subset["low"], errors="coerce").astype(np.float64).values
+        closes = pd.to_numeric(subset["close"], errors="coerce").astype(np.float64).values
+
+        n_bars = len(subset)
+        if n_bars < 3:
+            return PullbackWaveAnalysis(
+                current_phase="CONSOLIDATION",
+                is_healthy=True,
+                retest_depth_pct=0.0,
+                overlap_ratio=0.0,
+                guardian_level=latest_hl if regime == "UPTREND" else latest_lh,
+                guardian_kind="HL" if regime == "UPTREND" else "LH",
+                phase_explanation="Data lilin belum mencukupi untuk analisis gelombang impuls/pullback.",
+                three_golden_rules="Menunggu data lilin terbentuk.",
+            )
+
+        # Hitung overlap ratio antar lilin berurutan
+        overlap_sum = 0.0
+        for i in range(1, n_bars):
+            rng = max(highs[i] - lows[i], 1e-6)
+            overlap = max(0.0, min(highs[i], highs[i - 1]) - max(lows[i], lows[i - 1]))
+            overlap_sum += (overlap / rng)
+        avg_overlap = overlap_sum / max(n_bars - 1, 1)
+
+        # Lilin terakhir
+        last_body = abs(closes[-1] - opens[-1])
+        last_range = max(highs[-1] - lows[-1], 1e-6)
+        last_body_ratio = last_body / last_range
+        last_is_white = closes[-1] > opens[-1]
+        last_is_red = closes[-1] < opens[-1]
+
+        if regime == "UPTREND":
+            guardian_kind = "HL"
+            guardian_level = latest_hl
+            is_healthy = curr_price >= latest_hl
+            total_impulse_range = max(latest_sh - latest_hl, 1e-6)
+            retest_depth = max(0.0, (latest_sh - curr_price) / total_impulse_range * 100.0)
+
+            if curr_price >= latest_sh * 0.999 and last_is_white and last_body_ratio >= 0.50:
+                current_phase: Literal["IMPULSE", "PULLBACK", "PULLBACK_COMPLETED", "CONSOLIDATION"] = "IMPULSE"
+                phase_expl = "⚡ GELOMBANG IMPULS NAIK: Lilin besar & cepat melaju ke atas (Jangan kejar harga di pucuk, tunggu pullback!)."
+            elif curr_price < latest_sh and last_is_red and is_healthy:
+                current_phase = "PULLBACK"
+                phase_expl = f"☕ SEDANG PULLBACK ISTIRAHAT: Harga turun pelan (Retest {retest_depth:.1f}% dari puncak, HL ${latest_hl:,.2f} terjaga)."
+            elif curr_price < latest_sh and last_is_white and is_healthy:
+                current_phase = "PULLBACK_COMPLETED"
+                phase_expl = f"🎯 PULLBACK SELESAI & SEHAT: Muncul lilin pembalikan di atas HL ${latest_hl:,.2f} ➔ SIAP ENTRY BUY!"
+            elif not is_healthy:
+                current_phase = "CONSOLIDATION"
+                phase_expl = f"⚠️ PULLBACK RUSAK / ABNORMAL: HL Terakhir (${latest_hl:,.2f}) Ditembus ke Bawah (Struktur naik patah)!"
+            else:
+                current_phase = "PULLBACK"
+                phase_expl = f"Koreksi normal di rentang ${latest_hl:,.2f} - ${latest_sh:,.2f}."
+
+        elif regime == "DOWNTREND":
+            guardian_kind = "LH"
+            guardian_level = latest_lh
+            is_healthy = curr_price <= latest_lh
+            total_impulse_range = max(latest_lh - latest_sl, 1e-6)
+            retest_depth = max(0.0, (curr_price - latest_sl) / total_impulse_range * 100.0)
+
+            if curr_price <= latest_sl * 1.001 and last_is_red and last_body_ratio >= 0.50:
+                current_phase = "IMPULSE"
+                phase_expl = "⚡ GELOMBANG IMPULS TURUN: Lilin merah besar meluncur ke bawah (Jangan kejar harga di dasar, tunggu pullback!)."
+            elif curr_price > latest_sl and last_is_white and is_healthy:
+                current_phase = "PULLBACK"
+                phase_expl = f"☕ SEDANG PULLBACK ISTIRAHAT: Harga naik pelan (Retest {retest_depth:.1f}% dari dasar, LH ${latest_lh:,.2f} terjaga)."
+            elif curr_price > latest_sl and last_is_red and is_healthy:
+                current_phase = "PULLBACK_COMPLETED"
+                phase_expl = f"🎯 PULLBACK SELESAI & SEHAT: Muncul lilin merah penekanan di bawah LH ${latest_lh:,.2f} ➔ SIAP ENTRY SELL!"
+            elif not is_healthy:
+                current_phase = "CONSOLIDATION"
+                phase_expl = f"⚠️ PULLBACK RUSAK / ABNORMAL: LH Terakhir (${latest_lh:,.2f}) Ditembus ke Atas (Struktur turun patah)!"
+            else:
+                current_phase = "PULLBACK"
+                phase_expl = f"Koreksi normal di rentang ${latest_sl:,.2f} - ${latest_lh:,.2f}."
+
+        else:
+            guardian_kind = "RANGE_BOUNDS"
+            guardian_level = latest_sh
+            is_healthy = True
+            retest_depth = 50.0
+            current_phase = "CONSOLIDATION"
+            phase_expl = f"↔️ PASAR RANGE / KONSOLIDASI: Lilin tumpang tindih ({avg_overlap*100:.0f}% Overlap) tanpa gelombang impuls dominan."
+
+        golden_rules_text = (
+            f"1. KARAKTER GELOMBANG: {current_phase} ({phase_expl})\n"
+            f"2. TUNGGU PULLBACK: {'✅ SIAP ENTRY (Pullback Selesai)' if current_phase == 'PULLBACK_COMPLETED' else '⏳ TUNGGU PULLBACK SELESAI'}\n"
+            f"3. KESEHATAN PULLBACK: {'🟢 SEHAT (' + guardian_kind + f' @ ${guardian_level:,.2f} Terjaga)' if is_healthy else '🔴 RUSAK / ABNORMAL'}"
+        )
+
+        return PullbackWaveAnalysis(
+            current_phase=current_phase,
+            is_healthy=is_healthy,
+            retest_depth_pct=round(retest_depth, 2),
+            overlap_ratio=round(avg_overlap, 4),
+            guardian_level=guardian_level,
+            guardian_kind=guardian_kind,
+            phase_explanation=phase_expl,
+            three_golden_rules=golden_rules_text,
         )
