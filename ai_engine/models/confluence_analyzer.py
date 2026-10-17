@@ -291,13 +291,13 @@ class MultiFactorConfluenceAnalyzer:
                 adj += 0.06
         elif action == "SELL":
             if cvd_div == "BULLISH_DIV":
-                adj += 0.12
+                adj -= 0.12
             elif cvd_delta_20 < -0.08 and rvol >= 1.10:
-                adj -= 0.06
+                adj += 0.06
 
         # Section 6.3: Mathematical Strategy Expectancy: E = (p_w * AvgWin) - (p_l * AvgLoss)
         base_prob = 0.42 + 0.32 * min(1.0, abs(s_tech) * 0.75 + abs(s_sent) * 0.25)
-        win_prob = float(np.clip(base_prob + 0.12 * (confluence_ratio - 0.5), 0.25, 0.88))
+        win_prob = float(np.clip(base_prob + 0.12 * (confluence_ratio - 0.5) + adj, 0.25, 0.88))
         loss_prob = 1.0 - win_prob
         # Subtract estimated 8 bps spread+fee drag (0.04R)
         expectancy_r = round((win_prob * rrr) - (loss_prob * 1.0) - 0.04, 3)

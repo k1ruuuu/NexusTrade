@@ -994,7 +994,21 @@ class SmartAutoTraderEngine:
                 )
 
             # Gate 6: Centralized Non-Bypassable Risk Policy Preflight (NT-01, NT-02, NT-03, NT-11)
-            order_side = "BUY" if decision.action == "BUY" else "SELL"
+            if decision.action not in ("BUY", "SELL"):
+                return AutoTradeExecutionReport(
+                    user_id=int(user_id),
+                    symbol=clean_sym,
+                    timeframe=clean_tf,
+                    setup_required=False,
+                    executed=False,
+                    decision=decision,
+                    credentials=creds,
+                    gates=gates,
+                    rejection_summary=f"Aksi sinyal adalah {decision.action} (bukan BUY/SELL), tidak ada order yang dieksekusi.",
+                    trade_mode=trade_mode,
+                    ea_mode=ea_mode,
+                )
+            order_side = decision.action
             eff_risk_rate = (
                 0.01
                 if ea_mode

@@ -230,6 +230,63 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
     )
     creds = vault.resolve_credentials(user_id)
 
+    if sub in ("off", "stop"):
+        target_token = args[1].strip() if len(args) > 1 else None
+        if target_token and target_token.lower() not in ("all", "semua"):
+            stopped_one = auto_trader.stop_session_by_id(user_id, target_token)
+            if stopped_one is not None:
+                remaining_sess = auto_trader.get_user_sessions(user_id)
+                rem_note = f"\n\nSisa sesi aktif: {len(remaining_sess)} sesi." if remaining_sess else "\n\nSemua sesi Auto-Trade telah selesai."
+                if not remaining_sess:
+                    vault.set_autotrade_enabled(user_id, False)
+                await message.answer(
+                    f"🛑 <b>Sesi Auto-Trade [ID #{stopped_one.short_id}] ({stopped_one.symbol}) Telah Dihentikan.</b>\n"
+                    f"• <b>Status:</b> Nonaktif (Dibatalkan user)\n"
+                    f"• <b>Total Siklus:</b> <code>{stopped_one.cycles_completed}x</code>\n"
+                    f"• <b>Realized PnL:</b> <code>${stopped_one.realized_pnl_usdt:+.2f} USD</code>"
+                    + rem_note,
+                    parse_mode="HTML",
+                    reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=bool(remaining_sess)),
+                )
+                return
+            else:
+                stopped_sym = auto_trader.stop_user_sessions(user_id, symbol=target_token)
+                if stopped_sym:
+                    remaining_sess = auto_trader.get_user_sessions(user_id)
+                    if not remaining_sess:
+                        vault.set_autotrade_enabled(user_id, False)
+                    await message.answer(
+                        f"🛑 <b>{len(stopped_sym)} Sesi Auto-Trade pada {target_token.upper()} Telah Dihentikan.</b>",
+                        parse_mode="HTML",
+                        reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=bool(remaining_sess)),
+                    )
+                    return
+                else:
+                    await message.answer(
+                        f"⚠️ <b>Sesi Auto-Trade dengan ID '<code>{html.escape(target_token)}</code>' tidak ditemukan atau sudah nonaktif.</b>\n"
+                        f"Ketik <code>/autotrade status</code> untuk melihat daftar ID sesi yang sedang aktif.",
+                        parse_mode="HTML",
+                    )
+                    return
+
+        stopped_sessions = auto_trader.stop_user_sessions(user_id)
+        vault.set_autotrade_enabled(user_id, False)
+        await auto_trader.sync_live_mt5_positions(user_id)
+        updated = vault.resolve_credentials(user_id)
+        positions = vault.get_open_positions(user_id)
+        stop_note = (
+            f" ({len(stopped_sessions)} sesi berjangka waktu dihentikan)"
+            if stopped_sessions
+            else ""
+        )
+        await message.answer(
+            f"⚪ <b>Seluruh Sesi Auto-Trade Dinonaktifkan{stop_note}.</b>\n"
+            f"Bot tidak akan membuka posisi otomatis baru sampai Anda mengaktifkannya kembali.\n\n"
+            + format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), updated, positions),
+            parse_mode="HTML",
+            reply_markup=build_setup_keyboard(has_creds=bool(updated), autotrade_on=False),
+        )
+        return
     if creds is None:
         report = await auto_trader.evaluate_and_execute(
             user_id=user_id, symbol=req_symbol, trade_mode=is_trade_mode, ea_mode=ea_mode
@@ -302,63 +359,6 @@ async def handle_autotrade(message: Message, **data: Any) -> None:
             on_title + format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), updated, positions),
             parse_mode="HTML",
             reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=True),
-        )
-        return
-    if sub in ("off", "stop"):
-        target_token = args[1].strip() if len(args) > 1 else None
-        if target_token and target_token.lower() not in ("all", "semua"):
-            stopped_one = auto_trader.stop_session_by_id(user_id, target_token)
-            if stopped_one is not None:
-                remaining_sess = auto_trader.get_user_sessions(user_id)
-                rem_note = f"\n\nSisa sesi aktif: {len(remaining_sess)} sesi." if remaining_sess else "\n\nSemua sesi Auto-Trade telah selesai."
-                if not remaining_sess:
-                    vault.set_autotrade_enabled(user_id, False)
-                await message.answer(
-                    f"🛑 <b>Sesi Auto-Trade [ID #{stopped_one.short_id}] ({stopped_one.symbol}) Telah Dihentikan.</b>\n"
-                    f"• <b>Status:</b> Nonaktif (Dibatalkan user)\n"
-                    f"• <b>Total Siklus:</b> <code>{stopped_one.cycles_completed}x</code>\n"
-                    f"• <b>Realized PnL:</b> <code>${stopped_one.realized_pnl_usdt:+.2f} USD</code>"
-                    + rem_note,
-                    parse_mode="HTML",
-                    reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=bool(remaining_sess)),
-                )
-                return
-            else:
-                stopped_sym = auto_trader.stop_user_sessions(user_id, symbol=target_token)
-                if stopped_sym:
-                    remaining_sess = auto_trader.get_user_sessions(user_id)
-                    if not remaining_sess:
-                        vault.set_autotrade_enabled(user_id, False)
-                    await message.answer(
-                        f"🛑 <b>{len(stopped_sym)} Sesi Auto-Trade pada {target_token.upper()} Telah Dihentikan.</b>",
-                        parse_mode="HTML",
-                        reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=bool(remaining_sess)),
-                    )
-                    return
-                else:
-                    await message.answer(
-                        f"⚠️ <b>Sesi Auto-Trade dengan ID '<code>{html.escape(target_token)}</code>' tidak ditemukan atau sudah nonaktif.</b>\n"
-                        f"Ketik <code>/autotrade status</code> untuk melihat daftar ID sesi yang sedang aktif.",
-                        parse_mode="HTML",
-                    )
-                    return
-
-        stopped_sessions = auto_trader.stop_user_sessions(user_id)
-        vault.set_autotrade_enabled(user_id, False)
-        await auto_trader.sync_live_mt5_positions(user_id)
-        updated = vault.resolve_credentials(user_id)
-        positions = vault.get_open_positions(user_id)
-        stop_note = (
-            f" ({len(stopped_sessions)} sesi berjangka waktu dihentikan)"
-            if stopped_sessions
-            else ""
-        )
-        await message.answer(
-            f"⚪ <b>Seluruh Sesi Auto-Trade Dinonaktifkan{stop_note}.</b>\n"
-            f"Bot tidak akan membuka posisi otomatis baru sampai Anda mengaktifkannya kembali.\n\n"
-            + format_myaccount_card(user_id, user_name, vault.get_user_role(user_id), updated, positions),
-            parse_mode="HTML",
-            reply_markup=build_setup_keyboard(has_creds=True, autotrade_on=False),
         )
         return
 

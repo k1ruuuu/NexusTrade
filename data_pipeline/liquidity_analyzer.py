@@ -287,8 +287,8 @@ class LiquidityAnalyzer:
         if resistance_level is not None and resistance_level > 0:
             r = resistance_level
             breach_idx = -1
-            for i in range(n):
-                if highs[i] > r:
+            for i in range(n - 1, -1, -1):
+                if highs[i] > r and (i == 0 or closes[i - 1] <= r or opens[i] <= r):
                     breach_idx = i
                     break
 
@@ -370,8 +370,8 @@ class LiquidityAnalyzer:
         if support_level is not None and support_level > 0:
             s = support_level
             breach_idx = -1
-            for i in range(n):
-                if lows[i] < s:
+            for i in range(n - 1, -1, -1):
+                if lows[i] < s and (i == 0 or closes[i - 1] >= s or opens[i] >= s):
                     breach_idx = i
                     break
 

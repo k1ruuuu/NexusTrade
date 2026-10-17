@@ -112,6 +112,8 @@ class EventDrivenBacktester:
         equity_curve: list[float] = [round(equity, 2)]
         timestamps: list[str] = [str(featured["timestamp_iso"].iloc[0])]
         trades: list[SimulatedTrade] = []
+        from ai_engine.auto_trader.mt5_symbols import get_mt5_contract_size
+        contract_sz = get_mt5_contract_size(symbol)
 
         open_position: Optional[dict[str, Any]] = None
 
@@ -134,8 +136,6 @@ class EventDrivenBacktester:
                 exit_price: Optional[float] = None
                 exit_reason = ""
 
-                from ai_engine.auto_trader.mt5_symbols import get_mt5_contract_size
-                contract_sz = get_mt5_contract_size(symbol)
 
                 if direction == "BUY":
                     hit_sl = low_p <= stop_loss
@@ -278,15 +278,15 @@ class EventDrivenBacktester:
                         if entry_exit_px is not None:
                             units_e = sizing.position_units
                             raw_pnl_e = (
-                                (entry_exit_px - open_p) * units_e
+                                (entry_exit_px - open_p) * units_e * contract_sz
                                 if signal_dir == "BUY"
-                                else (open_p - entry_exit_px) * units_e
+                                else (open_p - entry_exit_px) * units_e * contract_sz
                             )
-                            fee_e = (open_p + entry_exit_px) * units_e * 0.0005
+                            fee_e = (open_p + entry_exit_px) * units_e * contract_sz * 0.0005
                             net_pnl_e = raw_pnl_e - fee_e
                             equity = max(0.0, equity + net_pnl_e)
                             self.position_sizer.current_equity = equity
-                            ret_pct_e = (net_pnl_e / max(open_p * units_e, 1e-6)) * 100.0
+                            ret_pct_e = (net_pnl_e / max(open_p * units_e * contract_sz, 1e-6)) * 100.0
                             trades.append(
                                 SimulatedTrade(
                                     entry_time=bar_time,

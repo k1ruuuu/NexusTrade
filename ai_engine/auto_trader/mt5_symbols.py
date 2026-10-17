@@ -286,7 +286,7 @@ def calculate_ea_sl_tp(
     - Returns (stop_loss, take_profit, decimals).
     """
     pip_sz = get_mt5_pip_size(symbol, entry_price)
-    decimals = 2 if entry_price >= 10.0 else (4 if entry_price >= 0.1 else 5)
+    decimals, _ = get_mt5_digits_and_point(symbol, entry_price)
     eff_sl_pips = max(float(sl_pips), float(stops_level_pips))
     eff_tp_pips = max(float(tp_pips), float(stops_level_pips))
 

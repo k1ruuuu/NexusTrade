@@ -316,12 +316,16 @@ class MarketStructureAnalyzer:
             regime = "DOWNTREND"
             pattern_label = "LH-LL"
             bias = "SELL"
+            guardian_kind = "LH"
+            guardian_price = latest_lh
             status_detail = struct_event.details
             summary = "📉 MSS BEARISH: Buyer Kehilangan Kendali, Struktur Berubah Jadi Downtrend"
         elif struct_event is not None and struct_event.event_type == "BULLISH_MSS":
             regime = "UPTREND"
             pattern_label = "HH-HL"
             bias = "BUY"
+            guardian_kind = "HL"
+            guardian_price = latest_hl
             status_detail = struct_event.details
             summary = "📈 MSS BULLISH: Seller Kehilangan Kendali, Struktur Berubah Jadi Uptrend"
 

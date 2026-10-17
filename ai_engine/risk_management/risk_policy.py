@@ -146,11 +146,23 @@ class RiskPolicy:
         clean_sym = spec.symbol.upper()
         raw_loss = price_delta * float(lots) * spec.contract_size
 
-        # Quote currency conversion to USD if quote is not USD (e.g. EURJPY, USDCHF, USDCAD)
+        # Quote currency conversion to USD if quote is not USD (e.g. USDJPY, EURJPY, GBPJPY, EURGBP, USDCAD)
         if len(clean_sym) == 6 and clean_sym.startswith("USD") and not clean_sym.endswith("USD"):
             # Base is USD, quote is JPY/CAD/CHF -> raw_loss is in quote ccy -> divide by exit/entry price
             raw_loss = raw_loss / max(entry_price, 1e-6)
-
+        elif len(clean_sym) == 6 and clean_sym.endswith("JPY"):
+            # Cross JPY (e.g. EURJPY, GBPJPY): raw_loss is in JPY -> convert to USD by dividing by USDJPY (~155.0)
+            raw_loss = raw_loss / 155.0
+        elif len(clean_sym) == 6 and clean_sym.endswith("GBP"):
+            raw_loss = raw_loss * 1.25
+        elif len(clean_sym) == 6 and clean_sym.endswith("EUR"):
+            raw_loss = raw_loss * 1.05
+        elif len(clean_sym) == 6 and clean_sym.endswith("AUD"):
+            raw_loss = raw_loss * 0.65
+        elif len(clean_sym) == 6 and clean_sym.endswith("CAD"):
+            raw_loss = raw_loss / 1.35
+        elif len(clean_sym) == 6 and clean_sym.endswith("CHF"):
+            raw_loss = raw_loss / 0.88
         return round(raw_loss, 2)
 
     def validate_stops_level(

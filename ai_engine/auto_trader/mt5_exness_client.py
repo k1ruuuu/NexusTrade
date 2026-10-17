@@ -395,10 +395,12 @@ class MT5ExnessClient:
                         "slippage": 50,
                     },
                 )
-                return resp.status_code == 200
+                if resp.status_code != 200:
+                    return False
+                data = resp.json() if resp.text.startswith("{") else {}
+                return not bool(data.get("error"))
         except Exception:
             return False
-
     async def modify_mt5_ticket(
         self,
         account_id_or_login: str,
@@ -429,10 +431,12 @@ class MT5ExnessClient:
                         "takeprofit": round(take_profit, 4),
                     },
                 )
-                return resp.status_code == 200
+                if resp.status_code != 200:
+                    return False
+                data = resp.json() if resp.text.startswith("{") else {}
+                return not bool(data.get("error"))
         except Exception:
             return False
-
     async def place_market_order(
         self,
         account_id_or_login: str,
@@ -536,77 +540,80 @@ class MT5ExnessClient:
                         params=params,
                     )
                     if resp.status_code == 200:
-                        data = resp.json()
-                        ticket = str(data.get("ticket") or data.get("order") or f"MT5-{int(time.time())}")
-                        open_px = float(data.get("openPrice") or broker_px)
-                        exec_lots = float(data.get("lots") or lots)
-                        if (
-                            ticket.isdigit()
-                            and abs(open_px - broker_px) > 1e-6
-                            and (sl_dist > 0 or tp_dist > 0)
-                        ):
-                            mod_sl, mod_tp, decimals = compute_anchored_sl_tp(
-                                side, open_px, sl_dist, tp_dist
-                            )
-                            mod_resp = await client.get(
-                                f"{MT5_REST_DIRECT_URL}/OrderModifySafe",
-                                params={
-                                    "id": tok,
-                                    "ticket": int(ticket),
-                                    "stoploss": mod_sl,
-                                    "takeprofit": mod_tp,
-                                },
-                            )
-                            if mod_resp.status_code != 200 and sl_dist > 0:
-                                close_ok = False
-                                try:
-                                    c_resp = await client.get(
-                                        f"{MT5_REST_DIRECT_URL}/OrderCloseSafe",
-                                        params={"id": tok, "ticket": int(ticket), "lots": exec_lots, "slippage": 50},
-                                    )
-                                    close_ok = c_resp.status_code == 200
-                                except Exception:
-                                    close_ok = False
-                                return BinanceOrderResult(
-                                    executed=False,
-                                    order_id=ticket,
-                                    symbol=candidate_sym,
-                                    side=side,
-                                    executed_qty=exec_lots,
-                                    avg_price=round(open_px, decimals),
-                                    notional_usdt=round(
-                                        exec_lots * get_mt5_contract_size(candidate_sym) * open_px, 2
-                                    ),
-                                    testnet=testnet,
-                                    status="UNPROTECTED_CLOSED_CONFIRMED" if close_ok else "FILLED_UNPROTECTED",
-                                    error_message=(
-                                        "Gagal mengonfirmasi SL/TP di broker; posisi ditutup darurat dan terkonfirmasi."
-                                        if close_ok
-                                        else "PERINGATAN: Order terisi tanpa SL/TP dan penutupan darurat belum terkonfirmasi."
-                                    ),
-                                    protection_confirmed=False,
-                                    emergency_closed=close_ok,
+                        data = resp.json() if resp.text.startswith("{") else {}
+                        raw_ticket = data.get("ticket") or data.get("order")
+                        has_err = bool(data.get("error") or data.get("code") in (10006, 10014, 10015, 10016, 10017, 10018))
+                        if raw_ticket and str(raw_ticket).isdigit() and int(raw_ticket) > 0 and not has_err:
+                            ticket = str(raw_ticket)
+                            open_px = float(data.get("openPrice") or broker_px)
+                            exec_lots = float(data.get("lots") or lots)
+                            if abs(open_px - broker_px) > 1e-6 and (sl_dist > 0 or tp_dist > 0):
+                                mod_sl, mod_tp, decimals = compute_anchored_sl_tp(
+                                    side, open_px, sl_dist, tp_dist
                                 )
-                        return BinanceOrderResult(
-                            executed=True,
-                            order_id=ticket,
-                            symbol=candidate_sym,
-                            side=side,
-                            executed_qty=exec_lots,
-                            avg_price=round(open_px, decimals),
-                            notional_usdt=round(
-                                exec_lots * get_mt5_contract_size(candidate_sym) * open_px, 2
-                            ),
-                            testnet=testnet,
-                            status=f"FILLED ({server_name} • Ticket #{ticket} • {exec_lots} Lot)",
-                        )
-                    try:
-                        err_json = resp.json()
-                        last_err = str(
-                            err_json.get("message") or err_json.get("code") or f"HTTP {resp.status_code}"
-                        )[:160]
-                    except Exception:
-                        last_err = f"HTTP {resp.status_code}"
+                                mod_resp = await client.get(
+                                    f"{MT5_REST_DIRECT_URL}/OrderModifySafe",
+                                    params={
+                                        "id": tok,
+                                        "ticket": int(ticket),
+                                        "stoploss": mod_sl,
+                                        "takeprofit": mod_tp,
+                                    },
+                                )
+                                if mod_resp.status_code != 200 and sl_dist > 0:
+                                    close_ok = False
+                                    try:
+                                        c_resp = await client.get(
+                                            f"{MT5_REST_DIRECT_URL}/OrderCloseSafe",
+                                            params={"id": tok, "ticket": int(ticket), "lots": exec_lots, "slippage": 50},
+                                        )
+                                        close_ok = c_resp.status_code == 200
+                                    except Exception:
+                                        close_ok = False
+                                    return BinanceOrderResult(
+                                        executed=False,
+                                        order_id=ticket,
+                                        symbol=candidate_sym,
+                                        side=side,
+                                        executed_qty=exec_lots,
+                                        avg_price=round(open_px, decimals),
+                                        notional_usdt=round(
+                                            exec_lots * get_mt5_contract_size(candidate_sym) * open_px, 2
+                                        ),
+                                        testnet=testnet,
+                                        status="UNPROTECTED_CLOSED_CONFIRMED" if close_ok else "FILLED_UNPROTECTED",
+                                        error_message=(
+                                            "Gagal mengonfirmasi SL/TP di broker; posisi ditutup darurat dan terkonfirmasi."
+                                            if close_ok
+                                            else "PERINGATAN: Order terisi tanpa SL/TP dan penutupan darurat belum terkonfirmasi."
+                                        ),
+                                        protection_confirmed=False,
+                                        emergency_closed=close_ok,
+                                    )
+                            return BinanceOrderResult(
+                                executed=True,
+                                order_id=ticket,
+                                symbol=candidate_sym,
+                                side=side,
+                                executed_qty=exec_lots,
+                                avg_price=round(open_px, decimals),
+                                notional_usdt=round(
+                                    exec_lots * get_mt5_contract_size(candidate_sym) * open_px, 2
+                                ),
+                                testnet=testnet,
+                                status=f"FILLED ({server_name} • Ticket #{ticket} • {exec_lots} Lot)",
+                            )
+                        else:
+                            err_msg = str(data.get("message") or data.get("error") or "Order ditolak broker")
+                            last_err = err_msg[:160]
+                    else:
+                        try:
+                            err_json = resp.json()
+                            last_err = str(
+                                err_json.get("message") or err_json.get("code") or f"HTTP {resp.status_code}"
+                            )[:160]
+                        except Exception:
+                            last_err = f"HTTP {resp.status_code}"
 
                     # If rejected due to stops on tight broker spread, retry market order without initial SL/TP then modify
                     if "stop" in last_err.lower() or "invalid" in last_err.lower():
@@ -805,18 +812,35 @@ class MT5ExnessClient:
                 )
                 if resp.status_code == 200:
                     data = resp.json() if resp.text.startswith("{") else {}
-                    tkt = str(data.get("ticket") or data.get("order") or int(time.time() * 1000))
-                    return BinanceOrderResult(
-                        executed=True,
-                        order_id=tkt,
-                        symbol=clean_sym,
-                        side="BUY" if order_type == "BUY_STOP" else "SELL",
-                        executed_qty=lots,
-                        avg_price=price,
-                        notional_usdt=round(lots * get_mt5_contract_size(clean_sym) * price, 2),
-                        testnet=False,
-                        status=f"PLACED ({order_type} @ {price:,.2f})",
-                    )
+                    raw_ticket = data.get("ticket") or data.get("order")
+                    has_err = bool(data.get("error") or data.get("code") in (10006, 10014, 10015, 10016, 10017, 10018))
+                    if raw_ticket and str(raw_ticket).isdigit() and int(raw_ticket) > 0 and not has_err:
+                        tkt = str(raw_ticket)
+                        return BinanceOrderResult(
+                            executed=True,
+                            order_id=tkt,
+                            symbol=clean_sym,
+                            side="BUY" if order_type == "BUY_STOP" else "SELL",
+                            executed_qty=lots,
+                            avg_price=price,
+                            notional_usdt=round(lots * get_mt5_contract_size(clean_sym) * price, 2),
+                            testnet=False,
+                            status=f"PLACED ({order_type} @ {price:,.2f})",
+                        )
+                    else:
+                        err_msg = str(data.get("message") or data.get("error") or "Order pending ditolak broker")
+                        return BinanceOrderResult(
+                            executed=False,
+                            order_id="",
+                            symbol=clean_sym,
+                            side="BUY" if order_type == "BUY_STOP" else "SELL",
+                            executed_qty=lots,
+                            avg_price=price,
+                            notional_usdt=0.0,
+                            testnet=False,
+                            status="REJECTED_BY_BROKER",
+                            error_message=err_msg,
+                        )
         except Exception as exc:
             logger.warning("Error placing pending stop order", error=str(exc))
         return BinanceOrderResult(
@@ -852,7 +876,10 @@ class MT5ExnessClient:
                     f"{MT5_REST_DIRECT_URL}/OrderDeleteSafe",
                     params={"id": tok, "ticket": int(ticket)},
                 )
-                return resp.status_code == 200
+                if resp.status_code != 200:
+                    return False
+                data = resp.json() if resp.text.startswith("{") else {}
+                return not bool(data.get("error"))
         except Exception:
             return False
 
