@@ -679,6 +679,19 @@ class EnsembleDecisionAgent:
         prev_st = st_5m_df.iloc[-2] if len(st_5m_df) >= 2 else last_st
         st_recent_buy = st_buy_trigger or bool(prev_st.get("supertrend_buy", False))
         st_recent_sell = st_sell_trigger or bool(prev_st.get("supertrend_sell", False))
+        # Candlestick Pattern Identification on 5M Execution Timeframe
+        cp_5m_df = self.ohlcv_preprocessor.identify_candlestick_patterns(ut_source_df.tail(40), trend_bars=5)
+        last_cp = cp_5m_df.iloc[-1]
+        active_pattern = str(last_cp.get("cp_pattern_name", "")).strip()
+        cp_score = float(last_cp.get("cp_score", 0.0))
+        if not active_pattern and len(cp_5m_df) >= 2:
+            prev_cp = cp_5m_df.iloc[-2]
+            prev_pname = str(prev_cp.get("cp_pattern_name", "")).strip()
+            if prev_pname:
+                active_pattern = f"{prev_pname} (Konfirmasi)"
+                cp_score = float(prev_cp.get("cp_score", 0.0))
+
+        pat_prefix = f"[🕯️ {active_pattern}] " if active_pattern else ""
 
         # Market Chop filter only triggers when higher timeframes lack a clear trend (aligned_count < 3)
         has_htf_trend = (aligned_count >= 3) or (htf_bull_locked or htf_bear_locked)
@@ -687,24 +700,28 @@ class EnsembleDecisionAgent:
             and (base_15m.is_sideways or (abs(s_1h) < 0.08 and abs(s_15m) < 0.08 and abs(s_5m) < 0.08))
         )
 
-        # Dual Strategy Confluence (UT Bot + Supertrend) Acuan Eksekusi:
+        # Dual Strategy Confluence (UT Bot + Supertrend + Candlestick Pattern) Acuan Eksekusi:
         is_dual_buy = (ut_recent_buy or ut_trend_dir == 1) and (st_recent_buy or st_dir == 1)
         is_dual_sell = (ut_recent_sell or ut_trend_dir == -1) and (st_recent_sell or st_dir == -1)
 
         if is_dual_buy and dom_sign > 0 and not is_market_chop:
-            act_5m_tag = f"🟢 UT BOT + SUPERTREND BUY (ST: ${st_level:,.2f} | UT: ${ut_ts_level:,.2f})"
+            act_5m_tag = f"🟢 {pat_prefix}UT BOT + SUPERTREND BUY (ST: ${st_level:,.2f} | UT: ${ut_ts_level:,.2f})"
             if blended_s_tech < 0.28 and dom_sign > 0:
                 blended_s_tech = max(0.32, blended_s_tech + 0.40)
+            if cp_score > 0:
+                blended_s_tech = min(0.96, blended_s_tech + 0.10)
         elif is_dual_sell and dom_sign < 0 and not is_market_chop:
-            act_5m_tag = f"🔴 UT BOT + SUPERTREND SELL (ST: ${st_level:,.2f} | UT: ${ut_ts_level:,.2f})"
+            act_5m_tag = f"🔴 {pat_prefix}UT BOT + SUPERTREND SELL (ST: ${st_level:,.2f} | UT: ${ut_ts_level:,.2f})"
             if blended_s_tech > -0.28 and dom_sign < 0:
                 blended_s_tech = min(-0.32, blended_s_tech - 0.40)
+            if cp_score < 0:
+                blended_s_tech = max(-0.96, blended_s_tech - 0.10)
         elif ut_recent_buy or (ut_trend_dir == 1 and dom_sign > 0 and not is_market_chop):
-            act_5m_tag = f"🟢 UT BOT BUY (Trailing Stop: ${ut_ts_level:,.2f})"
+            act_5m_tag = f"🟢 {pat_prefix}UT BOT BUY (Trailing Stop: ${ut_ts_level:,.2f})"
             if blended_s_tech < 0.25 and dom_sign > 0:
                 blended_s_tech = max(0.28, blended_s_tech + 0.35)
         elif ut_recent_sell or (ut_trend_dir == -1 and dom_sign < 0 and not is_market_chop):
-            act_5m_tag = f"🔴 UT BOT SELL (Trailing Stop: ${ut_ts_level:,.2f})"
+            act_5m_tag = f"🔴 {pat_prefix}UT BOT SELL (Trailing Stop: ${ut_ts_level:,.2f})"
             if blended_s_tech > -0.25 and dom_sign < 0:
                 blended_s_tech = min(-0.28, blended_s_tech - 0.35)
         elif is_market_chop:
@@ -717,7 +734,7 @@ class EnsembleDecisionAgent:
             blended_s_tech *= 0.45
             act_5m_tag = f"⏳ TUNGGU LONJAKAN 5M REDA ({s_5m:+.2f})"
         else:
-            act_5m_tag = f"⚡ UT: ${ut_ts_level:,.2f} | ST: ${st_level:,.2f} ({lbl_5m})"
+            act_5m_tag = f"⚡ {pat_prefix}UT: ${ut_ts_level:,.2f} | ST: ${st_level:,.2f} ({lbl_5m})"
         sr_levels = self.sr_detector.detect_levels(
             df_15m if (df_15m is not None and len(df_15m) >= 20) else df_1h,
             current_price=entry_px_5m,
@@ -741,6 +758,8 @@ class EnsembleDecisionAgent:
                 "supertrend_dir": float(st_dir),
                 "supertrend_buy": 1.0 if st_recent_buy else 0.0,
                 "supertrend_sell": 1.0 if st_recent_sell else 0.0,
+                "candlestick_pattern": active_pattern,
+                "candlestick_score": float(cp_score),
             },
             headlines=[h.headline for h in sent_90d.headline_scores],
             newly_learned_headlines=sent_90d.newly_learned_count,

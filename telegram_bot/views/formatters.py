@@ -154,6 +154,8 @@ def format_signal_card(decision: SignalDecision) -> str:
     st_badge = "🟢 BULL" if st_dir > 0 else ("🔴 BEAR" if st_dir < 0 else "⚪ —")
     st_line = f"• <b>Supertrend (10, 3.0):</b> {st_badge} (Line: <code>{format_price(st_val)}</code>)\n" if st_val > 0 else ""
 
+    cp_pat = str(decision.indicators.get("candlestick_pattern", "")).strip()
+    cp_line = f"• <b>Pola Candlestick:</b> 🕯️ <b>{html.escape(cp_pat)}</b>\n" if cp_pat else ""
     return (
         f"📡 <b>SINYAL AI NEXUSTRADE — {sym} ({tf})</b>\n"
         f"━━━━━━━━━━━━━━━━\n"
@@ -166,6 +168,7 @@ def format_signal_card(decision: SignalDecision) -> str:
         f"{tp_block}"
         f"{ut_line}"
         f"{st_line}"
+        f"{cp_line}"
         f"• <b>Resistance Atas (R1 | R2):</b> <code>{format_price(decision.resistance_1)}</code> (<code>{r1_pct}</code>) | <code>{format_price(decision.resistance_2)}</code>\n"
         f"• <b>Support Bawah (S1 | S2):</b> <code>{format_price(decision.support_1)}</code> (<code>{s1_pct}</code>) | <code>{format_price(decision.support_2)}</code>\n"
         f"• <b>Posisi S/R:</b> <i>{html.escape(decision.sr_status)}</i>\n"

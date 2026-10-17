@@ -348,6 +348,237 @@ class OHLCVPreprocessor:
         out["supertrend_buy"] = pd.Series(buy_sig, index=out.index)
         out["supertrend_sell"] = pd.Series(sell_sig, index=out.index)
         return out
+    @staticmethod
+    def identify_candlestick_patterns(
+        df: pd.DataFrame,
+        trend_bars: int = 5,
+        doji_size: float = 0.05,
+    ) -> pd.DataFrame:
+        """
+        Pine Script 'Candlestick Patterns Identified' (v6):
+          1. Doji
+          2. Bearish Harami / Bullish Harami
+          3. Bearish Engulfing / Bullish Engulfing
+          4. Piercing Line
+          5. Bullish Belt Hold
+          6. Bullish Kicker / Bearish Kicker
+          7. Hanging Man
+          8. Evening Star / Morning Star
+          9. Shooting Star
+          10. Hammer / Inverted Hammer
+        """
+        out = df.copy()
+        open_p = pd.to_numeric(out["open"], errors="coerce").astype(np.float64)
+        high = pd.to_numeric(out["high"], errors="coerce").astype(np.float64)
+        low = pd.to_numeric(out["low"], errors="coerce").astype(np.float64)
+        close = pd.to_numeric(out["close"], errors="coerce").astype(np.float64)
+
+        open_1 = open_p.shift(1).fillna(open_p)
+        high_1 = high.shift(1).fillna(high)
+        low_1 = low.shift(1).fillna(low)
+        close_1 = close.shift(1).fillna(close)
+
+        open_2 = open_p.shift(2).fillna(open_1)
+        close_2 = close.shift(2).fillna(close_1)
+        high_2 = high.shift(2).fillna(high_1)
+
+        open_trend = open_p.shift(trend_bars).fillna(open_p)
+        lower_10 = low.rolling(window=10, min_periods=1).min().shift(1).fillna(low)
+
+        spread = high - low
+        body = (open_p - close).abs()
+        eps = 0.001
+        denom_spread = eps + spread
+
+        # 1. Doji
+        doji = body <= (spread * doji_size)
+
+        # 2. Bearish Harami
+        bear_harami = (
+            (close_1 > open_1)
+            & (open_p > close)
+            & (open_p <= close_1)
+            & (open_1 <= close)
+            & ((open_p - close) < (close_1 - open_1))
+            & (open_trend < open_p)
+        )
+
+        # 3. Bullish Harami
+        bull_harami = (
+            (open_1 > close_1)
+            & (close > open_p)
+            & (close <= open_1)
+            & (close_1 <= open_p)
+            & ((close - open_p) < (open_1 - close_1))
+            & (open_trend > open_p)
+        )
+
+        # 4. Bearish Engulfing
+        bear_eng = (
+            (close_1 > open_1)
+            & (open_p > close)
+            & (open_p >= close_1)
+            & (open_1 >= close)
+            & ((open_p - close) > (close_1 - open_1))
+            & (open_trend < open_p)
+        )
+
+        # 5. Bullish Engulfing
+        bull_eng = (
+            (open_1 > close_1)
+            & (close > open_p)
+            & (close >= open_1)
+            & (close_1 >= open_p)
+            & ((close - open_p) > (open_1 - close_1))
+            & (open_trend > open_p)
+        )
+
+        # 6. Piercing Line
+        piercing = (
+            (close_1 < open_1)
+            & (open_p < low_1)
+            & (close > (close_1 + ((open_1 - close_1) / 2.0)))
+            & (close < open_1)
+            & (open_trend > open_p)
+        )
+
+        # 7. Bullish Belt Hold
+        bull_belt = (
+            np.isclose(low, open_p, atol=1e-5)
+            & (open_p < lower_10)
+            & (open_p < close)
+            & (close > (((high_1 - low_1) / 2.0) + low_1))
+            & (open_trend > open_p)
+        )
+
+        # 8. Bullish Kicker
+        bull_kick = (
+            (open_1 > close_1)
+            & (open_p >= open_1)
+            & (close > open_p)
+            & (open_trend > open_p)
+        )
+
+        # 9. Bearish Kicker
+        bear_kick = (
+            (open_1 < close_1)
+            & (open_p <= open_1)
+            & (close <= open_p)
+            & (open_trend < open_p)
+        )
+
+        # 10. Hanging Man
+        hanging_man = (
+            (spread > 4.0 * body)
+            & (((close - low) / denom_spread) >= 0.75)
+            & (((open_p - low) / denom_spread) >= 0.75)
+            & (open_trend < open_p)
+            & (high_1 < open_p)
+            & (high_2 < open_p)
+        )
+
+        # 11. Evening Star
+        evening_star = (
+            (close_2 > open_2)
+            & (np.minimum(open_1, close_1) > close_2)
+            & (open_p < np.minimum(open_1, close_1))
+            & (close < open_p)
+        )
+
+        # 12. Morning Star
+        morning_star = (
+            (close_2 < open_2)
+            & (np.maximum(open_1, close_1) < close_2)
+            & (open_p > np.maximum(open_1, close_1))
+            & (close > open_p)
+        )
+
+        # 13. Shooting Star
+        shooting_star = (
+            (open_1 < close_1)
+            & (open_p > close_1)
+            & ((high - np.maximum(open_p, close)) >= body * 3.0)
+            & ((np.minimum(close, open_p) - low) <= body)
+        )
+
+        # 14. Hammer
+        hammer = (
+            (spread > 3.0 * body)
+            & (((close - low) / denom_spread) > 0.60)
+            & (((open_p - low) / denom_spread) > 0.60)
+        )
+
+        # 15. Inverted Hammer
+        inv_hammer = (
+            (spread > 3.0 * body)
+            & (((high - close) / denom_spread) > 0.60)
+            & (((high - open_p) / denom_spread) > 0.60)
+        )
+
+        out["cp_doji"] = doji
+        out["cp_bear_harami"] = bear_harami
+        out["cp_bull_harami"] = bull_harami
+        out["cp_bear_engulf"] = bear_eng
+        out["cp_bull_engulf"] = bull_eng
+        out["cp_piercing"] = piercing
+        out["cp_bull_belt"] = bull_belt
+        out["cp_bull_kicker"] = bull_kick
+        out["cp_bear_kicker"] = bear_kick
+        out["cp_hanging_man"] = hanging_man
+        out["cp_evening_star"] = evening_star
+        out["cp_morning_star"] = morning_star
+        out["cp_shooting_star"] = shooting_star
+        out["cp_hammer"] = hammer
+        out["cp_inv_hammer"] = inv_hammer
+
+        bull_count = (
+            bull_eng.astype(int) + morning_star.astype(int) + hammer.astype(int)
+            + bull_harami.astype(int) + piercing.astype(int) + bull_belt.astype(int)
+            + bull_kick.astype(int) + inv_hammer.astype(int)
+        )
+        bear_count = (
+            bear_eng.astype(int) + evening_star.astype(int) + shooting_star.astype(int)
+            + hanging_man.astype(int) + bear_harami.astype(int) + bear_kick.astype(int)
+        )
+        out["cp_score"] = np.clip(bull_count - bear_count, -3.0, 3.0)
+
+        names = []
+        for i in range(len(df)):
+            if bull_eng.iloc[i]:
+                names.append("Bullish Engulfing")
+            elif bear_eng.iloc[i]:
+                names.append("Bearish Engulfing")
+            elif morning_star.iloc[i]:
+                names.append("Morning Star")
+            elif evening_star.iloc[i]:
+                names.append("Evening Star")
+            elif hammer.iloc[i]:
+                names.append("Hammer")
+            elif shooting_star.iloc[i]:
+                names.append("Shooting Star")
+            elif inv_hammer.iloc[i]:
+                names.append("Inverted Hammer")
+            elif hanging_man.iloc[i]:
+                names.append("Hanging Man")
+            elif bull_harami.iloc[i]:
+                names.append("Bullish Harami")
+            elif bear_harami.iloc[i]:
+                names.append("Bearish Harami")
+            elif piercing.iloc[i]:
+                names.append("Piercing Line")
+            elif bull_belt.iloc[i]:
+                names.append("Bullish Belt")
+            elif bull_kick.iloc[i]:
+                names.append("Bullish Kicker")
+            elif bear_kick.iloc[i]:
+                names.append("Bearish Kicker")
+            elif doji.iloc[i]:
+                names.append("Doji")
+            else:
+                names.append("")
+        out["cp_pattern_name"] = pd.Series(names, index=out.index)
+        return out
+
 
 
     @staticmethod
@@ -475,6 +706,14 @@ class OHLCVPreprocessor:
         out["supertrend_dir"] = st_df["supertrend_dir"].astype(np.float32)
         out["supertrend_buy"] = st_df["supertrend_buy"].astype(np.float32)
         out["supertrend_sell"] = st_df["supertrend_sell"].astype(np.float32)
+        # Candlestick Patterns Identified
+        cp_df = OHLCVPreprocessor.identify_candlestick_patterns(out, trend_bars=5, doji_size=0.05)
+        out["cp_score"] = cp_df["cp_score"].astype(np.float32)
+        out["cp_pattern_name"] = cp_df["cp_pattern_name"]
+        out["cp_bull_engulf"] = cp_df["cp_bull_engulf"].astype(np.float32)
+        out["cp_bear_engulf"] = cp_df["cp_bear_engulf"].astype(np.float32)
+        out["cp_hammer"] = cp_df["cp_hammer"].astype(np.float32)
+        out["cp_shooting_star"] = cp_df["cp_shooting_star"].astype(np.float32)
 
         return out
 

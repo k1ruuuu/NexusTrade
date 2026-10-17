@@ -296,3 +296,32 @@ def test_supertrend_strategy_indicators_and_triggers() -> None:
     # Bar 9 breaks out to 105.0 -> buy must trigger and dir == 1
     assert st_df["supertrend_dir"].iloc[9] == 1
     assert st_df["supertrend_buy"].iloc[9] is True or st_df["supertrend_buy"].iloc[9] == 1
+
+
+def test_candlestick_patterns_identified_pine_script() -> None:
+    from data_pipeline.preprocessor_ohlcv import OHLCVPreprocessor
+
+    # Test Bullish Engulfing
+    df_engulf = pd.DataFrame({
+        "open":  [110.0, 108.0, 106.0, 105.0, 104.0, 104.0, 99.0],
+        "high":  [111.0, 109.0, 107.0, 106.0, 105.0, 104.5, 107.0],
+        "low":   [109.0, 107.0, 105.0, 103.5, 102.0,  99.5, 98.5],
+        "close": [109.5, 107.5, 105.5, 104.0, 102.5, 100.0, 106.0],
+        "volume": [1000.0] * 7,
+    })
+    res_eng = OHLCVPreprocessor.identify_candlestick_patterns(df_engulf, trend_bars=5)
+    assert res_eng["cp_bull_engulf"].iloc[-1] is True or res_eng["cp_bull_engulf"].iloc[-1] == 1
+    assert res_eng["cp_pattern_name"].iloc[-1] == "Bullish Engulfing"
+    assert res_eng["cp_score"].iloc[-1] > 0
+
+    # Test Hammer
+    df_hammer = pd.DataFrame({
+        "open":  [100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 94.0],
+        "high":  [101.0, 99.5, 98.5, 97.5, 96.5, 95.5, 94.2],
+        "low":   [99.0,  97.5, 96.5, 95.5, 94.5, 93.5, 89.0],
+        "close": [99.5,  98.0, 97.0, 96.0, 95.0, 94.0, 94.1],
+        "volume": [1000.0] * 7,
+    })
+    res_ham = OHLCVPreprocessor.identify_candlestick_patterns(df_hammer, trend_bars=5)
+    assert res_ham["cp_hammer"].iloc[-1] is True or res_ham["cp_hammer"].iloc[-1] == 1
+    assert "Hammer" in res_ham["cp_pattern_name"].iloc[-1]
